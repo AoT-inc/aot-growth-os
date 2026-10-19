@@ -1,5 +1,5 @@
 {
-  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다. lease 값의 근거: docs/spikes/q15-lease-parameters.md",
+  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다. lease 값의 근거: docs/spikes/q15-lease-parameters.md. instance/run 과 instance/totp 는 0700, 그 안의 파일은 0600 (trust-boundaries §3.1)",
   "db_path": "instance/aot.db",
   "busy_timeout_ms": 5000,
   "worker_id": "daemon-1",
@@ -8,5 +8,9 @@
   "heartbeat_ms": 30000,
   "poll_ms": 5000,
   "retry_delay_ms": 60000,
+  "instance_dir": "instance",
+  "policy_store_dir": "instance/policies",
+  "totp_dir": "instance/totp",
+  "approval_socket": "instance/run/approval.sock",
   "log_level": "info"
 }

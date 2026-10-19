@@ -1,0 +1,38 @@
+# 기본 정책 템플릿 (형식: ADR-0013, 정책 v1 = a0-decisions D4, 위험 변경 파라미터 = D3).
+# 저장소의 이 파일은 안전한 기본값이다. 실제 운영 값(예산 한도 등)은 instance/ 의 정책 파일로 바꾸고
+# 승인 CLI 로 배포한다 (보안을 낮추는 변경은 위험 변경 절차, ADR-0006 Amendment 2026-10-19).
+# 판정: 일치한 규칙 중 가장 엄격한 결과(deny > require_approval > allow), 일치하는 규칙이 없으면 default(deny).
+format: aot-policy/v1
+default: deny
+
+limits:
+  max_usd_per_task: 5          # 예시 값. 업무 하나의 cost_budget.max_usd 상한
+
+rules:
+  - id: internal-read
+    scope: [internal]
+    impact: [read]
+    decision: allow
+  - id: internal-write-task-own    # "write 는 업무 범위 내 허용" (D4): 업무 자기 영역만
+    scope: [internal]
+    impact: [write]
+    resource: ["*:task-own"]
+    decision: allow
+  - id: external-effect-needs-approval
+    impact: [external_effect]
+    decision: require_approval
+  - id: customer-scope-needs-approval
+    scope: [customer]
+    decision: require_approval
+  - id: public-scope-needs-approval
+    scope: [public]
+    decision: require_approval
+
+risky_change:
+  min_approvers: 1             # 1 이상. 2인 체제가 되면 올린다
+  cooldown: 1h                 # 승인 후 실행 가능까지 대기 (대기 중 취소 가능)
+  reauth_before_effect: true   # 실행 직전 TOTP 재인증
+  self_approval: false         # 요청자 = 승인자면 거부
+
+memory:
+  default_validity: {}         # memory-item 규칙 5 의 기본 만료 기간 (예: measurement: 30d). 값은 Q17 에서 정한다

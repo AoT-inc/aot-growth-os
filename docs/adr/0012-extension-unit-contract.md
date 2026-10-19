@@ -41,6 +41,7 @@
 ## Consequences
 - **A0:** 저장소 골격에 `packs/`를 두고, 모듈 경계 lint에 "팩은 코어 내부 모듈을 참조하지 않는다"를 추가한다 ([phase-a §4](../plans/phase-a.md)). 팩은 manifest와 게이트웨이 계약으로만 코어와 만난다.
 - **A1:** 위 스키마 보강을 [schema.sql](../schema/schema.sql)과 [product](../schema/product.md)에 반영한다. 이 ADR은 스키마 파일을 바꾸지 않는다.
+  - 반영 완료 (2026-10-19): `product.kind` 추가, `product_repo` 0개 허용 명시. 팩 manifest 형식은 `validatePackManifest`가 검증한다. 측정 신호 정의 형식은 아직 정하지 않았다 ([Q5](../open-questions.md)와 함께).
 - 주간 사이클이 코어에서 빠지므로 [overview](../00-overview.md)의 주간 사이클 서술은 "첫 팩의 내용"으로 읽는다. 문서 정리는 A0 중에 한다.
 - 계약 설계 비용이 생긴다. 범용 로더·마켓플레이스·서명 체계는 범위 밖이며, 두 번째 팩이 실제로 필요해질 때 확장한다.
 - 팩의 커넥터는 외부 코드이므로 [ADR-0005](0005-agent-adapter-boundary.md)의 어댑터와 같은 격리·비용 계량 요건을 받는다.

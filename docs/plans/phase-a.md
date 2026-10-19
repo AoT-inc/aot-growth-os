@@ -26,6 +26,18 @@
 
 스파이크 Q3(오케스트레이션)·Q4(헤드리스 코드 에이전트)는 A5의 선행 조건이 아니다. Phase A의 실제 어댑터는 읽기 전용 조사 에이전트 1개이고 실행 조정은 자체 상태 머신으로 충분하므로, 두 스파이크는 Phase A 후속으로 둔다(§5).
 
+### A1 완료 기록 (2026-10-19)
+
+- [x] 엔터티 타입: `packages/domain/src/entities/` (열거형은 `schema.sql` CHECK 목록과, 행 타입은 실제 열과 시험으로 대조)
+- [x] 상태 전이 허용표: `src/state/` — `state-machines.md`의 업무·조직 제안·역할·전략·게시·상품 등록·상품 단계. 문서에 없는 전이와 에이전트의 모든 전이 거부
+- [x] `task_spec` 스키마 검증(`validateTaskSpec`, draft/stored 두 단계)과 참조 검증(`checkTaskSpecReferences`: 역할·부서·상품·선행 업무). 정책 상한·정책 판정·의존 순환은 A2/A3
+- [x] 마이그레이션: `migrations/0001_init.sql`(= `schema.sql` 복사본), 드리프트 시험 `test/unit/schema-drift.test.ts`
+- [x] 시드(D4): `seedPhaseA` — 오너 1 + 부서 `core` + `generalist@v1` + 읽기 전용 `registration-verifier@v1` + `policy_version` v1(기본 거부). 시드 후 `policy_version` 존재를 시험으로 확인 (SQL 파일이 아니라 코드인 이유: 시각을 Clock 으로 받고 오너 이름을 인스턴스 값으로 넘기기 위해)
+- [x] `memory_item` 신뢰·만료 규칙(`src/memory.ts`): 현재 사실 조회에서 `refuted`/만료 제외, 외부 입력 유래는 `hypothesis`/`unverified`로만 저장, 에이전트는 `hypothesis`만 작성
+- [x] ADR-0012 §5 스키마 보강: `product.kind`, `product_repo` 0개 허용. 팩 manifest 형식 검증(`validatePackManifest`)
+- [ ] 측정 신호 정의 형식: 필드가 문서에 정의되어 있지 않아 구현하지 않음 ([Q5](../open-questions.md), D2와 함께 정한다)
+- 이월: `memory-item` 규칙 5(변동성 높은 종류의 기본 만료, 정책 파라미터)·7(`confidential` 이상 게시 입력의 승인)은 A3, 규칙 8(`inconclusive`는 성공 사례 불가)은 A4. 정책 형식(Q7)이 정해지면 시드의 `policy_version.content_hash` 입력을 새 정책 버전으로 교체
+
 ## 3. 필수 테스트 매핑
 
 [overview §6 필수 테스트 표](../00-overview.md) 중 Phase A 항목. "주 패키지"는 테스트를 소유하는 곳이고, A6에서 통합 시나리오로 한 번 더 확인한다.

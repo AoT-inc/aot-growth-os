@@ -23,7 +23,7 @@
 | D1 | Q2 런타임/DB | TypeScript(Node LTS) + SQLite, Postgres 이식 가능 DDL 유지 **결정: 권장안 채택 (2026-10-19)** | A0 | ADR-0001 상태 → accepted |
 | D2 | Q5 측정 신호 | 랜딩 페이지 1개의 주간 목표 행동 전환 수(읽기 전용 분석 API, Phase A는 수동 입력 허용) | A6 (정의 형식은 A1) | ADR-0007 Amendment, 실제 값은 `instance/` |
 | D3 | Q6 위험 변경 승인자 | 1인 승인 + 대기 시간 + 실행 직전 재인증. 승인자 수는 정책 파라미터로 두어 2인 체제로 전환 가능 | A3 | ADR-0006 Amendment |
-| D4 | Q23 시드 조직 | 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1(기본 거부) **결정: 권장안 채택 (2026-10-19)** | A1 | ADR-0011 Amendment, `migrations/` 시드 |
+| D4 | Q23 시드 조직 | 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1(기본 거부) **결정: 권장안 채택 (2026-10-19)** | A1 | ADR-0011 Amendment, `seedPhaseA`(`packages/domain/src/seed.ts`, A1 구현) |
 | D5 | Q25 승인 채널 인증 | Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경은 재인증 추가. 내부 웹 도입 시 패스키 | A3 | trust-boundaries §3.1 |
 | D6 | 라이선스 | Apache-2.0 (+ DCO 서명) — 단, 호스팅 경쟁 방지가 우선이면 AGPL-3.0 **결정: Apache-2.0 + DCO (2026-10-19)** | 첫 공개 push | `LICENSE`, README |
 | D7 | 확장 단위 계약 | 선언형 "도메인 팩" + 게이트웨이 계약을 따르는 커넥터. 주간 사이클 자체를 첫 팩으로 구현 **결정: 권장안 채택(D안) (2026-10-19)** | A0(배치), A1(스키마) | 신규 ADR-0012 |

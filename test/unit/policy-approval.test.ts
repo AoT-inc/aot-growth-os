@@ -10,7 +10,7 @@ import { claimNextTask, TaskWorker, type EffectTool } from '@aot/task-engine';
 import { asEffectTool, manualTimers, taskStatus } from '../support/engine.ts';
 import { createIdempotentFakeTool } from '../support/fake-tool.ts';
 import {
-  AGENT, approve, createWithGate, decisionsOf, deployDirect, effectDraft, HOUR, OWNER, policyEnv, policyText, REVIEWER, taskRow, withExtraRule,
+  AGENT, approve, createWithGate, customerReadDraft, decisionsOf, deployDirect, effectDraft, HOUR, OWNER, policyEnv, policyText, REVIEWER, taskRow, withExtraRule,
   type PolicyEnv,
 } from '../support/policy.ts';
 
@@ -161,12 +161,23 @@ test('a policy tightened after approval is applied at run time; an old approval 
   assert.equal(claim(env2, id).claimed?.task.id, id);
 });
 
-test('self approval is refused; another human can approve; agents can never approve', (t) => {
+test('self approval: allowed for the owner only when min_approvers is 1 (cooldown and TOTP still apply); forbidden for 2 or more', (t) => {
   const env = policyEnv(t);
   const id = pendingTask(env, {}, OWNER);
-  assert.match(String(approve(env, id, OWNER)['error']), /requester cannot approve their own task/);
-  assert.equal(approve(env, id, REVIEWER)['state'], 'cooldown');
+  assert.equal(approve(env, id, OWNER)['state'], 'cooldown', 'min_approvers 1: the requester may approve their own task');
+  assert.equal(claim(env, id).claimed, null, 'but it does not run during the cooldown');
+  env.clock.advance(HOUR);
+  assert.match(String(env.send({ cmd: 'release', actor: OWNER, kind: 'task', id })['error']), /TOTP code is required/);
+  assert.deepEqual(env.send({ cmd: 'release', actor: OWNER, kind: 'task', id, totp: env.code() }), { ok: true, state: 'queued' });
 
+  // 2인 이상: 자기 승인은 자동으로 금지된다. 다른 사람의 승인은 인원수에 센다
+  const envTwo = policyEnv(t);
+  deployDirect(envTwo, policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 ')));
+  const two = pendingTask(envTwo, {}, OWNER);
+  assert.match(String(approve(envTwo, two, OWNER)['error']), /requester cannot approve their own task \(self-approval is allowed only when risky_change.min_approvers is 1\)/);
+  assert.equal(approve(envTwo, two, REVIEWER)['state'], 'insufficient');
+
+  // 에이전트 actor 는 어떤 경우에도 승인할 수 없다
   for (const command of [
     { cmd: 'whoami', actor: AGENT }, { cmd: 'list', actor: AGENT }, { cmd: 'show', actor: AGENT, kind: 'task', id },
     { cmd: 'approve', actor: AGENT, kind: 'task', id, hash: taskRow(env.db, id).approved_hash },
@@ -276,4 +287,42 @@ test("a failed effect is resent only when the policy decision is 'allow' (recove
   await worker2.tick();
   assert.equal(calls, 2);
   assert.deepEqual(JSON.parse(String(env2.db.get('SELECT result FROM task_run WHERE task_id = ?', [allowed])!['result'])), ['failed', 'confirmed']);
+});
+
+test('a require_approval that is not an external effect (customer-scope read) needs one human approval only: no cooldown, no TOTP', (t) => {
+  const env = policyEnv(t);
+  const id = createWithGate(env, customerReadDraft(), { causedBy: OWNER });
+  assert.equal(claim(env, id).claimed, null);
+  assert.equal(taskStatus(env.db, id), 'needs_review');
+  const requirement = JSON.parse(String(decisionsOf(env.db, id).length > 0 && env.db.get("SELECT approval_required AS a FROM policy_decision WHERE task_id = ? AND decision = 'require_approval' LIMIT 1", [id])!['a']));
+  assert.deepEqual(requirement, { approver_kind: 'human', channel: 'approval-socket', min_approvers: 1, cooldown: 0, reauth_before_effect: false, self_approval: true });
+
+  // 요청자(오너)가 자기 승인(min_approvers 1) → 곧바로 queued. 해제도 TOTP 도 없다
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'task', id });
+  assert.equal(env.send({ cmd: 'approve', actor: OWNER, kind: 'task', id, hash: shown['hash'] })['state'], 'queued');
+  assert.equal(env.db.get('SELECT count(*) AS n FROM human_reauth')?.['n'], 0);
+  assert.equal(claim(env, id).claimed?.task.id, id);
+  assert.match(decisionsOf(env.db, id).at(-1)!.reason, /approval: valid \(re-check before run\)/);
+
+  // 승인이 없으면 여전히 실행되지 않고, 에이전트는 승인할 수 없다
+  const other = createWithGate(env, customerReadDraft({ inputs: [{ name: 'n', ref: 'r:2', kind: 'k' }] }));
+  assert.equal(claim(env, other).claimed, null);
+  assert.match(lastReason(env.db, other), /approval required/);
+  assert.match(String(env.send({ cmd: 'approve', actor: AGENT, kind: 'task', id: other, hash: 'x' })['error']), /only human actors/);
+});
+
+test('plain approval with min_approvers 2: one other human is enough, the requester cannot approve; an external effect in the same task brings back the full procedure', (t) => {
+  const env = policyEnv(t);
+  deployDirect(env, policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 ')));
+  const id = createWithGate(env, customerReadDraft(), { causedBy: OWNER });
+  assert.equal(claim(env, id).claimed, null);
+  assert.match(String(approve(env, id, OWNER)['error']), /requester cannot approve their own task/);
+  assert.equal(approve(env, id, REVIEWER)['state'], 'queued', 'no second approver, cooldown or TOTP for a non-external require_approval');
+
+  const mixed = createWithGate(env, effectDraft({ inputs: [{ name: 'n', ref: 'r:mixed', kind: 'k' }], allowed_tools: [
+    { tool: 'crm_read', operations: ['read'], scope: 'customer', impact: 'read', target: 'crm:example' },
+    { tool: 'notify-tool', operations: ['send'], scope: 'customer', impact: 'external_effect', target: 'mailbox:example' },
+  ] }), { causedBy: OWNER });
+  assert.equal(claim(env, mixed).claimed, null);
+  assert.equal(approve(env, mixed, REVIEWER)['state'], 'insufficient', 'needs 2 approvers because of the external effect');
 });

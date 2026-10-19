@@ -25,8 +25,9 @@ export const DEFAULT_OWNER_NAME = 'example-owner';
 
 /**
  * 초기 정책 v1 (D4): 기본 거부, internal 읽기 허용, internal 쓰기는 업무 자기 영역(`*:task-own`)만 허용,
- * external_effect 와 customer/public 범위는 require_approval. `delete` 는 규칙이 없으므로 기본 거부.
- * 위험 변경 파라미터는 D3 기본값(1인 승인, 대기 1h, 실행 직전 재인증, 자기 승인 금지).
+ * internal 게시(`publication.publish`)는 별도 규칙으로 허용, external_effect 와 customer/public 범위는 require_approval.
+ * `delete` 는 규칙이 없으므로 기본 거부.
+ * 위험 변경 파라미터는 D3 기본값(1인 승인, 대기 1h, 실행 직전 재인증). 1인 승인이므로 오너의 자기 승인이 허용된다(2026-10-19 결정).
  *
  * 형식은 ADR-0013(정책 형식 v1)이며, 이 값은 `@aot/policy` 가 `policies/default.yaml` 을 파싱·정규화한 결과와 같다
  * (시험이 대조한다). 정규화 규칙: 기간은 초, 집합 성격의 목록은 정렬, 규칙은 id 순. `policy_version.content_hash` 는
@@ -39,11 +40,12 @@ export const POLICY_V1_DOCUMENT = {
   rules: [
     { id: 'customer-scope-needs-approval', scope: ['customer'], decision: 'require_approval' },
     { id: 'external-effect-needs-approval', impact: ['external_effect'], decision: 'require_approval' },
+    { id: 'internal-publish', scope: ['internal'], action: ['publication.publish'], impact: ['write'], decision: 'allow' },
     { id: 'internal-read', scope: ['internal'], impact: ['read'], decision: 'allow' },
     { id: 'internal-write-task-own', scope: ['internal'], impact: ['write'], resource: ['*:task-own'], decision: 'allow' },
     { id: 'public-scope-needs-approval', scope: ['public'], decision: 'require_approval' },
   ],
-  risky_change: { min_approvers: 1, cooldown: 3600, reauth_before_effect: true, self_approval: false },
+  risky_change: { min_approvers: 1, cooldown: 3600, reauth_before_effect: true },
   memory: { default_validity: {} },
 } as const;
 

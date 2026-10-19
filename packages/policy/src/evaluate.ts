@@ -5,7 +5,7 @@
 // 역할 데이터(role.allowed_tools)나 라우팅은 입력이 아니다 — 역할 생성·라우팅 변경으로 결과가 바뀌지 않는다 (trust-boundaries §2-7).
 import type { Impact, PolicyDecisionValue, Scope, Sensitivity, TaskSpec, ToolRequest } from '@aot/domain';
 
-import type { PolicyDocument, PolicyRule, RiskyChangeParams } from './document.ts';
+import { humanApprovalParams, riskyApprovalParams, type ApprovalParams, type PolicyDocument, type PolicyRule } from './document.ts';
 
 export interface RequestConstraints {
   max_usd: number;
@@ -27,7 +27,7 @@ export interface PolicyRequest {
 }
 
 /** require_approval 판정의 승인 요건 (policy_decision.approval_required 에 남는다) */
-export interface ApprovalRequirement extends RiskyChangeParams {
+export interface ApprovalRequirement extends ApprovalParams {
   approver_kind: 'human';
   channel: 'approval-socket';
 }
@@ -41,14 +41,29 @@ export interface PolicyVerdict {
 
 const STRICTNESS: Record<PolicyDecisionValue, number> = { allow: 0, require_approval: 1, deny: 2 };
 
-export function approvalRequirement(document: PolicyDocument): ApprovalRequirement {
-  return { approver_kind: 'human', channel: 'approval-socket', ...document.risky_change };
+/**
+ * 승인 요건 (2026-10-19 결정). 외부 부작용(`external_effect`)의 승인만 위험 변경 절차(승인자 수·cooldown·TOTP 재인증)를 거친다.
+ * 그 밖의 `require_approval`(예: customer 범위 읽기)은 사람 1인의 승인만 받는다.
+ */
+export function approvalParamsFor(document: PolicyDocument, impact: Impact | null): ApprovalParams {
+  return impact === 'external_effect' ? riskyApprovalParams(document) : humanApprovalParams(document);
+}
+
+export function approvalRequirement(document: PolicyDocument, impact: Impact | null): ApprovalRequirement {
+  return { approver_kind: 'human', channel: 'approval-socket', ...approvalParamsFor(document, impact) };
+}
+
+/** 업무 하나의 승인 요건: 승인이 필요한 요청 중 외부 부작용이 하나라도 있으면 위험 변경 절차, 아니면 사람 1인 승인 */
+export function taskApprovalParams(document: PolicyDocument, requests: readonly PolicyRequest[]): ApprovalParams {
+  const external = requests.some((request) => request.impact === 'external_effect' && evaluateRequest(document, request).decision === 'require_approval');
+  return approvalParamsFor(document, external ? 'external_effect' : null);
 }
 
 export function evaluateRequest(document: PolicyDocument, request: PolicyRequest): PolicyVerdict {
   const deny = (reason: string): PolicyVerdict => ({ decision: 'deny', reason, matchedRules: [], approval: null });
 
   // 판정할 수 없는 요청은 거부한다 (기본 거부). 요소를 추측해 채우지 않는다.
+  // (새 명세는 task_spec 검증이 scope·impact 를 필수로 요구해 여기까지 오지 않는다. 저장된 옛 명세와 부작용 직전 재검증을 위한 방어다.)
   const undeclared = [request.scope === null ? 'scope' : null, request.impact === null ? 'impact' : null].filter((x) => x !== null);
   if (undeclared.length > 0) return deny(`${undeclared.join(' and ')} not declared for ${request.action}; undeclared requests are denied`);
 
@@ -70,7 +85,7 @@ export function evaluateRequest(document: PolicyDocument, request: PolicyRequest
     decision,
     reason: `${decision} by rule ${deciding.join(', ')} for ${describe(request)}`,
     matchedRules: matched.map((rule) => rule.id),
-    approval: decision === 'require_approval' ? approvalRequirement(document) : null,
+    approval: decision === 'require_approval' ? approvalRequirement(document, request.impact) : null,
   };
 }
 
@@ -108,7 +123,7 @@ export function constraintsOf(spec: TaskSpec): RequestConstraints {
   return out;
 }
 
-export function requestOf(spec: TaskSpec, tool: ToolRequest, operation: string, overrides: Partial<PolicyRequest> = {}): PolicyRequest {
+export function requestOf(spec: TaskSpec, tool: Pick<ToolRequest, 'tool' | 'target'> & Partial<Pick<ToolRequest, 'scope' | 'impact'>>, operation: string, overrides: Partial<PolicyRequest> = {}): PolicyRequest {
   return {
     subject: subjectOf(spec),
     action: `${tool.tool}.${operation}`,

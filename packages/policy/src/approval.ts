@@ -3,12 +3,12 @@
 //
 // approval 행 해석 (같은 subject_kind·subject_id, 시각순):
 //  - 'approved' 가 아닌 행(rejected 등)은 그 앞의 승인을 모두 무효로 한다 (거절, 대기 중 취소)
-//  - 남은 'approved' 중 subject_hash 가 지금 해시와 같고, 사람(actor.kind='human')이며, 자기 승인 금지면 요청자가 아닌 것만 센다
+//  - 남은 'approved' 중 subject_hash 가 지금 해시와 같고, 사람(actor.kind='human')이며, 자기 승인이 금지(min_approvers ≥ 2)면 요청자가 아닌 것만 센다
 //  - 서로 다른 승인자 수가 min_approvers 에 닿은 시각 + cooldown 이 지나야 하고, reauth_before_effect 면 그 뒤의 재인증 기록이 있어야 한다
 import type { ApprovalSubjectKind, Db, PublicationRow, TaskRow, TaskSpec } from '@aot/domain';
 import { contentHash } from '@aot/domain';
 
-import type { RiskyChangeParams } from './document.ts';
+import { type ApprovalParams } from './document.ts';
 
 export type ApprovalState =
   | 'approved'
@@ -37,7 +37,7 @@ export interface ApprovalQuery {
   hash: string;
   /** 자기 승인 판단용 요청자 actor id (모르면 null) */
   requesterId: string | null;
-  params: RiskyChangeParams;
+  params: ApprovalParams;
   now: string;
   /** false 면 재인증은 보지 않는다 (재인증 직전의 확인) */
   checkReauth?: boolean;
@@ -92,7 +92,7 @@ export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
     const need = `${approvers.length}/${query.params.min_approvers} human approvals`;
     if (approvers.length > 0) return fail('insufficient', `${need}; waiting for more approvers`);
     if (stale > 0) return fail('hash_mismatch', `approval was given for different content (approved_hash mismatch); re-approval required`);
-    if (self > 0) return fail('self_approval', 'the requester cannot approve their own request (self_approval: false)');
+    if (self > 0) return fail('self_approval', 'the requester cannot approve their own request (self-approval is allowed only when min_approvers is 1)');
     if (revoked) return fail('revoked', 'the approval was rejected or cancelled');
     return fail('missing', 'approval required (no approval recorded)');
   }

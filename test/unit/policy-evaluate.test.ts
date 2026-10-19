@@ -29,13 +29,31 @@ test('default policy v1: internal read allowed, task-own write allowed, other wr
   assert.match(evaluateRequest(d, req({ impact: 'delete' })).reason, /no rule matches .*default deny/);
 });
 
-test('default policy v1: external effects and customer/public scopes need approval, with the D3 approval parameters', () => {
+test('default policy v1: external effects and customer/public scopes need approval; only external effects get the D3 risky-change procedure', () => {
   const d = doc();
-  for (const overrides of [{ impact: 'external_effect' as const }, { scope: 'customer' as const }, { scope: 'public' as const }]) {
+  const risky = { approver_kind: 'human', channel: 'approval-socket', min_approvers: 1, cooldown: 3600, reauth_before_effect: true, self_approval: true };
+  const humanOnly = { approver_kind: 'human', channel: 'approval-socket', min_approvers: 1, cooldown: 0, reauth_before_effect: false, self_approval: true };
+  for (const [overrides, expected] of [
+    [{ impact: 'external_effect' as const }, risky],
+    [{ scope: 'customer' as const }, humanOnly],
+    [{ scope: 'public' as const }, humanOnly],
+    [{ scope: 'customer' as const, impact: 'external_effect' as const }, risky],
+  ] as const) {
     const verdict = evaluateRequest(d, req(overrides));
     assert.equal(verdict.decision, 'require_approval', JSON.stringify(overrides));
-    assert.deepEqual(verdict.approval, { approver_kind: 'human', channel: 'approval-socket', min_approvers: 1, cooldown: 3600, reauth_before_effect: true, self_approval: false });
+    assert.deepEqual(verdict.approval, expected, JSON.stringify(overrides));
   }
+  // 2인 체제에서는 자기 승인이 자동으로 금지된다 (파라미터가 아니라 min_approvers 에서 정해진다)
+  const two = doc(policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 ')));
+  assert.deepEqual(evaluateRequest(two, req({ impact: 'external_effect' })).approval, { ...risky, min_approvers: 2, self_approval: false });
+  assert.deepEqual(evaluateRequest(two, req({ scope: 'customer' })).approval, { ...humanOnly, self_approval: false });
+  // internal 게시는 별도 규칙으로 허용, 같은 게시를 customer/public 로 하면 승인 필요
+  const publish = { action: 'publication.publish', resource: 'blog:post-1', impact: 'write' as const };
+  assert.equal(decide(d, { ...publish, scope: 'internal' }), 'allow');
+  assert.equal(decide(d, { ...publish, impact: 'external_effect', scope: 'public' }), 'require_approval');
+  assert.equal(decide(d, { ...publish, impact: 'write', scope: 'public' }), 'require_approval');
+  assert.equal(decide(d, { ...publish, impact: 'delete', scope: 'internal' }), 'deny', 'only the write impact of publication.publish is allowed');
+  assert.equal(decide(d, { action: 'repo_write.push', resource: 'repo:example-product', impact: 'write', scope: 'internal' }), 'deny', 'the allow rule is limited to the publication action');
   assert.equal(decide(d, { scope: 'public', impact: 'delete' }), 'require_approval', 'no allow rule, but a require_approval rule matches');
 });
 

@@ -53,11 +53,13 @@ test('each security-lowering setting is held back; cancel during the cooldown st
   const env = policyEnv(t);
   const raised = deploy(env, policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 ')));
   assert.equal(raised['state'], 'deployed', 'raising the approver count is a normal change');
-  for (const [from, to] of [['min_approvers: 2 ', 'min_approvers: 1 '], ['self_approval: false', 'self_approval: true'], ['cooldown: 1h ', 'cooldown: 5m ']]) {
+  for (const [from, to] of [['min_approvers: 2 ', 'min_approvers: 1 '], ['cooldown: 1h ', 'cooldown: 5m ']]) {
     const base = policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 '));
     const response = deploy(env, base.replace(from!, to!));
     assert.equal(response['change_class'], 'risky', to);
     assert.equal(response['state'], 'insufficient', 'the current policy needs two approvers');
+    // 2인 → 1인은 자기 승인이 허용으로 바뀌는 변경이므로 그 이유가 위험 변경 사유에 드러난다
+    assert.equal((response['reasons'] as string[]).some((r) => /self-approval becomes allowed/.test(r)), from === 'min_approvers: 2 ', to);
   }
   const pending = deploy(env, policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 ').replace('cooldown: 1h ', 'cooldown: 5m ')));
   const id = String(pending['id']);

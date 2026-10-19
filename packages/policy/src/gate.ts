@@ -9,7 +9,7 @@ import type { Db, TaskPolicyGate, TaskRow, TaskSpec } from '@aot/domain';
 
 import { approvalStatus, taskRequester, taskSubject, taskSubjectHash, type ApprovalStatus } from './approval.ts';
 import { recordDecision, recordVerdict } from './decisions.ts';
-import { evaluateRequest, requestOf, requestsFromSpec, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
+import { evaluateRequest, requestOf, requestsFromSpec, taskApprovalParams, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
 import type { ActivePolicy, PolicyStore } from './store.ts';
 
 export interface PolicyGateOptions {
@@ -91,7 +91,7 @@ export function createPolicyGate(options: PolicyGateOptions): TaskPolicyGate {
       const base = { taskId: task.id, taskRunId: runId, policyVersionId: policy.versionId, now };
       const entry = spec.allowed_tools.find((t) => t.tool === tool && t.operations.includes(action) && (t.target === undefined || t.target === target));
       if (!entry) {
-        const request: PolicyRequest = { ...requestOf(spec, { tool, operations: [action] }, action), resource: target, impact: 'external_effect' };
+        const request: PolicyRequest = { ...requestOf(spec, { tool }, action), resource: target, impact: 'external_effect' };
         const reason = `${tool}.${action} on ${target} was not requested in allowed_tools (tool, operation and target must match)`;
         recordDecision(tx, { ...base, request, decision: 'deny', reason, approvalRequired: null });
         return { decision: 'refuse', reason };
@@ -139,7 +139,7 @@ function budgetSpent(tx: Db, task: TaskRow): string | null {
  * 승인이 필요한 업무의 실행 시점 확인 (trust-boundaries §4).
  *  1. 현재 대상 해시(명세 + 현재 정책 버전) = task.approved_hash. 다르면 실행 인자가 바뀌었거나 정책이 바뀐 것 → 재승인
  *  2. 역할 버전·상태가 승인 당시와 같은가 (조직·역할 변경이 승인 범위를 벗어나면 재검토)
- *  3. 승인자 수·자기 승인·취소·cooldown·재인증 (approvalStatus)
+ *  3. 승인자 수·자기 승인·취소 (approvalStatus). 외부 부작용이 있으면 cooldown·재인증도 (그 밖의 require_approval 은 사람 1인 승인만)
  */
 export function verifyTaskApproval(tx: Db, task: TaskRow, spec: TaskSpec, policy: ActivePolicy, now: string): ApprovalStatus {
   const subject = taskSubject(task, spec, policy.versionId);
@@ -162,7 +162,7 @@ export function verifyTaskApproval(tx: Db, task: TaskRow, spec: TaskSpec, policy
     }
   }
   return approvalStatus(tx, {
-    kind: 'task', id: task.id, hash, requesterId: taskRequester(tx, task), params: policy.document.risky_change, now,
+    kind: 'task', id: task.id, hash, requesterId: taskRequester(tx, task), params: taskApprovalParams(policy.document, requestsFromSpec(spec)), now,
   });
 }
 

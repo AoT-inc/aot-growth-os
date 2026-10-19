@@ -1,8 +1,10 @@
 // 승인 엔진 (trust-boundaries §1·§3.1). approval 행은 여기서만 쓴다. 요청은 사람 승인 채널(소켓)로만 들어온다.
 //  - 승인·거절·취소·해제(release)는 actor.kind='human' 만. 에이전트 actor 의 요청은 무엇이든 거부한다
 //  - 승인은 대상의 정규화 해시에 묶인다. 사람은 `show` 로 본 해시를 `approve` 에 함께 보내고, 그 사이 내용이 바뀌면 거부된다
-//  - 위험 변경(risky_change): 승인자 수가 차면 cooldown 이 시작되고(대기 중 cancel 가능), 끝난 뒤 `release` 에서
+//  - 외부 부작용(external_effect)과 정책 변경(risky_change): 승인자 수가 차면 cooldown 이 시작되고(대기 중 cancel 가능), 끝난 뒤 `release` 에서
 //    TOTP 재인증을 거쳐야 실행(업무 queued, 정책 배포)으로 넘어간다
+//  - 그 밖의 require_approval(예: customer 범위 읽기, internal 게시의 confidential 입력)은 사람 1인 승인만 — cooldown·재인증 없음
+//  - 자기 승인(요청자 = 승인자)은 risky_change.min_approvers == 1 일 때만 허용, 2 이상이면 금지 (document.ts selfApprovalAllowed)
 //  - 정책 배포: 일반 변경은 사람 1인 승인으로 바로 배포, 위험 변경은 **현재** 정책의 risky_change 절차 (ADR-0006 Amendment 2026-10-19)
 // TOTP 코드·비밀은 응답·로그·DB 어디에도 남기지 않는다.
 import { randomUUID } from 'node:crypto';
@@ -11,8 +13,8 @@ import { checkTransition, contentHash, TASK_MACHINE, type Clock, type Db, type P
 
 import { approvalStatus, publicationSubject, reauthPurpose, recordReauth, ReauthError, taskRequester, taskSubject, taskSubjectHash } from './approval.ts';
 import { classifyChange } from './change.ts';
-import type { ParsedPolicy } from './document.ts';
-import { evaluateRequest, requestsFromSpec } from './evaluate.ts';
+import { humanApprovalParams, riskyApprovalParams, type ParsedPolicy } from './document.ts';
+import { evaluateRequest, requestsFromSpec, taskApprovalParams } from './evaluate.ts';
 import { PolicyFormatError, type ActivePolicy, type PolicyStore } from './store.ts';
 import { TotpSecretError, verifyTotp, type TotpSecretStore } from './totp.ts';
 
@@ -49,6 +51,8 @@ export interface ApprovalEngineOptions {
   totp: TotpSecretStore;
   newId?: () => string;
 }
+
+const SELF_APPROVAL_RULE = 'self-approval is allowed only when risky_change.min_approvers is 1';
 
 const refuse = (message: string): never => {
   throw new ApprovalRefusedError(message);
@@ -148,9 +152,10 @@ export class ApprovalEngine {
     const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [id]) ?? refuse(`task '${id}' does not exist`);
     const spec = JSON.parse(task.spec) as TaskSpec;
     const policy = this.#policy(tx);
-    const verdicts = requestsFromSpec(spec).map((request) => ({ request, verdict: evaluateRequest(policy.document, request) }));
+    const requests = requestsFromSpec(spec);
+    const verdicts = requests.map((request) => ({ request, verdict: evaluateRequest(policy.document, request) }));
     const subject = taskSubject(task, spec, policy.versionId);
-    return { task, spec, policy, verdicts, subject, hash: taskSubjectHash(subject), requester: taskRequester(tx, task) };
+    return { task, spec, policy, verdicts, subject, hash: taskSubjectHash(subject), requester: taskRequester(tx, task), params: taskApprovalParams(policy.document, requests) };
   }
 
   #approveTask(actor: string, id: string, hash: string, comment?: string): Record<string, unknown> {
@@ -160,8 +165,8 @@ export class ApprovalEngine {
       const denied = ctx.verdicts.filter((v) => v.verdict.decision === 'deny');
       if (denied.length > 0) refuse(`the current policy denies this task (${denied.map((v) => v.verdict.reason).join('; ')}); an approval cannot override deny`);
       if (hash !== ctx.hash) refuse('the task changed since it was shown (subject hash mismatch); show it again before approving');
-      const params = ctx.policy.document.risky_change;
-      if (!params.self_approval && ctx.requester === actor) refuse('the requester cannot approve their own task (self_approval: false)');
+      const params = ctx.params;
+      if (!params.self_approval && ctx.requester === actor) refuse(`the requester cannot approve their own task (${SELF_APPROVAL_RULE})`);
 
       const approvalId = this.#insertApproval(tx, 'task', id, 'approved', ctx.hash, actor, comment ?? null);
       const needsApproval = ctx.verdicts.some((v) => v.verdict.decision === 'require_approval');
@@ -177,7 +182,7 @@ export class ApprovalEngine {
         ]);
       }
       if (status.ok) {
-        this.#queue(tx, ctx.task, actor, status.quorumApprovalId!, {}, 'approved; no cooldown or re-authentication required by the policy');
+        this.#queue(tx, ctx.task, actor, status.quorumApprovalId!, {}, 'approved; no cooldown or re-authentication applies (no external effect or the policy sets none)');
         return { state: 'queued', approval_id: approvalId, hash: ctx.hash };
       }
       return { state: status.state, reason: status.reason, approval_id: approvalId, hash: ctx.hash, cooldown_ends_at: status.cooldownEndsAt };
@@ -201,7 +206,7 @@ export class ApprovalEngine {
     if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; only an approved task in needs_review can be released`);
     if (ctx.task.approved_hash === null) refuse(`task '${id}' has no approval to release`);
     if (ctx.task.approved_hash !== ctx.hash) refuse('the task or the policy changed since approval (approved_hash mismatch); re-approval required');
-    const params = ctx.policy.document.risky_change;
+    const params = ctx.params;
     const status = approvalStatus(tx, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params, now: this.#now(), checkReauth: false });
     if (!status.ok) refuse(status.reason);
     if (params.reauth_before_effect) this.#reauth(tx, actor, code, reauthPurpose('task', id, ctx.hash));
@@ -216,7 +221,9 @@ export class ApprovalEngine {
     const policy = this.#policy(tx);
     const subject = publicationSubject(row, policy.versionId);
     const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [row.task_id]);
-    return { row, policy, subject, hash: contentHash(subject), requester: task ? taskRequester(tx, task) : null };
+    // 외부 대상(customer/public) 게시는 외부 부작용이므로 위험 변경 절차, internal 게시(confidential 입력 승인 등)는 사람 1인 승인
+    const params = row.audience === 'internal' ? humanApprovalParams(policy.document) : riskyApprovalParams(policy.document);
+    return { row, policy, subject, hash: contentHash(subject), requester: task ? taskRequester(tx, task) : null, params };
   }
 
   #approvePublication(actor: string, id: string, hash: string, comment?: string): Record<string, unknown> {
@@ -224,8 +231,8 @@ export class ApprovalEngine {
       const ctx = this.#publication(tx, id);
       if (ctx.row.status !== 'draft' && ctx.row.status !== 'pending_approval') refuse(`publication '${id}' is '${ctx.row.status}'`);
       if (hash !== ctx.hash) refuse('the publication changed since it was shown (subject hash mismatch); show it again before approving');
-      const params = ctx.policy.document.risky_change;
-      if (!params.self_approval && ctx.requester === actor) refuse('the requester cannot approve their own publication (self_approval: false)');
+      const params = ctx.params;
+      if (!params.self_approval && ctx.requester === actor) refuse(`the requester cannot approve their own publication (${SELF_APPROVAL_RULE})`);
       const approvalId = this.#insertApproval(tx, 'publication', id, 'approved', ctx.hash, actor, comment ?? null);
       if (ctx.row.status === 'draft') tx.run("UPDATE publication SET status = 'pending_approval' WHERE id = ? AND status = 'draft'", [id]);
       const status = approvalStatus(tx, { kind: 'publication', id, hash: ctx.hash, requesterId: ctx.requester, params, now: this.#now() });
@@ -235,7 +242,7 @@ export class ApprovalEngine {
 
   #releasePublication(tx: Db, actor: string, id: string, code: string | undefined): Record<string, unknown> {
     const ctx = this.#publication(tx, id);
-    const params = ctx.policy.document.risky_change;
+    const params = ctx.params;
     const status = approvalStatus(tx, { kind: 'publication', id, hash: ctx.hash, requesterId: ctx.requester, params, now: this.#now(), checkReauth: false });
     if (!status.ok) refuse(status.reason);
     if (params.reauth_before_effect) this.#reauth(tx, actor, code, reauthPurpose('publication', id, ctx.hash));
@@ -256,7 +263,7 @@ export class ApprovalEngine {
       const base = { id: parsed.versionId, hash: parsed.hash, change_class: change.changeClass, reasons: change.reasons, approval_id: approvalId };
       if (change.changeClass === 'normal') return { ...base, state: 'deployed', version_id: this.#deploy(tx, parsed, 'normal', [actor]) };
       // 위험 변경은 현재(변경 전) 정책의 risky_change 로 승인한다. 새 정책의 값으로 자기 자신을 승인할 수 없다.
-      const status = approvalStatus(tx, { kind: 'policy_version', id: parsed.versionId, hash: parsed.hash, requesterId: null, params: current.document.risky_change, now: this.#now() });
+      const status = approvalStatus(tx, { kind: 'policy_version', id: parsed.versionId, hash: parsed.hash, requesterId: null, params: riskyApprovalParams(current.document), now: this.#now() });
       if (status.ok) return { ...base, state: 'deployed', version_id: this.#deploy(tx, parsed, 'risky', status.approvers) };
       return { ...base, state: status.state, reason: status.reason, cooldown_ends_at: status.cooldownEndsAt };
     });
@@ -272,7 +279,7 @@ export class ApprovalEngine {
     if (parsed.hash === current.hash) refuse(`policy proposal '${id}' is already deployed`);
     const change = classifyChange(current.document, parsed.document);
     if (change.changeClass === 'normal') return { state: 'deployed', change_class: 'normal', version_id: this.#deploy(tx, parsed, 'normal', [actor]) };
-    const params = current.document.risky_change;
+    const params = riskyApprovalParams(current.document);
     const status = approvalStatus(tx, { kind: 'policy_version', id, hash: parsed.hash, requesterId: null, params, now: this.#now(), checkReauth: false });
     if (!status.ok) refuse(status.reason);
     if (params.reauth_before_effect) this.#reauth(tx, actor, code, reauthPurpose('policy_version', id, parsed.hash));
@@ -340,7 +347,7 @@ export class ApprovalEngine {
     const { db } = this.#o;
     if (kind === 'task') {
       const ctx = this.#taskContext(db, id);
-      const status = approvalStatus(db, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.policy.document.risky_change, now: this.#now() });
+      const status = approvalStatus(db, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now: this.#now() });
       return {
         kind, id, status: ctx.task.status, hash: ctx.hash, subject: ctx.subject, policy_version: ctx.policy.versionId,
         decisions: ctx.verdicts.map((v) => ({ action: v.request.action, resource: v.request.resource, scope: v.request.scope, impact: v.request.impact, decision: v.verdict.decision, reason: v.verdict.reason })),
@@ -349,7 +356,7 @@ export class ApprovalEngine {
     }
     if (kind === 'publication') {
       const ctx = this.#publication(db, id);
-      const status = approvalStatus(db, { kind, id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.policy.document.risky_change, now: this.#now() });
+      const status = approvalStatus(db, { kind, id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now: this.#now() });
       return { kind, id, status: ctx.row.status, hash: ctx.hash, subject: ctx.subject, approval: { state: status.state, reason: status.reason, cooldown_ends_at: status.cooldownEndsAt } };
     }
     const latest = db.get<{ subject_hash: string | null }>(
@@ -358,7 +365,7 @@ export class ApprovalEngine {
     const parsed = this.#o.store.byHash(latest.subject_hash ?? '') ?? refuse(`the content of policy proposal '${id}' is not in the policy store`);
     const current = this.#policy(db);
     const change = classifyChange(current.document, parsed.document);
-    const status = approvalStatus(db, { kind, id, hash: parsed.hash, requesterId: null, params: current.document.risky_change, now: this.#now() });
+    const status = approvalStatus(db, { kind, id, hash: parsed.hash, requesterId: null, params: riskyApprovalParams(current.document), now: this.#now() });
     return { kind, id, hash: parsed.hash, change_class: change.changeClass, reasons: change.reasons, approval: { state: status.state, reason: status.reason, cooldown_ends_at: status.cooldownEndsAt } };
   }
 

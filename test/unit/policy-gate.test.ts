@@ -48,13 +48,14 @@ test('creation: a denied request refuses the task, and the refusal is still reco
   assert.deepEqual(decisionsOf(env.db, null).map((r) => [r.action, r.decision]), [['web_search.search', 'allow'], ['repo_write.delete_branch', 'deny']]);
 });
 
-test('creation: undeclared scope/impact and budgets over the policy limit are denied (default deny)', (t) => {
+test('creation: undeclared scope/impact is rejected by the task_spec validation before any policy decision; budgets over the policy limit are denied', (t) => {
   const env = policyEnv(t);
-  const undeclared = refusal(() => createWithGate(env, { ...minimalDraft(), role: 'generalist' }));
-  assert.match(undeclared.message, /scope and impact not declared/);
-  const recorded = decisionsOf(env.db, null);
-  assert.deepEqual(recorded.map((r) => [r.decision, r.scope, r.impact]), [['deny', 'public', 'external_effect'], ['deny', 'public', 'external_effect']]);
-  assert.match(recorded[0]!.reason, /scope not declared \(recorded as 'public'\)/);
+  const undeclared = refusal(() => createWithGate(env, { ...minimalDraft(), role: 'generalist', allowed_tools: [{ tool: 'web_search', operations: ['search'] }] }));
+  assert.deepEqual(undeclared.issues.map((i) => [i.path, i.code]), [['allowed_tools[0].scope', 'required'], ['allowed_tools[0].impact', 'required']]);
+  assert.match(undeclared.message, /scope is required/);
+  assert.match(undeclared.message, /impact is required/);
+  assert.equal(env.db.get('SELECT count(*) AS n FROM task')?.['n'], 0);
+  assert.deepEqual(decisionsOf(env.db, null), [], 'the gate was never reached, so no policy_decision is written');
 
   const overBudget = refusal(() => createWithGate(env, readOnlyDraft({ cost_budget: { max_usd: 5.5 } })));
   assert.match(overBudget.message, /exceeds the policy limit 5/);

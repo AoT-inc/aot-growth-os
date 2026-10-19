@@ -54,7 +54,7 @@ test('dependencies: optional list of unique ids', () => {
   assert.ok(has(errorsOf({ ...minimalDraft(), dependencies: [''] }), 'dependencies[0]', 'type'));
 });
 
-test('allowed_tools: required; entries need tool and operations; scope and impact must be known values', () => {
+test('allowed_tools: required; entries need tool, operations, scope and impact; scope and impact must be known values', () => {
   const base = minimalDraft();
   assert.equal(draft({ ...base, allowed_tools: [] }).ok, true, 'a task without tools is allowed');
   assert.ok(has(errorsOf({ ...base, allowed_tools: undefined }), 'allowed_tools', 'required'));
@@ -64,6 +64,25 @@ test('allowed_tools: required; entries need tool and operations; scope and impac
   assert.ok(has(errorsOf({ ...base, allowed_tools: [{ tool: 'x', operations: ['a'], impact: 'destroy' }] }), 'allowed_tools[0].impact', 'enum'));
   const full = { tool: 'x', operations: ['a'], scope: 'internal', impact: 'external_effect', target: 'site:staging' };
   assert.equal(draft({ ...base, allowed_tools: [full] }).ok, true);
+  const withoutTarget = { tool: 'x', operations: ['a'], scope: 'internal', impact: 'external_effect' };
+  assert.equal(draft({ ...base, allowed_tools: [withoutTarget] }).ok, true, 'target stays optional');
+});
+
+test('allowed_tools: scope and impact are required, and the reason says what is missing (rejected before any policy decision)', () => {
+  const base = minimalDraft();
+  const entry = { tool: 'x', operations: ['a'], scope: 'internal', impact: 'read' };
+  const noScope = { tool: 'x', operations: ['a'], impact: 'read' };
+  const noImpact = { tool: 'x', operations: ['a'], scope: 'internal' };
+  const missingScope = errorsOf({ ...base, allowed_tools: [noScope] });
+  assert.ok(has(missingScope, 'allowed_tools[0].scope', 'required'));
+  assert.match(missingScope.find((e) => e.path === 'allowed_tools[0].scope')!.message, /scope is required .*internal\|customer\|public.* cannot be judged by the policy/);
+  const missingImpact = errorsOf({ ...base, allowed_tools: [noImpact] });
+  assert.ok(has(missingImpact, 'allowed_tools[0].impact', 'required'));
+  assert.match(missingImpact.find((e) => e.path === 'allowed_tools[0].impact')!.message, /impact is required .*read\|write\|delete\|external_effect/);
+  assert.equal(errorsOf({ ...base, allowed_tools: [{ tool: 'x', operations: ['a'] }, entry] }).filter((e) => e.code === 'required').length, 2, 'both are reported for the entry that lacks them');
+  assert.ok(has(errorsOf({ ...base, allowed_tools: [entry, { ...noScope }] }), 'allowed_tools[1].scope', 'required'));
+  // stored 단계에서도 같다 (저장된 명세에 빠져 있으면 통과하지 못한다)
+  assert.ok(has(errorsOf({ ...base, allowed_tools: [noScope] }, 'stored'), 'allowed_tools[0].scope', 'required'));
 });
 
 test('constraints: network_allowlist must be explicit domains; "*" is forbidden, an empty list means no network', () => {

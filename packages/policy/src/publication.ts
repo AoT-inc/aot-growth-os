@@ -12,7 +12,8 @@ import {
 
 import { approvalStatus, publicationSubject, taskRequester } from './approval.ts';
 import { recordDecision } from './decisions.ts';
-import { constraintsOf, evaluateRequest, subjectOf, type PolicyRequest } from './evaluate.ts';
+import { approvalRequirement, constraintsOf, evaluateRequest, subjectOf, type PolicyRequest } from './evaluate.ts';
+import { humanApprovalParams, riskyApprovalParams } from './document.ts';
 import type { PolicyStore } from './store.ts';
 
 export interface PublicationTransitionRequest {
@@ -91,9 +92,9 @@ function publishGate(tx: Db, store: PolicyStore, row: PublicationRow, request: P
   }
   const subject = publicationSubject(row, policy.versionId);
   const status = approvalStatus(tx, {
-    kind: 'publication', id: row.id, hash: contentHash(subject), requesterId: taskRequester(tx, task), params: policy.document.risky_change, now: request.now,
+    kind: 'publication', id: row.id, hash: contentHash(subject), requesterId: taskRequester(tx, task), params: row.audience === 'internal' ? humanApprovalParams(policy.document) : riskyApprovalParams(policy.document), now: request.now,
   });
-  const approval = { approver_kind: 'human', channel: 'approval-socket', ...policy.document.risky_change };
+  const approval = approvalRequirement(policy.document, policyRequest.impact);
   record('require_approval', `${why.join('; ')}; approval: ${status.ok ? 'valid' : status.reason}`, approval);
   if (!status.ok) return { ok: false, reason: status.reason };
   return { ok: true, approvalId: status.quorumApprovalId };

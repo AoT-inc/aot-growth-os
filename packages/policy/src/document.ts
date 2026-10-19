@@ -28,8 +28,32 @@ export interface RiskyChangeParams {
   /** 초 */
   cooldown: number;
   reauth_before_effect: boolean;
+}
+
+/**
+ * 실제로 적용하는 승인 요건. 자기 승인은 문서의 파라미터가 아니라 `min_approvers` 에서 정해진다
+ * (D3, 2026-10-19 결정): 승인자가 1인이면 오너(사람)의 자기 승인을 허용하고, 2인 이상이면 금지한다.
+ * 허용해도 cooldown·재인증은 그대로 거친다. 에이전트 actor 는 어떤 경우에도 승인할 수 없다(승인 엔진이 인증 단계에서 거부).
+ */
+export interface ApprovalParams extends RiskyChangeParams {
   self_approval: boolean;
 }
+
+export const selfApprovalAllowed = (params: Pick<RiskyChangeParams, 'min_approvers'>): boolean => params.min_approvers === 1;
+
+/** 외부 부작용·정책 변경(위험 변경)의 승인 요건: `risky_change` 파라미터 그대로 */
+export const riskyApprovalParams = (document: PolicyDocument): ApprovalParams => ({
+  ...document.risky_change,
+  self_approval: selfApprovalAllowed(document.risky_change),
+});
+
+/** 외부 부작용이 아닌 `require_approval`(예: customer 범위 읽기)의 승인 요건: 사람 1인의 승인만. cooldown·재인증 없음 */
+export const humanApprovalParams = (document: PolicyDocument): ApprovalParams => ({
+  min_approvers: 1,
+  cooldown: 0,
+  reauth_before_effect: false,
+  self_approval: selfApprovalAllowed(document.risky_change),
+});
 
 export interface PolicyLimits {
   max_usd_per_task: number;
@@ -182,9 +206,9 @@ function checkRules(value: unknown, out: IssueCollector): PolicyRule[] {
 }
 
 function checkRiskyChange(value: unknown, out: IssueCollector): RiskyChangeParams {
-  const params: RiskyChangeParams = { min_approvers: 1, cooldown: 0, reauth_before_effect: true, self_approval: false };
+  const params: RiskyChangeParams = { min_approvers: 1, cooldown: 0, reauth_before_effect: true };
   if (!isPlainObject(value)) {
-    out.add('risky_change', 'required', 'risky_change is required (min_approvers, cooldown, reauth_before_effect, self_approval)');
+    out.add('risky_change', 'required', 'risky_change is required (min_approvers, cooldown, reauth_before_effect)');
     return params;
   }
   unknownKeys(value, ['min_approvers', 'cooldown', 'reauth_before_effect', 'self_approval'], 'risky_change', out);
@@ -202,9 +226,10 @@ function checkRiskyChange(value: unknown, out: IssueCollector): RiskyChangeParam
   } else {
     params.cooldown = cooldown;
   }
-  for (const key of ['reauth_before_effect', 'self_approval'] as const) {
-    if (typeof value[key] !== 'boolean') out.add(`risky_change.${key}`, 'type', `${key} must be true or false`);
-    else params[key] = value[key] as boolean;
+  if (typeof value['reauth_before_effect'] !== 'boolean') out.add('risky_change.reauth_before_effect', 'type', 'reauth_before_effect must be true or false');
+  else params.reauth_before_effect = value['reauth_before_effect'];
+  if ('self_approval' in value) {
+    out.add('risky_change.self_approval', 'removed', 'self_approval is not a parameter: self-approval is allowed only when min_approvers is 1 (always forbidden for 2 or more)');
   }
   return params;
 }

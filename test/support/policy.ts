@@ -69,6 +69,16 @@ export function effectDraft(overrides: Record<string, unknown> = {}): Record<str
   };
 }
 
+/** customer 범위 읽기 업무 — 외부 부작용이 아닌 require_approval (사람 1인 승인만, cooldown·TOTP 없음) */
+export function customerReadDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...minimalDraft(),
+    role: 'generalist',
+    allowed_tools: [{ tool: 'crm_read', operations: ['read'], scope: 'customer', impact: 'read', target: 'crm:example' }],
+    ...overrides,
+  };
+}
+
 /** 내부 읽기만 하는 업무 — 기본 정책에서 allow */
 export function readOnlyDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

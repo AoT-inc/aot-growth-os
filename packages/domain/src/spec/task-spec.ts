@@ -19,8 +19,9 @@ export interface TaskInput { name: string; ref: string; kind: string }
 export interface ToolRequest {
   tool: string;
   operations: string[];
-  scope?: Scope;
-  impact?: Impact;
+  /** 필수: 범위·영향을 밝히지 않은 요청은 정책 판정 이전에 생성 단계에서 거부한다 */
+  scope: Scope;
+  impact: Impact;
   target?: string;
 }
 
@@ -179,12 +180,15 @@ function checkAllowedTools(value: unknown, out: IssueCollector): void {
   if (!Array.isArray(value)) return void out.add('allowed_tools', 'required', 'allowed_tools must be an array (it may be empty)');
   value.forEach((item: unknown, index) => {
     const path = joinPath('allowed_tools', index);
-    if (!isPlainObject(item)) return void out.add(path, 'type', 'each entry must be {tool, operations, scope?, impact?, target?}');
+    if (!isPlainObject(item)) return void out.add(path, 'type', 'each entry must be {tool, operations, scope, impact, target?}');
     rejectUnknownKeys(item, ['tool', 'operations', 'scope', 'impact', 'target'], path, out);
     requiredText(item, 'tool', path, out);
     checkStringList(item['operations'], joinPath(path, 'operations'), out, { required: true, nonEmpty: true });
-    if ('scope' in item && !(SCOPES as readonly unknown[]).includes(item['scope'])) out.add(joinPath(path, 'scope'), 'enum', `scope must be one of ${SCOPES.join('|')}`);
-    if ('impact' in item && !(IMPACTS as readonly unknown[]).includes(item['impact'])) out.add(joinPath(path, 'impact'), 'enum', `impact must be one of ${IMPACTS.join('|')}`);
+    // scope·impact 는 필수다. 빠진 요청은 정책이 추측해 채울 수 없으므로 정책 판정 전에 여기서 거부한다 (task-spec "권한 요청").
+    if (!('scope' in item)) out.add(joinPath(path, 'scope'), 'required', `scope is required (${SCOPES.join('|')}): a tool request without a scope cannot be judged by the policy and is rejected`);
+    else if (!(SCOPES as readonly unknown[]).includes(item['scope'])) out.add(joinPath(path, 'scope'), 'enum', `scope must be one of ${SCOPES.join('|')}`);
+    if (!('impact' in item)) out.add(joinPath(path, 'impact'), 'required', `impact is required (${IMPACTS.join('|')}): a tool request without an impact cannot be judged by the policy and is rejected`);
+    else if (!(IMPACTS as readonly unknown[]).includes(item['impact'])) out.add(joinPath(path, 'impact'), 'enum', `impact must be one of ${IMPACTS.join('|')}`);
     if ('target' in item) requiredText(item, 'target', path, out);
   });
 }

@@ -28,7 +28,7 @@ test('policies/default.yaml is the seeded policy v1: same normalized document, s
 test('the content hash ignores comments, whitespace, key order, rule order and list order', () => {
   const base = parsePolicy(DEFAULT_TEMPLATE_TEXT);
   const shuffled = parsePolicy([
-    'risky_change: {self_approval: false, reauth_before_effect: true, cooldown: 60m, min_approvers: 1}',
+    'risky_change: {reauth_before_effect: true, cooldown: 60m, min_approvers: 1}',
     'rules:',
     '  - {id: public-scope-needs-approval, decision: require_approval, scope: [public]}',
     '  - id: internal-write-task-own',
@@ -37,6 +37,7 @@ test('the content hash ignores comments, whitespace, key order, rule order and l
     '    impact: [write]',
     '    scope: [internal]',
     '  - {id: internal-read, impact: [read], scope: [internal], decision: allow}',
+    '  - {id: internal-publish, decision: allow, impact: [write], action: [publication.publish], scope: [internal]}',
     '  - {id: external-effect-needs-approval, impact: [external_effect], decision: require_approval}',
     '  - {id: customer-scope-needs-approval, scope: [customer], decision: require_approval}',
     'limits: {max_usd_per_task: 5}',
@@ -62,9 +63,11 @@ test('schema validation: value ranges, default must be deny, no catch-all rules,
   assert.deepEqual(edit('max_usd_per_task: 5', 'max_usd_per_task: 0'), ['limits.max_usd_per_task:range']);
   assert.deepEqual(edit('format: aot-policy/v1', 'format: aot-policy/v1\nextra: 1'), ['extra:unknown_key']);
   assert.deepEqual(edit('  - id: internal-read\n    scope: [internal]\n    impact: [read]\n', '  - id: internal-read\n'), ['rules.0:catch_all']);
-  assert.deepEqual(edit('scope: [customer]', 'scope: [everyone]'), ['rules.3.scope:enum']);
-  assert.deepEqual(edit('id: public-scope-needs-approval', 'id: internal-read'), ['rules.4.id:duplicate']);
+  assert.deepEqual(edit('scope: [customer]', 'scope: [everyone]'), ['rules.4.scope:enum']);
+  assert.deepEqual(edit('id: public-scope-needs-approval', 'id: internal-read'), ['rules.5.id:duplicate']);
   assert.deepEqual(edit('default_validity: {}', 'default_validity: {commitment: 30d}'), ['memory.default_validity.commitment:enum']);
+  // 자기 승인은 파라미터가 아니다 (min_approvers 로 정해진다): 키를 쓰면 이유와 함께 거부
+  assert.deepEqual(edit('cooldown: 1h ', 'self_approval: true\n  cooldown: 1h '), ['risky_change.self_approval:removed']);
   assert.deepEqual(edit('risky_change:\n  min_approvers: 1 ', 'risky_change:\n  min_approvers: 1\n  extra: 1 '), ['risky_change.extra:unknown_key']);
 });
 
@@ -76,7 +79,6 @@ test('lowering any risky_change parameter is itself a risky change; raising them
     ['cooldown: 1h ', 'cooldown: 10m ', /cooldown shortened/],
     ['cooldown: 1h ', 'cooldown: 0 ', /cooldown shortened/],
     ['reauth_before_effect: true', 'reauth_before_effect: false', /reauth_before_effect turned off/],
-    ['self_approval: false', 'self_approval: true', /self_approval allowed/],
   ];
   for (const [from, to, reason] of lowering.slice(1)) {
     const change = classifyChange(base, variant(from, to));
@@ -84,8 +86,12 @@ test('lowering any risky_change parameter is itself a risky change; raising them
     assert.match(change.reasons.join(';'), reason);
   }
   const two = variant('min_approvers: 1 ', 'min_approvers: 2 ');
-  assert.deepEqual(classifyChange(base, two), { changeClass: 'normal', reasons: [] }, 'stricter approver count is normal');
-  assert.match(classifyChange(two, base).reasons.join(), /min_approvers lowered 2 -> 1/);
+  assert.deepEqual(classifyChange(base, two), { changeClass: 'normal', reasons: [] }, 'stricter approver count is normal (self-approval becomes forbidden)');
+  // 2인 이상 → 1인은 자기 승인이 허용으로 바뀌는 변경이므로 위험 변경이고, 그 이유가 드러난다
+  assert.match(classifyChange(two, base).reasons.join(), /min_approvers lowered 2 -> 1 \(self-approval becomes allowed\)/);
+  const three = variant('min_approvers: 1 ', 'min_approvers: 3 ');
+  assert.doesNotMatch(classifyChange(three, two).reasons.join(), /self-approval/, 'lowering 3 -> 2 stays risky but self-approval stays forbidden');
+  assert.equal(classifyChange(three, two).changeClass, 'risky');
   assert.equal(classifyChange(base, variant('cooldown: 1h ', 'cooldown: 2h ')).changeClass, 'normal');
   assert.equal(classifyChange(base, variant('max_usd_per_task: 5', 'max_usd_per_task: 3')).changeClass, 'normal');
   assert.match(classifyChange(base, variant('max_usd_per_task: 5', 'max_usd_per_task: 50')).reasons.join(), /max_usd_per_task raised/);

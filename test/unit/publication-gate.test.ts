@@ -6,10 +6,10 @@ import { test } from 'node:test';
 import { TransitionError } from '@aot/domain';
 import { transitionPublication, type PublicationTransitionRequest } from '@aot/policy';
 
-import { createWithGate, decisionsOf, deployDirect, HOUR, OWNER, policyEnv, readOnlyDraft, withExtraRule, type PolicyEnv } from '../support/policy.ts';
+import { createWithGate, decisionsOf, deployDirect, HOUR, OWNER, policyEnv, policyText, readOnlyDraft, type PolicyEnv } from '../support/policy.ts';
 
-function publication(env: PolicyEnv, audience: 'internal' | 'customer' | 'public', id = `pub-${audience}`): { id: string; taskId: string } {
-  const taskId = createWithGate(env, readOnlyDraft({ inputs: [{ name: 'n', ref: `r:${id}`, kind: 'k' }] }));
+function publication(env: PolicyEnv, audience: 'internal' | 'customer' | 'public', id = `pub-${audience}`, causedBy?: string): { id: string; taskId: string } {
+  const taskId = createWithGate(env, readOnlyDraft({ inputs: [{ name: 'n', ref: `r:${id}`, kind: 'k' }] }), causedBy === undefined ? {} : { causedBy });
   env.db.writeTx((tx) => tx.run(
     "INSERT INTO publication (id, task_id, channel, audience, content_ref, status) VALUES (?, ?, 'public-web', ?, 'sha256:example-content', 'draft')",
     [id, taskId, audience],
@@ -64,20 +64,48 @@ test('internal or more sensitive inputs never go to a public audience, even with
   assert.equal(publish(env, id, { inputSensitivities: ['public'] }).ok, true);
 });
 
-test('internal publications: denied by the default policy; with an allow rule, confidential inputs still need an approval (rule 7)', (t) => {
+test('internal publications are allowed by the default policy (internal-publish rule); confidential inputs still need one human approval without cooldown or TOTP (rule 7)', (t) => {
   const env = policyEnv(t);
-  const blocked = publication(env, 'internal', 'pub-blocked');
-  assert.match(String((publish(env, blocked.id) as { reason: string }).reason), /default deny/);
-
-  env.clock.advance(1);
-  deployDirect(env, withExtraRule('{id: internal-wiki, action: ["publication.publish"], resource: ["public-web:*"], scope: [internal], impact: [write], decision: allow}'));
   const plain = publication(env, 'internal', 'pub-plain');
   assert.deepEqual(publish(env, plain.id, { inputSensitivities: ['internal'] }), { ok: true, approvalId: null });
+  assert.deepEqual(decisionsOf(env.db, plain.taskId).at(-1)!.reason.startsWith('allow by rule internal-publish'), true);
 
   const secret = publication(env, 'internal', 'pub-confidential');
   const refused = publish(env, secret.id, { inputSensitivities: ['confidential'] });
   assert.match(refused.ok ? '' : refused.reason, /approval required/);
   assert.match(decisionsOf(env.db, secret.taskId).at(-1)!.reason, /confidential or restricted inputs need an approval \(memory-item rule 7\)/);
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'publication', id: secret.id });
+  const approved = env.send({ cmd: 'approve', actor: OWNER, kind: 'publication', id: secret.id, hash: shown['hash'] });
+  assert.equal(approved['state'], 'approved', 'not an external effect: no cooldown, no TOTP');
+  assert.equal(publish(env, secret.id, { inputSensitivities: ['confidential'] }).ok, true);
+  assert.equal(statusOf(env, secret.id).status, 'published');
+  assert.equal(env.db.get('SELECT count(*) AS n FROM human_reauth')?.['n'], 0);
+});
+
+test('without the internal-publish rule an internal publication is denied by default (the rule is what allows it)', (t) => {
+  const env = policyEnv(t);
+  deployDirect(env, policyText((y) => y.replace('  - id: internal-publish', '  - id: x-publish').replace('action: [publication.publish]', 'action: [publication.other]')));
+  const blocked = publication(env, 'internal', 'pub-blocked');
+  assert.match(String((publish(env, blocked.id) as { reason: string }).reason), /default deny/);
+});
+
+test('self approval of a public publication follows min_approvers: allowed at 1 (cooldown and TOTP still apply), refused at 2', (t) => {
+  const env = policyEnv(t);
+  const { id } = publication(env, 'public', 'pub-self', OWNER);
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'publication', id });
+  const approved = env.send({ cmd: 'approve', actor: OWNER, kind: 'publication', id, hash: shown['hash'] });
+  assert.equal(approved['state'], 'cooldown');
+  assert.equal(publish(env, id).ok, false);
+  env.clock.advance(HOUR);
+  assert.equal(publish(env, id).ok, false, 'TOTP re-authentication is still required');
+  assert.equal(env.send({ cmd: 'release', actor: OWNER, kind: 'publication', id, totp: env.code() }).ok, true);
+  assert.equal(publish(env, id).ok, true);
+
+  const env2 = policyEnv(t);
+  deployDirect(env2, policyText((y) => y.replace('min_approvers: 1 ', 'min_approvers: 2 ')));
+  const two = publication(env2, 'public', 'pub-two', OWNER);
+  const hash = env2.send({ cmd: 'show', actor: OWNER, kind: 'publication', id: two.id })['hash'];
+  assert.match(String(env2.send({ cmd: 'approve', actor: OWNER, kind: 'publication', id: two.id, hash })['error']), /requester cannot approve their own publication/);
 });
 
 test('agents cannot change publication state', (t) => {

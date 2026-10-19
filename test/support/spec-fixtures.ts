@@ -27,7 +27,7 @@ export function minimalDraft(): Record<string, unknown> {
     objective: 'example-product 관련 시장 변화를 출처와 함께 정리한다',
     trigger: { kind: 'manual', ref: 'actor:example-owner' },
     inputs: [{ name: 'keywords', ref: 'strategy:active#research_keywords', kind: 'strategy' }],
-    allowed_tools: [{ tool: 'web_search', operations: ['search', 'fetch'] }],
+    allowed_tools: [{ tool: 'web_search', operations: ['search', 'fetch'], scope: 'internal', impact: 'read' }],
     constraints: { time_limit: '30m', network_allowlist: ['search.example.com'], publish_scope: 'internal' },
     acceptance_criteria: ['각 주장에 출처 URL이 1개 이상 있다'],
     validation: { deterministic: ['url_reachable'], llm: null, human: false },

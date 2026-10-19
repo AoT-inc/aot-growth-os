@@ -12,12 +12,12 @@
 |---|---|
 | [docs/00-overview.md](docs/00-overview.md) | 정체성, 자체 개발 범위 vs 재사용, 아키텍처, MVP |
 | [docs/glossary.md](docs/glossary.md) | 용어집 (한/영 대응, 정의, 금지 용법) |
-| [docs/adr/](docs/adr/README.md) | 아키텍처 결정 기록 (ADR 0001–0011) |
+| [docs/adr/](docs/adr/README.md) | 아키텍처 결정 기록 (ADR 0001–0012) |
 | [docs/schema/](docs/schema/README.md) | 데이터 모델 초안 (`schema.sql`, 상태 전이, 업무 명세) |
 | [docs/products/](docs/products/README.md) | 상품 등록 절차 (앱·데몬 구동 후 검증·승인으로 등록) |
 | [workflows/product-registration.md](workflows/product-registration.md) | 상품 등록 검증 업무 템플릿 (`task_spec`, 읽기 전용 수집, 비밀값 스캔, 3단계 검증) |
 | [docs/plans/phase-a.md](docs/plans/phase-a.md) | Phase A 구현 계획 (패키지 순서, 필수 테스트 매핑, 부트스트랩, 스파이크) |
-| [docs/plans/a0-decisions.md](docs/plans/a0-decisions.md) | A0 착수 전 사람 결정 초안 (런타임, 측정 신호, 승인자, 시드 조직, 승인 채널, 라이선스, 확장 단위) |
+| [docs/plans/a0-decisions.md](docs/plans/a0-decisions.md) | A0 착수 전 사람 결정 (런타임, 시드 조직, 라이선스, 확장 단위는 2026-10-19 결정. 측정 신호, 승인자, 승인 채널은 대기) |
 | [docs/security/public-repository.md](docs/security/public-repository.md) | 공개 저장소에 두는 것과 두지 않는 것 |
 | [docs/operations/](docs/operations/recovery.md) | 복구·중복 방지([recovery](docs/operations/recovery.md)), 평가 운영([evaluation](docs/operations/evaluation.md)) |
 | [docs/security/trust-boundaries.md](docs/security/trust-boundaries.md) | 신뢰 경계와 위협 시나리오 |
@@ -47,3 +47,7 @@ aot-growth-os/
 ```
 
 MVP 단계에서는 `domain`, `task-engine`(스케줄러 포함), `policy`, `agent-runtime`, `evaluation` 5개 패키지로 시작한다 ([ADR-0001](docs/adr/0001-modular-monolith.md)).
+
+## 라이선스와 기여
+
+[Apache-2.0](LICENSE). 기여는 [DCO](https://developercertificate.org/)에 동의하는 서명이 필요하며, 커밋할 때 `git commit -s`로 `Signed-off-by` 줄을 남긴다. 프로젝트 이름·로고는 라이선스와 별개로 상표이며, Apache-2.0은 상표 사용권을 주지 않는다.

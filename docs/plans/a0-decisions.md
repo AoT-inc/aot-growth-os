@@ -1,6 +1,6 @@
 # A0 착수 전 결정 초안
 
-상태: 초안 (사람 결정 대기, 2026-10-19)
+상태: 일부 결정 (2026-10-19: D1·D4·D6·D7 결정, D2·D3·D5 대기)
 
 [Phase A 계획](phase-a.md)의 A0(저장소 부트스트랩)를 시작하기 전에 **사람이 정해야 하는 항목**을 선택지와 권장안으로 정리한다. 권장안은 제안일 뿐이며, 결정되면 [open-questions](../open-questions.md)의 해당 행을 "해소"로 바꾸고 아래 "기록 위치"에 반영한다.
 
@@ -20,15 +20,17 @@
 
 | # | 항목 | 권장안 | 막는 단계 | 기록 위치 |
 |---|---|---|---|---|
-| D1 | Q2 런타임/DB | TypeScript(Node LTS) + SQLite, Postgres 이식 가능 DDL 유지 | A0 | ADR-0001 상태 → accepted |
+| D1 | Q2 런타임/DB | TypeScript(Node LTS) + SQLite, Postgres 이식 가능 DDL 유지 **결정: 권장안 채택 (2026-10-19)** | A0 | ADR-0001 상태 → accepted |
 | D2 | Q5 측정 신호 | 랜딩 페이지 1개의 주간 목표 행동 전환 수(읽기 전용 분석 API, Phase A는 수동 입력 허용) | A6 (정의 형식은 A1) | ADR-0007 Amendment, 실제 값은 `instance/` |
 | D3 | Q6 위험 변경 승인자 | 1인 승인 + 대기 시간 + 실행 직전 재인증. 승인자 수는 정책 파라미터로 두어 2인 체제로 전환 가능 | A3 | ADR-0006 Amendment |
-| D4 | Q23 시드 조직 | 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1(기본 거부) | A1 | ADR-0011 Amendment, `migrations/` 시드 |
+| D4 | Q23 시드 조직 | 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1(기본 거부) **결정: 권장안 채택 (2026-10-19)** | A1 | ADR-0011 Amendment, `migrations/` 시드 |
 | D5 | Q25 승인 채널 인증 | Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경은 재인증 추가. 내부 웹 도입 시 패스키 | A3 | trust-boundaries §3.1 |
-| D6 | 라이선스 | Apache-2.0 (+ DCO 서명) — 단, 호스팅 경쟁 방지가 우선이면 AGPL-3.0 | 첫 공개 push | `LICENSE`, README |
-| D7 | 확장 단위 계약 | 선언형 "도메인 팩" + 게이트웨이 계약을 따르는 커넥터. 주간 사이클 자체를 첫 팩으로 구현 | A0(배치), A1(스키마) | 신규 ADR-0012 |
+| D6 | 라이선스 | Apache-2.0 (+ DCO 서명) — 단, 호스팅 경쟁 방지가 우선이면 AGPL-3.0 **결정: Apache-2.0 + DCO (2026-10-19)** | 첫 공개 push | `LICENSE`, README |
+| D7 | 확장 단위 계약 | 선언형 "도메인 팩" + 게이트웨이 계약을 따르는 커넥터. 주간 사이클 자체를 첫 팩으로 구현 **결정: 권장안 채택(D안) (2026-10-19)** | A0(배치), A1(스키마) | 신규 ADR-0012 |
 
 ## D1. 런타임과 DB (Q2)
+
+**결정: A (TypeScript + SQLite, Node LTS, Postgres 이식 가능 DDL 유지) (2026-10-19).** 기록: [ADR-0001](../adr/0001-modular-monolith.md) accepted.
 
 | 선택지 | 장점 | 단점 |
 |---|---|---|
@@ -82,6 +84,8 @@ risky_change:
 
 ## D4. 시드 조직 (Q23)
 
+**결정: A (오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1, 기본 거부) (2026-10-19).** 기록: [ADR-0011](../adr/0011-adaptive-organization.md) Amendment (2026-10-19).
+
 `task.policy_version_id`가 NOT NULL이고 업무는 `trial`/`active` 역할에만 배정되므로 A1에서 시드가 필요하다. ADR-0011은 실제 업무로 검증되지 않은 부서를 만들지 말라고 한다.
 
 | 선택지 | 장점 | 단점 |
@@ -116,6 +120,8 @@ risky_change:
 
 ## D6. 라이선스
 
+**결정: Apache-2.0 + DCO (2026-10-19).** 기록: 루트 `LICENSE`, README.
+
 공개 저장소의 목적이 "다른 사람도 받아서 쓰게 하는 것"이라면 첫 공개 push 전에 정해야 한다. 라이선스가 없으면 법적으로는 아무도 사용·수정할 수 없다. (아래는 일반적 비교이며 법률 자문이 아니다.)
 
 | 선택지 | 성격 | 맞는 경우 |
@@ -130,6 +136,8 @@ risky_change:
 사람이 확인할 것: 이 저장소로 수익을 낼 계획(호스팅, 지원 계약, 없음).
 
 ## D7. 확장 단위 계약
+
+**결정: D (선언형 도메인 팩 + 게이트웨이 계약을 따르는 커넥터, 주간 사이클을 첫 팩 `packs/example-marketing`으로) (2026-10-19).** 기록: [ADR-0012](../adr/0012-extension-unit-contract.md).
 
 여러 업종에 적용하려면 "업종별로 무엇을 더하는가"가 코어와 분리되어야 한다. 지금 계획은 주간 마케팅 사이클을 코어처럼 다룬다.
 
@@ -152,7 +160,7 @@ A0 영향: 저장소 골격에 `packs/`를 두고, 모듈 경계 lint에 "팩은
 
 ## 2. 결정 후 할 일
 
-1. 각 D 항목에 결정과 날짜를 적고, open-questions의 Q2·Q5·Q6·Q23·Q25 행을 해소로 바꾼다.
-2. 기록 위치(§1 표)의 ADR을 갱신하거나 ADR-0012(확장 단위)를 새로 쓴다.
-3. D6이 정해지면 `LICENSE`를 추가한 뒤에 첫 공개 push를 한다.
-4. [phase-a.md](phase-a.md) §4 A0 체크리스트에 `packs/` 골격과 팩 경계 lint를 추가한다.
+1. 각 D 항목에 결정과 날짜를 적고, open-questions의 Q2·Q5·Q6·Q23·Q25 행을 해소로 바꾼다. (2026-10-19: D1·D4 반영 완료. D2·D3·D5 대기)
+2. 기록 위치(§1 표)의 ADR을 갱신하거나 ADR-0012(확장 단위)를 새로 쓴다. (2026-10-19: ADR-0001·0011·0012 반영 완료. ADR-0006·0007·trust-boundaries는 D2·D3·D5 결정 후)
+3. D6이 정해지면 `LICENSE`를 추가한 뒤에 첫 공개 push를 한다. (2026-10-19: `LICENSE`·README 반영 완료. push 전 확인만 남음)
+4. [phase-a.md](phase-a.md) §4 A0 체크리스트에 `packs/` 골격과 팩 경계 lint를 추가한다. (2026-10-19 완료)

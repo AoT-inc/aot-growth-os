@@ -48,8 +48,10 @@
 
 선택이 필요한 항목은 open-questions를 가리킨다. 선택 전에는 가정만 적고 코드를 시작하지 않는다. 사람이 정할 항목의 선택지와 권장안은 [A0 결정 초안](a0-decisions.md)에 있다.
 
-- [ ] 런타임과 DB 확정: TypeScript, SQLite (DDL은 Postgres 이식 가능 범위) — [Q2](../open-questions.md)
+- [x] 런타임과 DB 확정: TypeScript(Node LTS), SQLite (DDL은 Postgres 이식 가능 범위) — [Q2](../open-questions.md) 해소 (2026-10-19)
 - [ ] 패키지 구조: `packages/` 아래 5개 패키지와 `apps/daemon` 엔트리포인트의 빈 골격, 패키지별 공개 API 진입점 하나
+- [ ] `packs/` 골격: 첫 팩 `packs/example-marketing`(manifest, `workflows/`, `routines/`, `evaluations/`)의 빈 골격 ([ADR-0012](../adr/0012-extension-unit-contract.md))
+- [ ] 팩 경계 lint: 팩은 코어 내부 모듈(`packages/*`의 공개 API 밖)을 참조하지 않는다. 위반이 CI에서 실패 — [Q19](../open-questions.md)
 - [ ] 모듈 경계 lint: 의존 방향 위반(`domain`이 상위를 참조, `agent-runtime`이 `domain` 외 하위 내부 모듈을 직접 참조 등)이 CI에서 실패 — [Q19](../open-questions.md)
 - [ ] 테스트 러너: 단위·통합 구분, SQLite 인메모리 또는 임시 파일 격리, 프로세스 종료 시나리오를 실행할 수 있을 것. 동시 워커 테스트는 같은 DB 파일을 여는 다중 프로세스로 수행한다(단일 프로세스 내 동시성으로 대체하지 않음) — [Q20](../open-questions.md)
 - [ ] 마이그레이션 적용 방식과 SQLite 접근 계층: WAL 모드, `busy_timeout` 설정, 상태 전이·lease 획득은 `BEGIN IMMEDIATE` 트랜잭션 — [Q24](../open-questions.md)

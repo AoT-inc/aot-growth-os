@@ -1,11 +1,11 @@
 # 미결정 사항
 
-A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확장 단위)의 선택지와 권장안: [A0 결정 초안](plans/a0-decisions.md)
+A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확장 단위)의 선택지와 권장안: [A0 결정 초안](plans/a0-decisions.md). 2026-10-19 현재 Q2·Q23·라이선스·확장 단위는 결정, Q5·Q6·Q25는 대기
 
 | # | 질문 | 관련 | 결정 방법 | 기한 |
 |---|---|---|---|---|
 | Q1 | 상품 등록 절차의 검증 업무 명세(`workflows/product-registration`): 수집 항목, 비밀값 스캔 방식, 공개/내부 분류 기준 | ADR-0010 | **일부 해소**: 템플릿 작성 완료 ([workflows/product-registration.md](../workflows/product-registration.md)). 실제 수행과 템플릿 개정은 Phase A 후속, 스캐너 선택은 Q21 | Phase A 통과 후 |
-| Q2 | 런타임/DB 최종 확정 (TypeScript + SQLite로 가정) | ADR-0001 | 기존 제품 스택과의 정합성 확인 | 코드 착수 전 |
+| Q2 | (해소) 런타임/DB = TypeScript(Node LTS) + SQLite, DDL은 Postgres 이식 가능 범위 | ADR-0001 | 2026-10-19 결정 ([a0-decisions D1](plans/a0-decisions.md)) | 완료 |
 | Q3 | 실행 조정: LangGraph vs Microsoft Agent Framework | ADR-0009 | 축소 시나리오 스파이크 | Phase A 후속 (A5 선행 아님) |
 | Q4 | OpenHands 헤드리스 실행 가능성 | ADR-0005 | 스파이크 | Phase A 후속 (코드 작업 어댑터 착수 전) |
 | Q5 | MVP의 "측정 신호 1개"는 무엇인가 (어느 제품의 어느 지표) | ADR-0007 | 사람 결정 | MVP 설계 확정 전 |
@@ -22,11 +22,11 @@ A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확
 | Q16 | 시험 연장 상한 횟수와 `inconclusive` 재시험 정책 | ADR-0011 | 사람 결정 | Phase B 전 |
 | Q17 | 변동성 높은 기억 종류의 기본 `valid_until` | memory-item | 정책 파라미터 | memory 구현 전 |
 | Q18 | `ProductDecision`을 `strategy_version` 하위로 둘지 분리할지 | product | 별도 검토 | Release/Capability 도입 시 |
-| Q19 | 모듈 경계 lint 도구 선택 (의존 방향 단방향 강제, ADR-0001) | ADR-0001, phase-a | 후보를 가상 위반 사례로 시험 | 저장소 부트스트랩(A0) |
-| Q20 | 테스트 러너 선택 (프로세스 종료·다중 워커 시나리오, 시간 제어 지원) | phase-a | 복구·중복 방지 테스트를 작성할 수 있는지로 판단 | 저장소 부트스트랩(A0) |
-| Q21 | 비밀값 스캐너 선택 (작업 트리·이력 스캔, 값 원문을 출력하지 않는 모드, 등록 검증 업무와 CI 공용 여부) | workflows/product-registration, public-repository | 가상 비밀값이 심긴 샘플로 탐지율·오탐·출력 안전성 비교 | 저장소 부트스트랩(A0), 등록 검증 수행 전 |
+| Q19 | (해소) 모듈 경계 lint = dependency-cruiser 18.6.0 (의존 방향·공개 API 전용 참조·순환·팩 경계를 한 설정으로 표현) | ADR-0001, phase-a | 2026-10-19 스파이크: 가상 위반 10건 전부 검출 ([q19](spikes/q19-boundary-lint.md)) | 완료 (설정 반영은 A0) |
+| Q20 | (해소) 테스트 러너 = `node:test` (Node 24 내장). 다중 프로세스 동시 쓰기·SIGKILL 후 인수·가짜 타이머 시험 통과, Vitest 5.0.5는 대안 | phase-a | 2026-10-19 스파이크: 복구·중복 방지 시나리오 실행 ([q20](spikes/q20-test-runner.md)) | 완료 (설정 반영은 A0) |
+| Q21 | (해소) 비밀값 스캐너 = gitleaks 8.30.1 (`--redact`, 작업 트리·이력, 업무·CI 공용). 접속 URL 비밀번호·금지어는 사용자 규칙으로 보완 | workflows/product-registration, public-repository | 2026-10-19 스파이크: 4개 후보 비교 ([q21](spikes/q21-secret-scanner.md)) | 완료 (CI 설치 방법은 A0) |
 | Q22 | 검증 단계 LLM 모델 등급과 검증 비용 비율 (실행 에이전트와 다른 호출·가능하면 다른 모델) | evaluation, workflows/product-registration | 등록 검증·주간 조사에서 비용 대비 검출력 비교 | A4 평가기 구현 중 |
-| Q23 | 등록 검증 업무를 맡을 부서·역할을 Phase A 시드 조직에 둘지 (둘 수 없으면 `unassigned`로 생성) | workflows/product-registration, ADR-0011 | 사람 결정 | 시드 조직 확정 전 |
-| Q24 | SQLite 접근 계층과 마이그레이션 도구 선택 (Postgres 이식성, 트랜잭션·유일 인덱스 활용) | ADR-0001, phase-a | 후보를 lease 획득 트랜잭션 시나리오로 시험 | 저장소 부트스트랩(A0) |
+| Q23 | (해소) Phase A 시드 조직 = 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 정책 v1(기본 거부) | workflows/product-registration, ADR-0011 | 2026-10-19 결정 ([a0-decisions D4](plans/a0-decisions.md), ADR-0011 Amendment) | 완료 |
+| Q24 | (해소) 접근 계층 = `node:sqlite` + 얇은 `Db` 인터페이스(대체: better-sqlite3), 마이그레이션 = 순수 SQL 파일 + 자체 러너. Postgres 이식은 미시험 | ADR-0001, phase-a | 2026-10-19 스파이크: lease 획득 경쟁·`schema.sql` 적용 ([q24](spikes/q24-sqlite-access-migration.md)) | 완료 (설정 반영은 A0) |
 | Q25 | 사람 승인 채널의 인증 수단 (별도 OS 사용자 / 소켓 피어 자격 증명 / 패스키 등) | trust-boundaries §3.1 | 후보 비교 후 사람 결정 | A3 착수 전 |
 | Q26 | 에이전트 격리 방식 (별도 OS 사용자 / 컨테이너 / 샌드박스) 과 게이트웨이 통신 방식 | trust-boundaries §3.1, ADR-0005 | 스파이크 | A5 착수 전 |

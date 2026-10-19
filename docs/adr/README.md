@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 형식: Context / Decision / Consequences. 상태: `proposed` → `accepted` → `superseded`.
-사람이 검토 후 `proposed`를 `accepted`로 바꾼다. 2026-10-19 현재 0001·0012는 `accepted`, 나머지는 `proposed`다.
+사람이 검토 후 `proposed`를 `accepted`로 바꾼다. 2026-10-19 현재 0001·0012·0013은 `accepted`, 나머지는 `proposed`다.
 
 | # | 제목 | 상태 |
 |---|---|---|
@@ -17,3 +17,4 @@
 | [0010](0010-product-registry.md) | 개발 상품 레지스트리와 절차적 등록 | proposed |
 | [0011](0011-adaptive-organization.md) | 적응형 조직 구성 (조직 관리팀) | proposed |
 | [0012](0012-extension-unit-contract.md) | 확장 단위 계약: 선언형 도메인 팩과 커넥터 | accepted |
+| [0013](0013-policy-format.md) | 정책 표현: YAML + 결정론적 판정기 | accepted |

@@ -1,6 +1,6 @@
 # A0 착수 전 결정 초안
 
-상태: 일부 결정 (2026-10-19: D1·D4·D6·D7 결정, D2·D3·D5 대기)
+상태: 일부 결정 (2026-10-19: D1·D3·D4·D5·D6·D7 결정, D2 대기)
 
 [Phase A 계획](phase-a.md)의 A0(저장소 부트스트랩)를 시작하기 전에 **사람이 정해야 하는 항목**을 선택지와 권장안으로 정리한다. 권장안은 제안일 뿐이며, 결정되면 [open-questions](../open-questions.md)의 해당 행을 "해소"로 바꾸고 아래 "기록 위치"에 반영한다.
 
@@ -22,9 +22,9 @@
 |---|---|---|---|---|
 | D1 | Q2 런타임/DB | TypeScript(Node LTS) + SQLite, Postgres 이식 가능 DDL 유지 **결정: 권장안 채택 (2026-10-19)** | A0 | ADR-0001 상태 → accepted |
 | D2 | Q5 측정 신호 | 랜딩 페이지 1개의 주간 목표 행동 전환 수(읽기 전용 분석 API, Phase A는 수동 입력 허용) | A6 (정의 형식은 A1) | ADR-0007 Amendment, 실제 값은 `instance/` |
-| D3 | Q6 위험 변경 승인자 | 1인 승인 + 대기 시간 + 실행 직전 재인증. 승인자 수는 정책 파라미터로 두어 2인 체제로 전환 가능 | A3 | ADR-0006 Amendment |
+| D3 | Q6 위험 변경 승인자 | 1인 승인 + 대기 시간 + 실행 직전 재인증. 승인자 수는 정책 파라미터로 두어 2인 체제로 전환 가능 **결정: 권장안 채택, 대기 기본 1h, 인스턴스 정책에서 변경 가능 (2026-10-19)** | A3 | ADR-0006 Amendment |
 | D4 | Q23 시드 조직 | 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1(기본 거부) **결정: 권장안 채택 (2026-10-19)** | A1 | ADR-0011 Amendment, `seedPhaseA`(`packages/domain/src/seed.ts`, A1 구현) |
-| D5 | Q25 승인 채널 인증 | Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경은 재인증 추가. 내부 웹 도입 시 패스키 | A3 | trust-boundaries §3.1 |
+| D5 | Q25 승인 채널 인증 | Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경은 재인증 추가. 내부 웹 도입 시 패스키 **결정: 권장안 채택, 재인증은 TOTP(RFC 6238 자체 구현) (2026-10-19)** | A3 | trust-boundaries §3.1 |
 | D6 | 라이선스 | Apache-2.0 (+ DCO 서명) — 단, 호스팅 경쟁 방지가 우선이면 AGPL-3.0 **결정: Apache-2.0 + DCO (2026-10-19)** | 첫 공개 push | `LICENSE`, README |
 | D7 | 확장 단위 계약 | 선언형 "도메인 팩" + 게이트웨이 계약을 따르는 커넥터. 주간 사이클 자체를 첫 팩으로 구현 **결정: 권장안 채택(D안) (2026-10-19)** | A0(배치), A1(스키마) | 신규 ADR-0012 |
 
@@ -61,6 +61,13 @@
 
 ## D3. 위험 변경 승인자 구성 (Q6)
 
+**결정: B (1인 승인 + 짧은 대기 + 실행 직전 재인증 + 자기 승인 금지) (2026-10-19).** 기록: [ADR-0006](../adr/0006-policy-separation.md) Amendment (2026-10-19).
+
+- 아래 `risky_change` 블록을 정책 파라미터로 둔다. 저장소의 기본 템플릿 값이 기본값이고, 인스턴스 정책(`instance/`)에서 값을 바꿀 수 있다.
+- 기본값: `min_approvers: 1`, `cooldown: 1h`(대기 중 취소 가능), `reauth_before_effect: true`, `self_approval: false`.
+- 보안을 낮추는 방향의 변경(`min_approvers` 감소, `cooldown` 단축, `reauth_before_effect` 끄기, `self_approval` 허용)은 그 자체가 위험 변경이며, **변경 전(현재) 정책**의 `risky_change` 절차를 거친다.
+- 값 범위를 검증한다: `min_approvers`는 1 이상의 정수, `cooldown`은 0 이상의 기간, 나머지는 불리언. 범위를 벗어난 정책은 배포되지 않는다.
+
 ADR-0006은 위험 변경에 "2인 이상 또는 지정 역할" 승인을 요구하지만, 1인 운영에서는 불가능하다. Phase A에서 위험 변경은 정책 PR(런타임 API 없음)과 `require_approval` 판정을 받은 외부 부작용 업무 두 가지다.
 
 | 선택지 | 장점 | 단점 |
@@ -75,7 +82,7 @@ ADR-0006은 위험 변경에 "2인 이상 또는 지정 역할" 승인을 요구
 ```yaml
 risky_change:
   min_approvers: 1        # 2인 체제가 되면 2로 올린다 (이 변경 자체가 위험 변경)
-  cooldown: 24h           # 승인 후 실행 가능까지 대기, 대기 중 취소 가능
+  cooldown: 1h            # 승인 후 실행 가능까지 대기, 대기 중 취소 가능 (결정값. 초안은 24h)
   reauth_before_effect: true   # 실행 직전 사람 재인증 (D5)
   self_approval: false    # 요청자와 승인자가 같은 actor면 거부 (에이전트 요청은 항상 해당 없음)
 ```
@@ -106,6 +113,13 @@ risky_change:
 후속 정리: [task-spec 예시](../schema/task-spec.md)의 `planning`/`market-researcher`는 가상 예시로 두되, Phase A 시드와 맞추려면 `generalist`로 바꾼다.
 
 ## D5. 사람 승인 채널 인증 (Q25)
+
+**결정: A + D (Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경 재인증은 TOTP) (2026-10-19).** 기록: [trust-boundaries §3.1](../security/trust-boundaries.md).
+
+- 승인 CLI(사람용)와 데몬의 승인 엔진은 Unix 도메인 소켓으로만 통신한다. 데몬은 접속한 피어의 UID를 확인한다.
+- 재인증은 TOTP(RFC 6238)이며 의존성을 더하지 않고 `node:crypto`로 구현한다. 같은 시간창의 코드를 다시 넣으면 거부한다.
+- TOTP 비밀은 `instance/`에만 둔다. 저장소·로그·`policy_decision`·`approval`에 남기지 않는다.
+- Node는 피어 자격 증명(`SO_PEERCRED`/`getpeereid`)을 기본으로 노출하지 않는다. 네이티브 애드온 없이 확인할 수 없으면 소켓을 소유자 전용 디렉터리(0700)·소켓 파일(0600)에 두어 OS 파일 권한으로 접근을 제한하고, 이 차이를 trust-boundaries §3.1과 ADR에 Phase A 편차로 적는다. 이 경우 분리는 에이전트를 별도 UID·컨테이너로 돌리는 [Q26](../open-questions.md)을 전제로 한다.
 
 요건은 [trust-boundaries §3.1](../security/trust-boundaries.md): 에이전트 프로세스가 승인 경로에 도달할 수 없어야 한다. Q26(에이전트 격리 방식)과 함께 정해야 한다.
 
@@ -160,7 +174,7 @@ A0 영향: 저장소 골격에 `packs/`를 두고, 모듈 경계 lint에 "팩은
 
 ## 2. 결정 후 할 일
 
-1. 각 D 항목에 결정과 날짜를 적고, open-questions의 Q2·Q5·Q6·Q23·Q25 행을 해소로 바꾼다. (2026-10-19: D1·D4 반영 완료. D2·D3·D5 대기)
-2. 기록 위치(§1 표)의 ADR을 갱신하거나 ADR-0012(확장 단위)를 새로 쓴다. (2026-10-19: ADR-0001·0011·0012 반영 완료. ADR-0006·0007·trust-boundaries는 D2·D3·D5 결정 후)
+1. 각 D 항목에 결정과 날짜를 적고, open-questions의 Q2·Q5·Q6·Q23·Q25 행을 해소로 바꾼다. (2026-10-19: D1·D3·D4·D5 반영 완료. D2 대기)
+2. 기록 위치(§1 표)의 ADR을 갱신하거나 ADR-0012(확장 단위)를 새로 쓴다. (2026-10-19: ADR-0001·0006·0011·0012·0013, trust-boundaries §3.1 반영 완료. ADR-0007은 D2 결정 후)
 3. D6이 정해지면 `LICENSE`를 추가한 뒤에 첫 공개 push를 한다. (2026-10-19: `LICENSE`·README 반영 완료. push 전 확인만 남음)
 4. [phase-a.md](phase-a.md) §4 A0 체크리스트에 `packs/` 골격과 팩 경계 lint를 추가한다. (2026-10-19 완료)

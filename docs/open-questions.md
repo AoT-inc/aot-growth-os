@@ -1,6 +1,6 @@
 # 미결정 사항
 
-A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확장 단위)의 선택지와 권장안: [A0 결정 초안](plans/a0-decisions.md). 2026-10-19 현재 Q2·Q23·라이선스·확장 단위는 결정, Q5·Q6·Q25는 대기
+A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확장 단위)의 선택지와 권장안: [A0 결정 초안](plans/a0-decisions.md). 2026-10-19 현재 Q2·Q6·Q23·Q25·라이선스·확장 단위는 결정, Q5는 대기
 
 | # | 질문 | 관련 | 결정 방법 | 기한 |
 |---|---|---|---|---|
@@ -9,8 +9,8 @@ A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확
 | Q3 | 실행 조정: LangGraph vs Microsoft Agent Framework | ADR-0009 | 축소 시나리오 스파이크 | Phase A 후속 (A5 선행 아님) |
 | Q4 | OpenHands 헤드리스 실행 가능성 | ADR-0005 | 스파이크 | Phase A 후속 (코드 작업 어댑터 착수 전) |
 | Q5 | MVP의 "측정 신호 1개"는 무엇인가 (어느 제품의 어느 지표) | ADR-0007 | 사람 결정 | MVP 설계 확정 전 |
-| Q6 | 위험 변경 승인자 구성 (1인 회사라면 2인 승인 불가 → 대안: 지연 대기 + 별도 채널 확인) | ADR-0006 | 사람 결정 | 정책 초안 전 |
-| Q7 | 정책 표현 방식 (YAML + 코드 평가 vs OPA/Cedar 등) | ADR-0006 | 별도 ADR | 정책 패키지 착수 전 |
+| Q6 | (해소) 위험 변경 승인 = 1인 승인 + 대기(기본 1h, 대기 중 취소) + 실행 직전 재인증 + 자기 승인 금지. 값은 정책 파라미터(`risky_change`)로 인스턴스에서 변경 가능, 보안 하향 변경은 그 자체가 위험 변경 | ADR-0006 | 2026-10-19 결정 ([a0-decisions D3](plans/a0-decisions.md), ADR-0006 Amendment) | 완료 |
+| Q7 | (해소) 정책 표현 = YAML(스키마 검증) + 자체 결정론적 TS 판정기. 정책 버전은 정규화된 내용 해시. 규칙이 복잡해지면 Cedar 이식 검토 | ADR-0006 | 2026-10-19 결정 ([ADR-0013](adr/0013-policy-format.md)) | 완료 |
 | Q8 | 기억 검색 구현 (전문 검색 / 벡터) | ADR-0008 | 별도 ADR | memory 패키지 분리 시 |
 | Q9 | 고객 데이터·개인정보 분류와 보존 | 스키마 | 별도 문서 | 영업/지원 활성화 전 |
 | Q10 | (해소) 레지스트리 진실 원본 = 내부 인스턴스 DB, YAML 시드 없음 | ADR-0010 | 2026-10-14 결정 | 완료 |
@@ -28,5 +28,5 @@ A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확
 | Q22 | 검증 단계 LLM 모델 등급과 검증 비용 비율 (실행 에이전트와 다른 호출·가능하면 다른 모델) | evaluation, workflows/product-registration | 등록 검증·주간 조사에서 비용 대비 검출력 비교 | A4 평가기 구현 중 |
 | Q23 | (해소) Phase A 시드 조직 = 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 정책 v1(기본 거부) | workflows/product-registration, ADR-0011 | 2026-10-19 결정 ([a0-decisions D4](plans/a0-decisions.md), ADR-0011 Amendment) | 완료 |
 | Q24 | (해소) 접근 계층 = `node:sqlite` + 얇은 `Db` 인터페이스(대체: better-sqlite3), 마이그레이션 = 순수 SQL 파일 + 자체 러너. Postgres 이식은 미시험 | ADR-0001, phase-a | 2026-10-19 스파이크: lease 획득 경쟁·`schema.sql` 적용 ([q24](spikes/q24-sqlite-access-migration.md)) | 완료 (설정 반영은 A0) |
-| Q25 | 사람 승인 채널의 인증 수단 (별도 OS 사용자 / 소켓 피어 자격 증명 / 패스키 등) | trust-boundaries §3.1 | 후보 비교 후 사람 결정 | A3 착수 전 |
+| Q25 | (해소) 승인 채널 = Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경 재인증 = TOTP(RFC 6238, `node:crypto` 자체 구현, 비밀은 `instance/`에만). 피어 UID를 확인할 수 없으면 소켓 파일 권한으로 대신하고 편차로 기록 | trust-boundaries §3.1 | 2026-10-19 결정 ([a0-decisions D5](plans/a0-decisions.md)) | 완료 |
 | Q26 | 에이전트 격리 방식 (별도 OS 사용자 / 컨테이너 / 샌드박스) 과 게이트웨이 통신 방식 | trust-boundaries §3.1, ADR-0005 | 스파이크 | A5 착수 전 |

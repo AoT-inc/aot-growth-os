@@ -52,6 +52,22 @@
 - [ ] `failed` 부작용 재전송("정책 허용 시"): 정책 훅이 정해지는 A3. 지금은 재전송하지 않는다
 - 해석: 인수 시 멱등 지원 도구의 `unknown`은 `needs_review`가 아니라 `queued`로 돌려 같은 키로 재전송한다(recovery §3 표가 정본이라는 state-machines 업무 규칙에 따름). 멱등 미지원 도구는 조회로 전달이 확인되지 않으면 `unknown`으로 둔다
 
+### A3 완료 기록 (2026-10-19)
+
+- [x] 정책 형식 v1과 정책 버전 (Q7, [ADR-0013](../adr/0013-policy-format.md) Amendment): `packages/policy/src/yaml.ts`(YAML 부분집합)·`document.ts`(스키마 검증·정규화·내용 해시). 기본 템플릿 `policies/default.yaml` = 시드 `policy-v1`(A1 이월: 임시 `content_hash`를 실제 형식 v1의 해시로 교체, 기본 거부). 내용은 `instance/policies/<해시>.yaml`에 보관하고 판정 때마다 해시를 대조한다(`store.ts`)
+- [x] 7요소 판정과 `policy_decision` 기록: `evaluate.ts`(결정론적, 가장 엄격한 결과, 기본 거부, 범위·영향 미선언 거부, 예산 상한), `decisions.ts`. `policy_decision.reason` 열 추가. 생성 거부 판정은 롤백 뒤 새 트랜잭션에서 남긴다
+- [x] `TaskPolicyGate` 실제 연결 (A2 이월): `gate.ts`가 구현하고 `apps/daemon/src/assemble.ts`가 조립한다. 포트에 `beforeEffect`(부작용 직전 재검증)를 더했다. 데몬은 더 이상 모든 업무를 `needs_review`로 보내지 않고 정책 판정대로 실행·검토 대기를 나눈다
+- [x] 승인 엔진(`approved_hash`)과 실행 시점 재검증: `approval.ts`·`engine.ts`. 승인은 대상 해시(명세 + 승인 시점 정책 버전)에 묶이고, 실행 직전·부작용 직전에 해시·정책 버전·역할 버전·승인자 수·자기 승인·취소·cooldown·재인증을 다시 확인한다. 정책이 강화되면 새 정책으로 재판정되고 과거 승인은 무효
+- [x] 위험 변경 승인 구성 (D3): `risky_change` 파라미터(기본 1인, 1h, 재인증, 자기 승인 금지). 보안 하향 정책 변경은 현재 정책의 위험 변경 절차를 거친다(`change.ts`). 대기 중 `cancel`로 취소
+- [x] 사람 승인 채널 (D5): Unix 소켓(`channel.ts`) + 승인 CLI(`apps/daemon/src/approve.ts`), TOTP(RFC 6238, `totp.ts`) 재인증, 같은 시간창 재사용 거부(`human_reauth`), 연속 실패 제한. **편차:** 피어 UID 확인 대신 소켓 파일 권한(0700/0600) — [trust-boundaries §3.1](../security/trust-boundaries.md)
+- [x] 게시 게이트: `publication.ts` — 승인 없는 `public`/`customer` 게시 거부, internal 이상 입력의 `public` 게시 거부, `confidential` 이상 입력은 승인 필요(A1 이월: memory 규칙 7)
+- [x] memory 규칙 5 (A1 이월): 기본 만료 기간을 정책 파라미터(`memory.default_validity`)로, domain `MemoryContext.defaultValiditySeconds`에 연결. 값은 비워 두었다([Q17](../open-questions.md))
+- [x] `failed` 부작용 재전송 (A2 이월): 정책 판정이 `allow`일 때만 재전송. 승인(`require_approval`)은 한 번의 전송에 대한 것이므로 재전송을 덮지 않는다
+- [x] 시험: 단위 `test/unit/policy-*.test.ts`·`publication-gate.test.ts`(7요소 각각의 거부, 기본 거부, 해시 불일치·정책 강화·cooldown·취소·자기 승인·에이전트 승인 거부, TOTP 벡터·오답·재사용·시간창 경계, 보안 하향 배포의 위험 변경 절차), 통합 `test/integration/approval-channel.test.ts`(소켓 권한, 권한 없는 접속 EACCES), `policy-approval-multiprocess.test.ts`(데몬 + 승인 CLI 별도 프로세스로 승인 → 대기 → TOTP 해제 → 실행·부작용 1건, 실제 엔트리포인트 소켓). 통합 5회 반복 무실패
+- [ ] 별도 UID에서의 접근 실패 시험: 다른 UID로 프로세스를 띄울 수 없어 파일 권한으로 대신했다. A5(Q26)에서 OS 수준 시험으로 한다
+- [ ] 외부 입력 영향 호출 표시(trust-boundaries §2-3)와 호출별 게이트웨이 재판정: 도구 게이트웨이(A5)
+- 해석: `require_approval`은 외부 부작용이 아니어도(예: `customer` 범위 읽기) 같은 `risky_change` 절차를 쓴다. D4의 "write는 업무 범위 내"는 `*:task-own` 대상 패턴으로 표현했다. 정책 규칙 변경은 강화임을 증명할 수 없으면 위험 변경으로 분류한다
+
 ## 3. 필수 테스트 매핑
 
 [overview §6 필수 테스트 표](../00-overview.md) 중 Phase A 항목. "주 패키지"는 테스트를 소유하는 곳이고, A6에서 통합 시나리오로 한 번 더 확인한다.

@@ -15,3 +15,22 @@
 ## Consequences
 - 의존성 없이 판정을 시험으로 고정할 수 있다. 판정 근거가 코드에 있으므로 판정기 변경도 정책 변경과 같은 무게로 검토한다.
 - 표현력이 작다. 표현할 수 없는 규칙이 필요해지면 형식을 넓히기 전에 Cedar 이식을 먼저 비교한다.
+
+## Amendment (2026-10-19): 형식 v1 (A3 구현)
+기본 템플릿은 [`policies/default.yaml`](../../policies/default.yaml)이며 시드의 `policy-v1`과 같은 내용이다(시험이 대조한다).
+
+| 키 | 내용 | 검증 |
+|---|---|---|
+| `format` | `aot-policy/v1` | 필수 |
+| `default` | `deny` | 필수, `deny`만 허용 |
+| `limits` | `max_usd_per_task`(필수), `max_tokens_per_task` | 양수. 업무의 `cost_budget`이 넘으면 거부 |
+| `rules[]` | `id`, 조건 `subject`·`action`·`resource`(`*` 와일드카드 패턴), `scope`·`impact`(열거값), `decision` | 조건이 하나도 없는 규칙 거부, id 중복 거부 |
+| `risky_change` | `min_approvers`, `cooldown`, `reauth_before_effect`, `self_approval` | `min_approvers` 1~10 정수, `cooldown` 0~30d |
+| `memory.default_validity` | 기억 종류 → 기본 만료 기간 ([memory-item](../schema/memory-item.md) 규칙 5) | `commitment` 제외(규칙 6), 값은 [Q17](../open-questions.md) |
+
+- **요청 단위.** `allowed_tools`의 도구 × 작업 하나가 요청 하나다. 주체 `<role>@v<role_version>`, 행위 `<tool>.<operation>`, 대상 `target`, 범위 `scope`, 영향 `impact`, 제약은 `cost_budget`·`constraints`. 범위나 영향이 선언되지 않은 요청은 거부한다(추측해 채우지 않는다). `policy_decision`의 NOT NULL 열에는 가장 넓은 값(`public`, `external_effect`)을 적고 사유에 미선언임을 남긴다.
+- **결합.** 일치한 규칙 중 가장 엄격한 결과(deny > require_approval > allow). 규칙 순서는 결과에 영향이 없다. 일치하는 규칙이 없으면 `default`(deny).
+- **정규화.** 기간은 초, 집합 성격의 목록은 정렬, 규칙은 id 순으로 정렬한 뒤 키 정렬 JSON의 SHA-256이 버전 해시다. 새로 배포하는 `policy_version.id`는 `policy-<해시 앞 16자리>`.
+- **YAML 부분집합.** 앵커·별칭·태그·블록 스칼라·여러 문서·중첩 흐름·탭 들여쓰기·중복 키는 받지 않는다(`packages/policy/src/yaml.ts`). 검토를 어렵게 하는 기능을 막고 의존성을 더하지 않기 위해서다. `*`로 시작하는 값은 따옴표로 감싼다.
+- **내용 보관.** DB의 `policy_version`은 배포 기록이고 내용은 파일이다. 승인 엔진이 배포 승인 때 내용을 `instance/policies/<해시>.yaml`(0600)로 보관하고, 판정 때마다 해시를 다시 계산해 대조한다. 내용을 찾지 못하거나 해시가 다르면 모든 판정은 거부다.
+- **변경 등급.** 강화임을 증명할 수 없는 변경은 위험 변경이다: `risky_change` 하향, 예산 상한 상향·삭제, `deny` 추가와 `allow` 삭제를 뺀 모든 규칙 변경(`require_approval` 추가도 기본 거부였던 요청을 승인 가능으로 바꾼다). 위험 변경은 현재 정책의 `risky_change`로 승인한다. `memory.default_validity` 변경은 일반 변경이다.

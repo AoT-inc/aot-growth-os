@@ -17,7 +17,7 @@
 버전:    policy_version, strategy_version
 입구:    event, routine ─ routine_firing
 업무:    task ─ task_dependency, task_transition, task_run
-증거:    evidence, cost_entry, approval
+증거:    evidence, cost_entry, approval, human_reauth
 평가:    evaluation (quality / effect / economics / safety)
 기억:    memory_item (kind, validity, superseded_by)
 공개:    publication
@@ -37,7 +37,8 @@
 
 ## 애플리케이션에서 강제할 규칙 (SQL로 표현하지 않은 것)
 
-- `approval.decided_by`는 `actor.kind='human'`만.
+- `approval.decided_by`는 `actor.kind='human'`만. `approval`은 승인 엔진(`@aot/policy`)만 쓰며, 취소·거절은 기존 행을 고치지 않고 새 행(`rejected`)으로 남긴다. 승인 확인은 `subject_hash`가 지금 대상의 해시와 같은 행만 센다.
+- `human_reauth`(위험 변경 재인증)는 승인 엔진만 쓰고 TOTP 비밀·코드는 남기지 않는다. 같은 사람의 같은(또는 이전) 시간창은 다시 받지 않는다.
 - `approval.subject_kind`: 업무 실행(`task`), 전략·정책 버전, 게시, 도구 호출, 상품 등록(`product`, `product.registration_approval_id`가 가리킴), 조직 제안(`org_proposal`, `proposed → approved`).
 - `completed` 전이는 검증기 주체만, 그리고 해당 업무의 최신 `evaluation.safety='pass'`일 때만.
 - `publication.audience != 'internal'`이고 `status='published'`이면 `approval_id` 필수.
@@ -46,11 +47,11 @@
 - `evaluation.outcome='pass'`는 `primary_evidence_refs`가 비어 있지 않아야 하며 에이전트 보고서만으로는 불가.
 - `org_trial_result`는 평가기만 쓸 수 있다. 조직 관리팀은 쓰기 불가.
 - 외부 부작용은 `external_effect`를 `planned`로 기록한 뒤에만 전송한다.
-- append-only 테이블(`task_transition`, `cost_entry`, `policy_decision`)은 UPDATE/DELETE 금지.
+- append-only 테이블(`task_transition`, `cost_entry`, `policy_decision`, `human_reauth`)은 UPDATE/DELETE 금지.
 
 ## 미반영 (후속)
 
 - 벡터/전문 검색 인덱스 (memory)
-- 권한 모델 상세(RBAC/ABAC)와 정책 DSL
+- 권한 모델 상세(RBAC/ABAC). 정책 형식은 [ADR-0013](../adr/0013-policy-format.md)
 - 비용 집계 뷰, 제품별 P&L 뷰
 - 개인정보/고객 데이터 분류와 보존 기간

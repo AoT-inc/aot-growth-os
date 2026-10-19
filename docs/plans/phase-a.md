@@ -49,18 +49,18 @@
 선택이 필요한 항목은 open-questions를 가리킨다. 선택 전에는 가정만 적고 코드를 시작하지 않는다. 사람이 정할 항목의 선택지와 권장안은 [A0 결정 초안](a0-decisions.md)에 있다.
 
 - [x] 런타임과 DB 확정: TypeScript(Node LTS), SQLite (DDL은 Postgres 이식 가능 범위) — [Q2](../open-questions.md) 해소 (2026-10-19)
-- [ ] 패키지 구조: `packages/` 아래 5개 패키지와 `apps/daemon` 엔트리포인트의 빈 골격, 패키지별 공개 API 진입점 하나
-- [ ] `packs/` 골격: 첫 팩 `packs/example-marketing`(manifest, `workflows/`, `routines/`, `evaluations/`)의 빈 골격 ([ADR-0012](../adr/0012-extension-unit-contract.md))
-- [ ] 팩 경계 lint: 팩은 코어 내부 모듈(`packages/*`의 공개 API 밖)을 참조하지 않는다. 위반이 CI에서 실패 — [Q19](../open-questions.md)
-- [ ] 모듈 경계 lint: 의존 방향 위반(`domain`이 상위를 참조, `agent-runtime`이 `domain` 외 하위 내부 모듈을 직접 참조 등)이 CI에서 실패 — [Q19](../open-questions.md)
-- [ ] 테스트 러너: 단위·통합 구분, SQLite 인메모리 또는 임시 파일 격리, 프로세스 종료 시나리오를 실행할 수 있을 것. 동시 워커 테스트는 같은 DB 파일을 여는 다중 프로세스로 수행한다(단일 프로세스 내 동시성으로 대체하지 않음) — [Q20](../open-questions.md)
-- [ ] 마이그레이션 적용 방식과 SQLite 접근 계층: WAL 모드, `busy_timeout` 설정, 상태 전이·lease 획득은 `BEGIN IMMEDIATE` 트랜잭션 — [Q24](../open-questions.md)
-- [ ] 비밀값 스캔과 금지어 스캔을 CI(및 커밋 전)에 연결 — [Q21](../open-questions.md), [공개 전 검사](../security/public-repository.md)
-- [ ] 설정 분리: 저장소에는 `*.example`만, 실제 값은 `instance/`·환경 변수. `.gitignore`에 `instance/`·`*.db`·`*.db-*`·`*.sqlite*`·`*-wal`·`*-shm`·`*-journal`·`plans/` 포함 확인 ([공개 저장소 규칙](../security/public-repository.md))
-- [ ] 시계 주입: lease 판정·heartbeat·만료 계산은 주입된 `Clock`이 준 시각을 SQL 파라미터로 넘긴다. SQL의 `now()`/`CURRENT_TIMESTAMP`는 쓰지 않는다 ([recovery §2](../operations/recovery.md))
-- [ ] 가짜 어댑터·가짜 외부 도구(멱등 키 지원/미지원 두 종류) 골격
-- [ ] 스파이크 결과 기록 위치 `docs/spikes/` 생성 ([ADR-0009](../adr/0009-build-vs-reuse.md))
-- [ ] CI 필수 통과 항목 정의: 타입 검사, lint(경계 포함), 테스트, 스캔
+- [x] 패키지 구조: `packages/` 아래 5개 패키지와 `apps/daemon` 엔트리포인트의 빈 골격, 패키지별 공개 API 진입점 하나
+- [x] `packs/` 골격: 첫 팩 `packs/example-marketing`(manifest, `workflows/`, `routines/`, `evaluations/`)의 빈 골격 ([ADR-0012](../adr/0012-extension-unit-contract.md))
+- [x] 팩 경계 lint: 팩은 코어 내부 모듈(`packages/*`의 공개 API 밖)을 참조하지 않는다. 위반이 CI에서 실패 — [Q19](../open-questions.md)
+- [x] 모듈 경계 lint: 의존 방향 위반(`domain`이 상위를 참조, `agent-runtime`이 `domain` 외 하위 내부 모듈을 직접 참조 등)이 CI에서 실패 — [Q19](../open-questions.md). `npm run lint:boundaries`, 규칙은 `test/boundaries`가 위반 주입으로 고정 시험(워크스페이스 `exports` 해석 누락도 잡는다). `task-engine`/`policy`/`evaluation` 상호 참조는 막아 두었고 A1 이후 필요 시 조정
+- [x] 테스트 러너: 단위·통합 구분, SQLite 인메모리 또는 임시 파일 격리, 프로세스 종료 시나리오를 실행할 수 있을 것. 동시 워커 테스트는 같은 DB 파일을 여는 다중 프로세스로 수행한다(단일 프로세스 내 동시성으로 대체하지 않음) — [Q20](../open-questions.md). `node:test`: `npm run test:unit`/`test:integration`/`test:boundaries`, 예제는 `test/integration/multiprocess-write.test.ts`(6프로세스 경쟁 + SIGKILL)
+- [x] 마이그레이션 적용 방식과 SQLite 접근 계층: WAL 모드, `busy_timeout` 설정, 상태 전이·lease 획득은 `BEGIN IMMEDIATE` 트랜잭션 — [Q24](../open-questions.md). `packages/domain/src/db/`: `openDb`(busy_timeout 먼저, WAL), `Db.writeTx`(IMMEDIATE 전용, 쓰기는 이 안에서만), 순수 SQL 러너 `applyMigrations`. `migrations/0001`의 원천(`schema.sql` 복사 vs 생성)은 A1 결정 — A0 시험은 `schema.sql`을 0001로 적용해 확인
+- [x] 비밀값 스캔과 금지어 스캔을 CI(및 커밋 전)에 연결 — [Q21](../open-questions.md), [공개 전 검사](../security/public-repository.md). gitleaks 8.30.1 `--redact`: `.gitleaks.toml`, `npm run scan:secrets`/`scan:history`, `.githooks/pre-commit`(`npm run hooks:install`). 인스턴스별 금지어 목록은 저장소 밖(`instance/gitleaks-banned.toml` 또는 `AOT_BANNED_CONFIG`)
+- [x] 설정 분리 (`.env.example`, `config/daemon.config.example.json`): 저장소에는 `*.example`만, 실제 값은 `instance/`·환경 변수. `.gitignore`에 `instance/`·`*.db`·`*.db-*`·`*.sqlite*`·`*-wal`·`*-shm`·`*-journal`·`plans/` 포함 확인 ([공개 저장소 규칙](../security/public-repository.md))
+- [x] 시계 주입: lease 판정·heartbeat·만료 계산은 주입된 `Clock`이 준 시각을 SQL 파라미터로 넘긴다. SQL의 `now()`/`CURRENT_TIMESTAMP`는 쓰지 않는다 ([recovery §2](../operations/recovery.md)). `Clock`/`FakeClock`(`@aot/domain`), 세 겹 강제: `Db`가 SQL 문자열을 거부, ESLint 규칙 `aot/no-sql-clock`, `.sql` 파일 스캔 시험
+- [x] 가짜 어댑터·가짜 외부 도구(멱등 키 지원/미지원 두 종류) 골격 — `test/support/fake-tool.ts`(멱등 지원/미지원), `fake-adapter.ts`. 어댑터 계약 자체는 A5에서 정의
+- [x] 스파이크 결과 기록 위치 `docs/spikes/` 생성 ([ADR-0009](../adr/0009-build-vs-reuse.md))
+- [x] CI 필수 통과 항목 정의: 타입 검사, lint(경계 포함), 테스트, 스캔 — `.github/workflows/ci.yml`(스키마 적용 `sqlite3 :memory: < docs/schema/schema.sql` 포함). 원격 실행은 첫 push 후 확인
 
 ## 5. 스파이크
 

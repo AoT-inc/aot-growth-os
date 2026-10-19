@@ -5,7 +5,7 @@ A0 에서는 구성만 있고 내용은 비어 있다. 값은 모두 가상이�
 
 | 위치 | 내용 | 상태 |
 |---|---|---|
-| `manifest.json` | 이름, 버전, 요구 코어 버전, 필요한 도구 | 자리표시 |
+| `manifest.json` | 이름, 버전, 요구 코어 버전, 필요한 도구 | 형식 검증 있음 (`validatePackManifest`, A1) |
 | `workflows/` | 업무 명세 템플릿 ([task-spec](../../docs/schema/task-spec.md) 형식) | 비어 있음 |
 | `routines/` | 루틴 | 비어 있음 |
 | `evaluations/` | 결정론적 검사 id, LLM 검증 프롬프트 | 비어 있음 |

@@ -1,0 +1,152 @@
+// task_spec 스키마 검증 (docs/schema/task-spec.md): 문서의 예시는 통과하고, "생성 거부 조건" 은 거부한다.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { validateTaskSpec, type Issue } from '@aot/domain';
+
+import { marketResearchExample, minimalDraft, productRegistrationTemplate } from '../support/spec-fixtures.ts';
+
+const draft = (input: unknown) => validateTaskSpec(input, 'draft');
+const errorsOf = (input: unknown, stage: 'draft' | 'stored' = 'draft'): Issue[] => {
+  const result = stage === 'draft' ? draft(input) : validateTaskSpec(input, 'stored');
+  assert.equal(result.ok, false, 'expected the spec to be rejected');
+  return result.ok ? [] : result.errors;
+};
+const has = (errors: Issue[], path: string, code?: string) =>
+  errors.some((e) => e.path === path && (code === undefined || e.code === code));
+
+test('the documented examples are valid drafts (market research example, product-registration template)', () => {
+  assert.deepEqual(draft(marketResearchExample()), { ok: true, value: marketResearchExample() });
+  assert.equal(draft(productRegistrationTemplate()).ok, true);
+  assert.equal(draft(minimalDraft()).ok, true);
+});
+
+test('a non-object is rejected at the root', () => {
+  for (const bad of [null, 'text', 42, [], [{}]]) assert.ok(has(errorsOf(bad), '', 'type'));
+});
+
+test('rejected: empty objective', () => {
+  for (const objective of ['', '   ', undefined, 7]) {
+    const spec = { ...minimalDraft(), objective };
+    assert.ok(has(errorsOf(spec), 'objective', 'required'), String(objective));
+  }
+});
+
+test('rejected: trigger without ref, or with a kind outside event|routine|manual|task', () => {
+  assert.ok(has(errorsOf({ ...minimalDraft(), trigger: { kind: 'manual' } }), 'trigger.ref', 'required'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), trigger: { kind: 'webhook', ref: 'x' } }), 'trigger.kind', 'enum'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), trigger: undefined }), 'trigger', 'required'));
+  for (const kind of ['event', 'routine', 'manual', 'task']) {
+    assert.equal(draft({ ...minimalDraft(), trigger: { kind, ref: 'r' } }).ok, true, kind);
+  }
+});
+
+test('rejected: an input without a source', () => {
+  const errors = errorsOf({ ...minimalDraft(), inputs: [{ name: 'a', kind: 'doc' }, { name: 'b', ref: 'x', kind: 'doc' }] });
+  assert.ok(has(errors, 'inputs[0].ref', 'required'));
+  assert.ok(!errors.some((e) => e.path.startsWith('inputs[1]')));
+  assert.ok(has(errorsOf({ ...minimalDraft(), inputs: 'none' }), 'inputs', 'required'));
+});
+
+test('dependencies: optional list of unique ids', () => {
+  assert.equal(draft({ ...minimalDraft(), dependencies: ['t1', 't2'] }).ok, true);
+  assert.ok(has(errorsOf({ ...minimalDraft(), dependencies: ['t1', 't1'] }), 'dependencies[1]', 'duplicate'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), dependencies: [''] }), 'dependencies[0]', 'type'));
+});
+
+test('allowed_tools: required; entries need tool and operations; scope and impact must be known values', () => {
+  const base = minimalDraft();
+  assert.equal(draft({ ...base, allowed_tools: [] }).ok, true, 'a task without tools is allowed');
+  assert.ok(has(errorsOf({ ...base, allowed_tools: undefined }), 'allowed_tools', 'required'));
+  assert.ok(has(errorsOf({ ...base, allowed_tools: [{ tool: 'x' }] }), 'allowed_tools[0].operations', 'required'));
+  assert.ok(has(errorsOf({ ...base, allowed_tools: [{ tool: 'x', operations: [] }] }), 'allowed_tools[0].operations', 'required'));
+  assert.ok(has(errorsOf({ ...base, allowed_tools: [{ tool: 'x', operations: ['a'], scope: 'world' }] }), 'allowed_tools[0].scope', 'enum'));
+  assert.ok(has(errorsOf({ ...base, allowed_tools: [{ tool: 'x', operations: ['a'], impact: 'destroy' }] }), 'allowed_tools[0].impact', 'enum'));
+  const full = { tool: 'x', operations: ['a'], scope: 'internal', impact: 'external_effect', target: 'site:staging' };
+  assert.equal(draft({ ...base, allowed_tools: [full] }).ok, true);
+});
+
+test('constraints: network_allowlist must be explicit domains; "*" is forbidden, an empty list means no network', () => {
+  const base = minimalDraft();
+  assert.ok(has(errorsOf({ ...base, constraints: { network_allowlist: ['*'] } }), 'constraints.network_allowlist[0]', 'wildcard'));
+  assert.ok(has(errorsOf({ ...base, constraints: { network_allowlist: ['ok.example.com', ' * '] } }), 'constraints.network_allowlist[1]', 'wildcard'));
+  assert.equal(draft({ ...base, constraints: { network_allowlist: [] } }).ok, true);
+  assert.ok(has(errorsOf({ ...base, constraints: { network_allowlist: 'docs.example.com' } }), 'constraints.network_allowlist', 'type'));
+  assert.ok(has(errorsOf({ ...base, constraints: undefined }), 'constraints', 'required'));
+});
+
+test('constraints: publish_scope and data_classes use the documented vocabularies; unknown constraints are rejected, not ignored', () => {
+  const base = minimalDraft();
+  assert.ok(has(errorsOf({ ...base, constraints: { publish_scope: 'everyone' } }), 'constraints.publish_scope', 'enum'));
+  assert.ok(has(errorsOf({ ...base, constraints: { data_classes: ['secret'] } }), 'constraints.data_classes[0]', 'enum'));
+  assert.equal(draft({ ...base, constraints: { data_classes: ['internal', 'restricted'], fs_scope: ['repo:example-product:read-only'] } }).ok, true);
+  assert.ok(has(errorsOf({ ...base, constraints: { max_cpu: 4 } }), 'constraints.max_cpu', 'unknown_field'));
+});
+
+test('rejected: no acceptance criteria', () => {
+  assert.ok(has(errorsOf({ ...minimalDraft(), acceptance_criteria: [] }), 'acceptance_criteria', 'required'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), acceptance_criteria: undefined }), 'acceptance_criteria', 'required'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), acceptance_criteria: ['ok', ' '] }), 'acceptance_criteria[1]', 'type'));
+  assert.equal(errorsOf({ ...minimalDraft(), acceptance_criteria: [] }).filter((e) => e.path === 'acceptance_criteria').length, 1);
+});
+
+test('rejected: no validation method; each single method is enough', () => {
+  const none = { deterministic: [], llm: null, human: false };
+  assert.ok(has(errorsOf({ ...minimalDraft(), validation: none }), 'validation', 'no_method'));
+  assert.equal(draft({ ...minimalDraft(), validation: { ...none, deterministic: ['budget'] } }).ok, true);
+  assert.equal(draft({ ...minimalDraft(), validation: { ...none, human: true } }).ok, true);
+  assert.equal(draft({ ...minimalDraft(), validation: { ...none, llm: { check: 'claim_supported_by_source', isolated_context: true } } }).ok, true);
+  assert.ok(has(errorsOf({ ...minimalDraft(), validation: { deterministic: ['a'], human: false } }), 'validation.llm', 'required'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), validation: { deterministic: ['a'], llm: { isolated_context: true }, human: false } }), 'validation.llm.check', 'required'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), validation: undefined }), 'validation', 'required'));
+});
+
+test('cost_budget: max_usd is required and non-negative; max_tokens is a positive integer', () => {
+  assert.equal(draft({ ...minimalDraft(), cost_budget: { max_usd: 1, max_tokens: 200000 } }).ok, true);
+  assert.ok(has(errorsOf({ ...minimalDraft(), cost_budget: {} }), 'cost_budget.max_usd', 'type'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), cost_budget: { max_usd: -1 } }), 'cost_budget.max_usd', 'type'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), cost_budget: { max_usd: Number.NaN } }), 'cost_budget.max_usd', 'type'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), cost_budget: { max_usd: '2' } }), 'cost_budget.max_usd', 'type'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), cost_budget: { max_usd: 1, max_tokens: 1.5 } }), 'cost_budget.max_tokens', 'type'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), cost_budget: undefined }), 'cost_budget', 'required'));
+});
+
+test('optional department/role/product must be non-empty when given (leave them out for an unassigned task)', () => {
+  assert.equal(draft({ ...minimalDraft(), department: 'core', role: 'generalist', product: 'example-product' }).ok, true);
+  for (const key of ['department', 'role', 'product']) assert.ok(has(errorsOf({ ...minimalDraft(), [key]: '' }), key, 'type'), key);
+});
+
+test('draft: fields the system fills cannot be specified by the author', () => {
+  const versions = { org_version: 'org-v1', role_version: 1, task_spec_version: 1, strategy_version: null, tool_contract_version: null };
+  for (const [field, value] of [['policy_version', 'policy-v1'], ['versions', versions], ['approved_snapshot', { hash: 'x' }]] as const) {
+    assert.ok(has(errorsOf({ ...minimalDraft(), [field]: value }), field, 'system_field'), field);
+  }
+});
+
+test('unknown top-level fields are rejected', () => {
+  assert.ok(has(errorsOf({ ...minimalDraft(), priority: 'high' }), 'priority', 'unknown_field'));
+});
+
+test('every problem is reported at once, not just the first', () => {
+  const errors = errorsOf({ objective: '', trigger: {}, inputs: [{}], allowed_tools: 1, constraints: [], acceptance_criteria: [], validation: [], cost_budget: [] });
+  const paths = new Set(errors.map((e) => e.path.split(/[.[]/)[0]));
+  for (const key of ['objective', 'trigger', 'inputs', 'allowed_tools', 'constraints', 'acceptance_criteria', 'validation', 'cost_budget']) {
+    assert.ok(paths.has(key), `missing error for ${key}`);
+  }
+});
+
+test('stored stage: policy_version and versions are required and checked; approved_snapshot is optional', () => {
+  const versions = { org_version: 'org-v1', role_version: 1, task_spec_version: 1, strategy_version: null, tool_contract_version: null };
+  const stored = { ...minimalDraft(), policy_version: 'policy-v1', versions };
+  assert.equal(validateTaskSpec(stored, 'stored').ok, true);
+  assert.equal(validateTaskSpec({ ...stored, approved_snapshot: { hash: 'abc' } }, 'stored').ok, true);
+
+  const noPolicy = errorsOf({ ...stored, policy_version: undefined }, 'stored');
+  assert.ok(has(noPolicy, 'policy_version', 'required'));
+  assert.ok(has(errorsOf({ ...minimalDraft(), policy_version: 'policy-v1' }, 'stored'), 'versions', 'required'));
+  assert.ok(has(errorsOf({ ...stored, versions: { ...versions, role_version: undefined } }, 'stored'), 'versions.role_version', 'type'));
+  assert.ok(has(errorsOf({ ...stored, versions: { ...versions, extra: 1 } }, 'stored'), 'versions.extra', 'unknown_field'));
+  assert.ok(has(errorsOf({ ...stored, approved_snapshot: 'x' }, 'stored'), 'approved_snapshot', 'type'));
+  // 저장 단계에서도 본문 규칙은 그대로 적용된다
+  assert.ok(has(errorsOf({ ...stored, acceptance_criteria: [] }, 'stored'), 'acceptance_criteria', 'required'));
+});

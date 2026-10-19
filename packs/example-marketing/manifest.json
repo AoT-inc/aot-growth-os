@@ -1,5 +1,5 @@
 {
-  "_comment": "ADR-0012 팩 manifest 자리표시. 스키마(필드 정의·검증)는 A1 에서 정한다. 내용은 모두 가상 값이다.",
+  "_comment": "ADR-0012 팩 manifest. 형식 검증은 @aot/domain 의 validatePackManifest 가 한다(test/unit/pack-manifest.test.ts). 내용은 모두 가상 값이다.",
   "name": "example-marketing",
   "version": "0.0.0",
   "requires_core": ">=0.0.0 <1.0.0",

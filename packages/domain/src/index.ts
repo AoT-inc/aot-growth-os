@@ -28,3 +28,12 @@ export {
   isNonBlankString, isPlainObject, IssueCollector, ValidationError,
   type Issue, type PlainObject, type ValidationResult,
 } from './validation.ts';
+export {
+  createMemoryItem, currentFacts, getMemoryItem, isCurrentFact, listMemoryItems, MemoryRuleError, refuteMemoryItem,
+  supersedeMemoryItem, sweepExpiredMemory,
+  type MemoryContext, type MemoryFilter, type MemoryRuleCode, type NewMemoryItem,
+} from './memory.ts';
+export {
+  currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_BASELINE, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
+  taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,
+} from './seed.ts';

@@ -18,8 +18,11 @@ queued ──► running ──► validating ──► completed
 | (none) | queued | 업무 생성 엔진 | 명세 검증 통과, 의존 업무 존재, 배정 가능한 `trial`/`active` 역할 있음 |
 | (none) | unassigned | 업무 생성 엔진 | 맞는 역할 없음 → 조직 관리팀의 재편 신호 |
 | unassigned | queued | 스케줄러 | 역할 배정됨(기존 역할 확장 또는 새 역할 `trial` 시작) |
-| queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용 |
+| queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용, 실행 인자 = `approved_hash`, lease 획득 |
+| queued | needs_review | 스케줄러/정책 | `approved_hash` 불일치(재승인 요청) 또는 실행 직전 재검증에서 승인 범위 이탈 |
 | running | validating | 스케줄러 | `task_run.outcome='submitted'` |
+| running | queued | 스케줄러 | lease 만료로 run을 `lease_expired`로 닫음, 미확정 부작용 없음 ([recovery §4](../operations/recovery.md)) |
+| running | needs_review | 스케줄러 | run `effect_unknown`, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈 |
 | running | retry_wait | 스케줄러 | error/timeout, `attempts < max_attempts` |
 | running | failed | 스케줄러 | `attempts >= max_attempts` 또는 치명적 정책 위반 |
 | validating | completed | **검증기만** | 모든 acceptance_criteria 충족 AND `safety != fail` |
@@ -32,10 +35,10 @@ queued ──► running ──► validating ──► completed
 규칙
 - 에이전트(`actor.kind='agent'`)는 상태를 직접 바꿀 수 없다. 결과만 제출한다.
 - 모든 전이는 `task_transition`에 `caused_by`와 함께 기록한다.
-- 데몬 재시작 시: `running` 업무는 해당 `task_run`을 `killed`로 닫고 `retry_wait`로 보낸다(재시도 횟수 소모 여부는 정책 파라미터, 기본 소모하지 않음). 외부 부작용이 있던 run은 멱등 토큰으로 중복 방지.
+- 데몬 재시작·워커 사망 시 복구 규칙은 [recovery §2·§4](../operations/recovery.md)가 정본이다: lease가 만료된 `running` 업무의 run은 `outcome='lease_expired'`로 닫고(`killed`는 `time_limit` 초과 등으로 시스템이 강제 종료한 경우에만 쓴다), 업무는 `running → queued`로 돌아가 새 `attempt`로 인수된다(재시도 횟수 소모 여부는 정책 파라미터, 기본 소모하지 않음). `dispatched`/`unknown` 부작용이 남은 run은 `queued`가 아니라 `needs_review`로 간다.
 - 종료 상태: `completed`, `failed`, `cancelled`.
 - 실행 소유권(lease)과 부작용 복구 규칙은 [recovery](../operations/recovery.md)를 따른다. 외부 부작용이 `unknown`인 run은 `retry_wait`가 아니라 `needs_review`로 간다.
-- `queued → running`은 task_run 생성(lease 획득)과 한 트랜잭션이다. 실행 인자가 `approved_hash`와 다르면 `running`으로 가지 못하고 `needs_review`(재승인)로 간다.
+- `queued → running`은 task_run 생성(lease 획득)과 한 트랜잭션이다. 실행 인자가 `approved_hash`와 다르면 `running`으로 가지 못하고 `queued → needs_review`(재승인)로 간다.
 - 실행 시작 시 현재 `policy_version`이 생성 시점보다 엄격하면 새 정책으로 재검증한다.
 
 ## 조직 제안 (`org_proposal.status`)

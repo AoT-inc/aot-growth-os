@@ -4,8 +4,8 @@
 |---|---|---|---|---|
 | Q1 | 상품 등록 절차의 검증 업무 명세(`workflows/product-registration`): 수집 항목, 비밀값 스캔 방식, 공개/내부 분류 기준 | ADR-0010 | **일부 해소**: 템플릿 작성 완료 ([workflows/product-registration.md](../workflows/product-registration.md)). 실제 수행과 템플릿 개정은 Phase A 후속, 스캐너 선택은 Q21 | Phase A 통과 후 |
 | Q2 | 런타임/DB 최종 확정 (TypeScript + SQLite로 가정) | ADR-0001 | 기존 제품 스택과의 정합성 확인 | 코드 착수 전 |
-| Q3 | 실행 조정: LangGraph vs Microsoft Agent Framework | ADR-0009 | 축소 시나리오 스파이크 | MVP 구현 중 |
-| Q4 | OpenHands 헤드리스 실행 가능성 | ADR-0005 | 스파이크 | 에이전트 어댑터 착수 전 |
+| Q3 | 실행 조정: LangGraph vs Microsoft Agent Framework | ADR-0009 | 축소 시나리오 스파이크 | Phase A 후속 (A5 선행 아님) |
+| Q4 | OpenHands 헤드리스 실행 가능성 | ADR-0005 | 스파이크 | Phase A 후속 (코드 작업 어댑터 착수 전) |
 | Q5 | MVP의 "측정 신호 1개"는 무엇인가 (어느 제품의 어느 지표) | ADR-0007 | 사람 결정 | MVP 설계 확정 전 |
 | Q6 | 위험 변경 승인자 구성 (1인 회사라면 2인 승인 불가 → 대안: 지연 대기 + 별도 채널 확인) | ADR-0006 | 사람 결정 | 정책 초안 전 |
 | Q7 | 정책 표현 방식 (YAML + 코드 평가 vs OPA/Cedar 등) | ADR-0006 | 별도 ADR | 정책 패키지 착수 전 |
@@ -26,3 +26,5 @@
 | Q22 | 검증 단계 LLM 모델 등급과 검증 비용 비율 (실행 에이전트와 다른 호출·가능하면 다른 모델) | evaluation, workflows/product-registration | 등록 검증·주간 조사에서 비용 대비 검출력 비교 | A4 평가기 구현 중 |
 | Q23 | 등록 검증 업무를 맡을 부서·역할을 Phase A 시드 조직에 둘지 (둘 수 없으면 `unassigned`로 생성) | workflows/product-registration, ADR-0011 | 사람 결정 | 시드 조직 확정 전 |
 | Q24 | SQLite 접근 계층과 마이그레이션 도구 선택 (Postgres 이식성, 트랜잭션·유일 인덱스 활용) | ADR-0001, phase-a | 후보를 lease 획득 트랜잭션 시나리오로 시험 | 저장소 부트스트랩(A0) |
+| Q25 | 사람 승인 채널의 인증 수단 (별도 OS 사용자 / 소켓 피어 자격 증명 / 패스키 등) | trust-boundaries §3.1 | 후보 비교 후 사람 결정 | A3 착수 전 |
+| Q26 | 에이전트 격리 방식 (별도 OS 사용자 / 컨테이너 / 샌드박스) 과 게이트웨이 통신 방식 | trust-boundaries §3.1, ADR-0005 | 스파이크 | A5 착수 전 |

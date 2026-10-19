@@ -11,7 +11,7 @@
 | `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]` | 출처 없는 입력 |
 | `dependencies` | | 선행 업무 id 목록 | 순환 |
 | `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target}]`. 최종 권한은 정책이 결정 | 정책 판정이 deny |
-| `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}` | 정책 위반 |
+| `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
 | `acceptance_criteria` | ✔ | 완료 조건 목록 (검증 가능한 문장 또는 체크 id) | 비어 있음 |
 | `validation` | ✔ | `{deterministic: [...], llm: {...}\|null, human: bool}` | 검증 방식 없음 |
 | `policy_version` | ✔ | 적용 정책 버전 (생성 시 시스템이 채움) | 에이전트가 지정 시도 |
@@ -32,7 +32,7 @@
   "inputs": [{"name": "keywords", "ref": "strategy:active#research_keywords", "kind": "strategy"}],
   "dependencies": [],
   "allowed_tools": [{"tool": "web_search", "operations": ["search", "fetch"]}],
-  "constraints": {"time_limit": "30m", "network_allowlist": ["*"], "publish_scope": "internal"},
+  "constraints": {"time_limit": "30m", "network_allowlist": ["search.example.com", "docs.example.com"], "publish_scope": "internal"},
   "acceptance_criteria": [
     "각 주장에 접근 가능한 출처 URL이 1개 이상 있다",
     "각 인용문이 출처 원문에 존재한다",

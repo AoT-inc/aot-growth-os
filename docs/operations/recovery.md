@@ -22,10 +22,13 @@ ADR-0004(생성 멱등성)를 **실행 소유권**과 **부작용 멱등성**으
 
 규칙
 1. `queued → running` 전이와 run 생성은 **한 트랜잭션**에서 수행한다. 활성 run 유일 인덱스가 두 번째 워커의 진입을 막는다.
-2. 워커는 외부 부작용 직전마다 lease가 유효한지 확인하고 갱신한다. lease를 잃었으면 부작용을 보내지 않고 즉시 중단한다.
+2. **펜싱.** 확인과 전송 사이에 lease가 만료될 수 있으므로 "확인 후 전송"만으로는 안전하지 않다. 부작용 전송 직전의 `external_effect` 상태 갱신(`planned → dispatched`)과 `heartbeat` 갱신은 모두 하나의 트랜잭션에서 아래 조건을 만족할 때만 성공한다.
+   - `task_run.lease_owner = 나` AND `lease_expires_at > now` AND `outcome IS NULL`
+   - 조건 불충족(갱신 행 0건)이면 부작용을 보내지 않고 즉시 중단한다. 전송 후에 lease를 잃은 경우는 이미 `dispatched`로 기록돼 있으므로 인수한 워커가 §3 절차로 처리한다.
+   - 외부 호출의 최대 소요 시간은 lease 만료 시간보다 짧게 두거나, 호출 중에도 heartbeat가 갱신되도록 한다.
 3. lease가 만료된 run은 다른 워커(또는 재시작한 데몬)가 인수할 수 있다. 인수 시 기존 run은 `outcome='lease_expired'`로 닫고 새 `attempt`를 만든다.
 4. 인수한 run은 `checkpoint`부터 이어 가되, **이미 `dispatched`/`unknown` 상태인 부작용은 §3 절차를 먼저 거친다.**
-5. 시계 오차를 고려해 lease 판정은 DB 시각 기준으로 한다.
+5. 시각은 **주입되는 단일 `Clock`** 에서 얻어 쿼리 파라미터(`now`)로 넘긴다. Phase A는 단일 호스트의 SQLite만 지원하므로 모든 워커가 같은 호스트 시계를 쓴다. SQL 내부의 `now()`/`datetime('now')`는 lease 판정에 쓰지 않는다(테스트에서 시간을 제어할 수 없기 때문). 다중 호스트·Postgres로 옮길 때는 DB 시각을 `Clock` 구현으로 교체한다.
 
 ## 3. 부작용 멱등성
 
@@ -60,7 +63,7 @@ confirmed → compensated (보상 작업이 실행된 경우)
 | `running`, 부작용 없음 | lease 만료 대기 → run `lease_expired` → 새 attempt (`retry_wait` 거치지 않고 `queued`로) |
 | `running`, `planned`만 있음 | 위와 동일. `planned`는 미전송으로 간주하되 `effect_key`로 재사용 |
 | `running`, `dispatched`/`unknown` 있음 | §3 표 적용 |
-| `validating` | 검증은 재실행 가능해야 한다(읽기 전용). 중복 평가 기록은 `UNIQUE(task_id, evaluator, run)`로 흡수 |
+| `validating` | 검증은 재실행 가능해야 한다(읽기 전용). 중복 평가 기록은 `evaluation`의 `UNIQUE(task_id, task_run_id, evaluator)`로 흡수 |
 | `retry_wait` | `next_run_at`부터 정상 재개 |
 | `needs_review` | 사람 응답 대기. 데몬 재시작과 무관 |
 

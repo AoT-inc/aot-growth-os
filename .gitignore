@@ -1,8 +1,11 @@
 # 내부 인스턴스 데이터 (공개 저장소에 커밋하지 않음)
 instance/
 *.db
-*.sqlite
-*.sqlite3
+*.sqlite*
+*.db-*
+*-wal
+*-shm
+*-journal
 .env
 .env.*
 !.env.example

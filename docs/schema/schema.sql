@@ -321,6 +321,7 @@ CREATE TABLE approval (
 CREATE TABLE evaluation (
   id           TEXT PRIMARY KEY,
   task_id      TEXT NOT NULL REFERENCES task(id),
+  task_run_id  TEXT REFERENCES task_run(id), -- 평가 대상 run (재검증 시 중복 기록 흡수용)
   evaluator    TEXT NOT NULL,                 -- 평가기 id@version
   validation_passed INTEGER NOT NULL,
   outcome      TEXT NOT NULL CHECK (outcome IN ('pass','fail','inconclusive')),  -- 증거 부족 시 억지로 결정하지 않음
@@ -334,7 +335,8 @@ CREATE TABLE evaluation (
   evidence_refs TEXT NOT NULL,                -- JSON
   total_cost_usd REAL,
   human_minutes  REAL,
-  at           TEXT NOT NULL
+  at           TEXT NOT NULL,
+  UNIQUE (task_id, task_run_id, evaluator)
 );
 
 -- ===== 기억 (ADR-0008) =====
@@ -371,3 +373,11 @@ CREATE TABLE publication (
   approval_id  TEXT REFERENCES approval(id),  -- audience!='internal'이면 published에 필수 (애플리케이션 규칙)
   published_at TEXT
 );
+
+-- ===== append-only 강제 (SQLite 트리거; Postgres 이식 시 동등한 규칙/트리거로 교체) =====
+CREATE TRIGGER task_transition_no_update BEFORE UPDATE ON task_transition BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER task_transition_no_delete BEFORE DELETE ON task_transition BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER cost_entry_no_update BEFORE UPDATE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER cost_entry_no_delete BEFORE DELETE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER policy_decision_no_update BEFORE UPDATE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER policy_decision_no_delete BEFORE DELETE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;

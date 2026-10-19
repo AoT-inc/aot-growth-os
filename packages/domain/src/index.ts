@@ -14,7 +14,7 @@ export {
   type TransitionRequirement, type TransitionRule,
 } from './state/machine.ts';
 export {
-  isTaskTerminal, ORG_PROPOSAL_MACHINE, PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE,
+  EXTERNAL_EFFECT_MACHINE, isTaskTerminal, ORG_PROPOSAL_MACHINE, PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE,
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
 export {
@@ -33,6 +33,10 @@ export {
   supersedeMemoryItem, sweepExpiredMemory,
   type MemoryContext, type MemoryFilter, type MemoryRuleCode, type NewMemoryItem,
 } from './memory.ts';
+export {
+  DENY_ALL_TASK_POLICY_GATE,
+  type TaskCreationGateRequest, type TaskCreationVerdict, type TaskPolicyGate, type TaskRunGateRequest, type TaskRunVerdict,
+} from './ports/task-policy-gate.ts';
 export {
   currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_BASELINE, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
   taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,

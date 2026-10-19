@@ -2,7 +2,7 @@
 // `terminal` 은 문서가 "종료 상태" 로 명시한 업무(task)에만 채운다. 다른 기계는 나가는 전이가 없는 상태가 곧 끝이다.
 // 시험(test/unit/state-machines.test.ts)이 문서의 "금지된 전이" 절을 그대로 고정한다.
 import type {
-  OrgProposalStatus, ProductLifecycleStage, ProductRegistrationStatus, PublicationStatus, Lifecycle,
+  ExternalEffectState, OrgProposalStatus, ProductLifecycleStage, ProductRegistrationStatus, PublicationStatus, Lifecycle,
   StrategyStatus, TaskStatus,
 } from '../entities/enums.ts';
 import {
@@ -133,6 +133,26 @@ export const PRODUCT_LIFECYCLE_MACHINE: StateMachine<ProductLifecycleStage> = {
   ],
 };
 
+// ===== 외부 부작용 (external_effect.state) =====
+// 정본은 docs/operations/recovery.md §3 의 그림과 재시도 규칙 표다. 그림의 전이에 표의 재전송·조회 경로를 더했다.
+// 부작용 상태는 업무 엔진(시스템)이 도구 호출 앞뒤로 기록한다. 에이전트는 바꿀 수 없다.
+export const EXTERNAL_EFFECT_MACHINE: StateMachine<ExternalEffectState> = {
+  name: 'external_effect',
+  states: ['planned', 'dispatched', 'confirmed', 'failed', 'unknown', 'compensated'],
+  terminal: [],
+  rules: [
+    rule('planned', 'dispatched', ['system'], { preconditions: '전송 직전, lease 펜싱 조건 충족 (recovery §2 규칙 2)' }),
+    rule('dispatched', 'confirmed', ['system']),
+    rule('dispatched', 'failed', ['system'], { preconditions: '외부가 명확히 실패 응답' }),
+    rule('dispatched', 'unknown', ['system'], { preconditions: '타임아웃, 응답 유실, 워커 사망' }),
+    rule('unknown', 'dispatched', ['system'], { preconditions: 'supports_idempotency=1 일 때만 같은 키로 재전송 (§3 표). 미지원은 재전송 금지' }),
+    rule('unknown', 'confirmed', ['system', 'human'], { preconditions: '외부 상태 조회로 전달 확인, 또는 needs_review 에서 사람 판단' }),
+    rule('unknown', 'failed', ['system', 'human'], { preconditions: '외부 상태 조회로 미전달 확인, 또는 사람 판단' }),
+    rule('failed', 'dispatched', ['system'], { preconditions: '재전송은 정책 허용 시 (§3 표, A3)' }),
+    rule('confirmed', 'compensated', ['system', 'human'], { preconditions: '보상 작업(compensation_ref)이 실행된 경우' }),
+  ],
+};
+
 export const STATE_MACHINES = {
   task: TASK_MACHINE,
   org_proposal: ORG_PROPOSAL_MACHINE,
@@ -141,4 +161,5 @@ export const STATE_MACHINES = {
   publication: PUBLICATION_MACHINE,
   product_registration: PRODUCT_REGISTRATION_MACHINE,
   product_lifecycle: PRODUCT_LIFECYCLE_MACHINE,
+  external_effect: EXTERNAL_EFFECT_MACHINE,
 } as const;

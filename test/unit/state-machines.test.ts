@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  assertTransition, checkTransition, isTaskTerminal, NON_AGENT_ACTORS, ORG_PROPOSAL_MACHINE,
+  assertTransition, checkTransition, EXTERNAL_EFFECT_MACHINE, isTaskTerminal, NON_AGENT_ACTORS, ORG_PROPOSAL_MACHINE,
   PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE, ROLE_MACHINE, STRATEGY_MACHINE,
   TASK_MACHINE, TransitionError, reachableFrom,
   type StateMachine, type TransitionActor,
@@ -42,6 +42,13 @@ const LIFECYCLE_ALLOWED: Pair[] = [
   ['idea', 'development'], ['development', 'beta'], ['beta', 'live'], ['live', 'maintenance'], ['maintenance', 'sunset'],
 ];
 
+// docs/operations/recovery.md §3: 그림(planned → dispatched → confirmed/failed/unknown, confirmed → compensated)과
+// 재시도 표(unknown 재전송·조회 확인, failed 재전송)
+const EFFECT_ALLOWED: Pair[] = [
+  ['planned', 'dispatched'], ['dispatched', 'confirmed'], ['dispatched', 'failed'], ['dispatched', 'unknown'],
+  ['unknown', 'dispatched'], ['unknown', 'confirmed'], ['unknown', 'failed'], ['failed', 'dispatched'], ['confirmed', 'compensated'],
+];
+
 const ALL_ACTORS: TransitionActor[] = [...NON_AGENT_ACTORS, 'agent'];
 
 function acceptsSome(machine: StateMachine<string>, from: string | null, to: string): boolean {
@@ -58,6 +65,7 @@ const MACHINES: ReadonlyArray<readonly [string, StateMachine<string>, Pair[]]> =
   ['publication', PUBLICATION_MACHINE, PUBLICATION_ALLOWED],
   ['product registration', PRODUCT_REGISTRATION_MACHINE, REGISTRATION_ALLOWED],
   ['product lifecycle', PRODUCT_LIFECYCLE_MACHINE, LIFECYCLE_ALLOWED],
+  ['external_effect', EXTERNAL_EFFECT_MACHINE, EFFECT_ALLOWED],
 ];
 
 for (const [name, machine, allowed] of MACHINES) {

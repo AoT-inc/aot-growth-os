@@ -1,6 +1,8 @@
 // 가짜 외부 도구 (A0 골격). 멱등 키를 지원하는 종류와 지원하지 않는 종류 두 가지를 낸다.
 // A2 의 external_effect 상태 머신·재시작 복구 시험이 이 둘로 규칙을 검증한다 (docs/operations/recovery.md §3).
 // 실제 네트워크·외부 서비스를 호출하지 않고, 같은 입력에 항상 같은 결과를 낸다.
+// `storePath` 를 주면 전달 기록을 파일(JSON lines)에 남겨 여러 프로세스가 같은 "외부 시스템"을 본다 (다중 프로세스 시험용).
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
 export interface FakeToolRequest {
   /** hash(task_id, step_id, canonical(request)) — 재시도해도 같다 */
@@ -46,32 +48,44 @@ export interface FakeTool {
 
 export interface FakeToolOptions {
   name?: string;
+  /** 전달 기록 파일. 주면 같은 파일을 여는 모든 프로세스가 기록을 공유한다 */
+  storePath?: string;
 }
 
-function build(supportsIdempotency: boolean, name: string): FakeTool {
-  const deliveries: FakeToolDelivery[] = [];
-  const byKey = new Map<string, FakeToolDelivery>();
+function build(supportsIdempotency: boolean, name: string, storePath?: string): FakeTool {
+  const memory: FakeToolDelivery[] = [];
+  const load = (): FakeToolDelivery[] => {
+    if (storePath === undefined) return memory;
+    if (!existsSync(storePath)) return [];
+    return readFileSync(storePath, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as FakeToolDelivery);
+  };
+  const append = (delivery: FakeToolDelivery): void => {
+    if (storePath === undefined) memory.push(delivery);
+    else appendFileSync(storePath, `${JSON.stringify(delivery)}\n`);
+  };
+  const byKey = (effectKey: string) => load().find((d) => d.effectKey === effectKey);
   let loseResponses = 0;
 
   return {
     name,
     supportsIdempotency,
-    deliveries,
-    lookup: supportsIdempotency ? (effectKey) => byKey.get(effectKey) : undefined,
+    get deliveries() {
+      return load();
+    },
+    lookup: supportsIdempotency ? (effectKey) => byKey(effectKey) : undefined,
     loseNextResponses(count) {
       loseResponses = count;
     },
     call(request) {
-      const existing = supportsIdempotency ? byKey.get(request.effectKey) : undefined;
+      const existing = supportsIdempotency ? byKey(request.effectKey) : undefined;
       let delivery = existing;
       if (!delivery) {
         delivery = {
-          deliveryId: `${name}-delivery-${deliveries.length + 1}`,
+          deliveryId: `${name}-delivery-${load().length + 1}`,
           effectKey: request.effectKey,
           payload: request.payload,
         };
-        deliveries.push(delivery);
-        byKey.set(request.effectKey, delivery);
+        append(delivery);
       }
       if (loseResponses > 0) {
         loseResponses -= 1;
@@ -84,10 +98,10 @@ function build(supportsIdempotency: boolean, name: string): FakeTool {
 
 /** 멱등 키 지원: 같은 키의 재전송은 부작용을 새로 만들지 않고 기존 결과를 돌려준다. 상태 조회 가능. */
 export function createIdempotentFakeTool(options: FakeToolOptions = {}): FakeTool {
-  return build(true, options.name ?? 'fake-idempotent-tool');
+  return build(true, options.name ?? 'fake-idempotent-tool', options.storePath);
 }
 
 /** 멱등 키 미지원: 호출할 때마다 부작용이 생긴다. 상태 조회 불가 — 재전송 금지 규칙의 시험 대상. */
 export function createNonIdempotentFakeTool(options: FakeToolOptions = {}): FakeTool {
-  return build(false, options.name ?? 'fake-plain-tool');
+  return build(false, options.name ?? 'fake-plain-tool', options.storePath);
 }

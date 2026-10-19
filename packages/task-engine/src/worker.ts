@@ -1,0 +1,230 @@
+// 폴링 워커: 한 번의 tick 에서 (1) 만료 lease 인수 (2) 재시도 대기 해제 (3) 업무 하나 선택·lease 획득 (4) 실행.
+// 실행 자체는 TaskExecutor 포트에 맡긴다 (A5 의 agent-runtime 이 구현한다. 의존 방향상 agent-runtime 이 이 패키지를 참조).
+// 실행 중에는 heartbeatMs 마다 heartbeat 를 쓰고, lease 를 잃으면 signal 을 abort 해 실행을 멈추게 한다.
+// lease 를 잃은 뒤에는 결과도 부작용도 기록하지 않는다 (펜싱이 거부한다).
+import {
+  DENY_ALL_TASK_POLICY_GATE,
+  type Clock, type Db, type ExternalEffectRow, type TaskPolicyGate, type TaskSpec,
+} from '@aot/domain';
+
+import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
+import { LeaseLostError } from './errors.ts';
+import {
+  claimNextTask, failRun, findExpiredRuns, heartbeat, promoteDueRetries, saveCheckpoint, submitRun, takeOverExpiredRun,
+  type EffectLookups, type Lease, type RunEnd, type TakeoverResult,
+} from './lease.ts';
+import { checkLeaseParams, DEFAULT_LEASE_PARAMS, type LeaseParams } from './params.ts';
+
+/** 실행기가 받는 것. 상태 전이 API 는 없다 — 실행기는 결과만 돌려준다 (에이전트는 상태를 바꾸지 않는다). */
+export interface RunContext {
+  readonly taskId: string;
+  readonly spec: TaskSpec;
+  readonly attempt: number;
+  readonly lease: Lease;
+  /** 직전 run 의 checkpoint (없으면 null) */
+  readonly checkpoint: unknown;
+  /** lease 를 잃으면 abort 된다 */
+  readonly signal: AbortSignal;
+  saveCheckpoint(value: unknown): void;
+  heartbeat(): void;
+  /** 등록된 도구로 외부 부작용 수행 (recovery §3 규칙) */
+  performEffect(toolName: string, step: EffectStep): Promise<EffectOutcome>;
+}
+
+export interface TaskExecutor {
+  execute(context: RunContext): Promise<{ result: unknown }>;
+}
+
+/** 실행기가 타임아웃으로 끝났음을 알릴 때 던진다 (outcome='timeout'). 그 밖의 예외는 'error'. */
+export class RunTimeoutError extends Error {
+  constructor(message = 'run timed out') {
+    super(message);
+    this.name = 'RunTimeoutError';
+  }
+}
+
+export interface Timers {
+  setInterval(fn: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+export const realTimers: Timers = {
+  setInterval: (fn, ms) => setInterval(fn, ms),
+  clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+};
+
+export interface WorkerOptions {
+  db: Db;
+  clock: Clock;
+  workerId: string;
+  /** task_run.actor_id (실행을 맡는 에이전트 행위자) */
+  actorId: string;
+  /** task_run.adapter */
+  adapter: string;
+  executor: TaskExecutor;
+  /** 정책 훅. 생략하면 기본 거부(DENY_ALL_TASK_POLICY_GATE) */
+  gate?: TaskPolicyGate;
+  /** 외부 부작용 도구 (이름 → 도구). 인수 시 남은 부작용의 외부 상태 조회에도 쓴다 */
+  tools?: Readonly<Record<string, EffectTool>>;
+  lease?: Partial<LeaseParams>;
+  /** retry_wait 의 대기 시간. 기본 60초 */
+  retryDelayMs?: number;
+  /** lease 만료 인수가 시도 횟수를 소모하는가. 기본 false */
+  leaseExpiryConsumesAttempt?: boolean;
+  timers?: Timers;
+}
+
+export interface ExecutionReport {
+  taskId: string;
+  runId: string;
+  attempt: number;
+  /** lease 를 잃어 아무것도 기록하지 않았으면 'lease_lost' */
+  end: RunEnd | 'lease_lost';
+}
+
+export interface TickReport {
+  recovered: TakeoverResult[];
+  promoted: string[];
+  sentToReview: string[];
+  executed: ExecutionReport | null;
+}
+
+export const DEFAULT_RETRY_DELAY_MS = 60_000;
+
+export class TaskWorker {
+  readonly #options: WorkerOptions;
+  readonly #params: LeaseParams;
+  readonly #gate: TaskPolicyGate;
+  readonly #timers: Timers;
+
+  constructor(options: WorkerOptions) {
+    this.#options = options;
+    this.#params = checkLeaseParams({ ...DEFAULT_LEASE_PARAMS, ...options.lease });
+    this.#gate = options.gate ?? DENY_ALL_TASK_POLICY_GATE;
+    this.#timers = options.timers ?? realTimers;
+  }
+
+  get workerId(): string {
+    return this.#options.workerId;
+  }
+
+  get params(): LeaseParams {
+    return this.#params;
+  }
+
+  /** 만료 lease 인수. 남은 부작용의 외부 조회는 트랜잭션 밖에서 먼저 한다. */
+  async recoverExpired(): Promise<TakeoverResult[]> {
+    const { db, clock, workerId } = this.#options;
+    const results: TakeoverResult[] = [];
+    for (const run of findExpiredRuns(db, clock.nowIso())) {
+      const lookups = await this.#lookupOpenEffects(run.runId);
+      const result = takeOverExpiredRun(db, run, {
+        clock, workerId, lookups, consumeAttempt: this.#options.leaseExpiryConsumesAttempt ?? false,
+      });
+      if (result) results.push(result);
+    }
+    return results;
+  }
+
+  async #lookupOpenEffects(runId: string): Promise<EffectLookups> {
+    const lookups = new Map<string, { found: true; responseRef: string | null } | { found: false }>();
+    const open = this.#options.db.all<Pick<ExternalEffectRow, 'id' | 'tool' | 'effect_key'>>(
+      "SELECT id, tool, effect_key FROM external_effect WHERE task_run_id = ? AND state IN ('dispatched', 'unknown')", [runId],
+    );
+    for (const effect of open) {
+      const lookup = this.#options.tools?.[effect.tool]?.lookup;
+      if (!lookup) continue;
+      try {
+        lookups.set(effect.id, await lookup(effect.effect_key));
+      } catch {
+        // 조회 실패는 "조회 불가" 와 같다 — 결과를 넣지 않는다.
+      }
+    }
+    return lookups;
+  }
+
+  async tick(): Promise<TickReport> {
+    const { db, clock, workerId, actorId, adapter } = this.#options;
+    const recovered = await this.recoverExpired();
+    const promoted = promoteDueRetries(db, clock);
+    const claim = claimNextTask(db, { clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs });
+    if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, executed: null };
+    const executed = await this.#execute(claim.claimed.lease, claim.claimed.spec, claim.claimed.checkpoint);
+    return { recovered, promoted, sentToReview: claim.sentToReview, executed };
+  }
+
+  async #execute(lease: Lease, spec: TaskSpec, checkpoint: unknown): Promise<ExecutionReport> {
+    const { db, clock, executor, tools } = this.#options;
+    const abort = new AbortController();
+    const lost = (error: unknown): boolean => {
+      if (error instanceof LeaseLostError) {
+        abort.abort(error);
+        return true;
+      }
+      return false;
+    };
+    const guard = <T>(fn: () => T): T => {
+      if (abort.signal.aborted) throw new LeaseLostError(lease.runId, 'write after lease loss');
+      try {
+        return fn();
+      } catch (error) {
+        lost(error);
+        throw error;
+      }
+    };
+
+    const timer = this.#timers.setInterval(() => {
+      if (abort.signal.aborted) return;
+      try {
+        heartbeat(db, clock, lease);
+      } catch (error) {
+        // heartbeat 실패가 lease 상실이 아니면(예: busy_timeout 초과) 다음 주기에 다시 시도한다.
+        lost(error);
+      }
+    }, this.#params.heartbeatMs);
+
+    const context: RunContext = {
+      taskId: lease.taskId,
+      spec,
+      attempt: lease.attempt,
+      lease,
+      checkpoint,
+      signal: abort.signal,
+      saveCheckpoint: (value) => guard(() => saveCheckpoint(db, clock, lease, value)),
+      heartbeat: () => {
+        guard(() => heartbeat(db, clock, lease));
+      },
+      performEffect: async (toolName, step) => {
+        const tool = tools?.[toolName];
+        if (!tool) throw new Error(`external effect tool '${toolName}' is not registered`);
+        if (abort.signal.aborted) throw new LeaseLostError(lease.runId, 'external effect after lease loss');
+        try {
+          return await performEffect(db, clock, lease, tool, step);
+        } catch (error) {
+          lost(error);
+          throw error;
+        }
+      },
+    };
+
+    const report = (end: ExecutionReport['end']): ExecutionReport => ({ taskId: lease.taskId, runId: lease.runId, attempt: lease.attempt, end });
+    try {
+      let output: { result: unknown };
+      try {
+        output = await executor.execute(context);
+      } catch (error) {
+        if (lost(error) || abort.signal.aborted) return report('lease_lost');
+        const outcome = error instanceof RunTimeoutError ? 'timeout' : 'error';
+        const reason = error instanceof Error ? error.message : String(error);
+        return report(failRun(db, clock, lease, { outcome, reason, retryDelayMs: this.#options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS }));
+      }
+      if (abort.signal.aborted) return report('lease_lost');
+      return report(submitRun(db, clock, lease, output.result));
+    } catch (error) {
+      if (lost(error)) return report('lease_lost');
+      throw error;
+    } finally {
+      this.#timers.clearInterval(timer);
+    }
+  }
+}

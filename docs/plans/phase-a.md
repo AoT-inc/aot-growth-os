@@ -46,7 +46,7 @@
 
 ## 4. 저장소 부트스트랩 체크리스트 (A0)
 
-선택이 필요한 항목은 open-questions를 가리킨다. 선택 전에는 가정만 적고 코드를 시작하지 않는다.
+선택이 필요한 항목은 open-questions를 가리킨다. 선택 전에는 가정만 적고 코드를 시작하지 않는다. 사람이 정할 항목의 선택지와 권장안은 [A0 결정 초안](a0-decisions.md)에 있다.
 
 - [ ] 런타임과 DB 확정: TypeScript, SQLite (DDL은 Postgres 이식 가능 범위) — [Q2](../open-questions.md)
 - [ ] 패키지 구조: `packages/` 아래 5개 패키지와 `apps/daemon` 엔트리포인트의 빈 골격, 패키지별 공개 API 진입점 하나

@@ -1,5 +1,7 @@
 # 미결정 사항
 
+A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확장 단위)의 선택지와 권장안: [A0 결정 초안](plans/a0-decisions.md)
+
 | # | 질문 | 관련 | 결정 방법 | 기한 |
 |---|---|---|---|---|
 | Q1 | 상품 등록 절차의 검증 업무 명세(`workflows/product-registration`): 수집 항목, 비밀값 스캔 방식, 공개/내부 분류 기준 | ADR-0010 | **일부 해소**: 템플릿 작성 완료 ([workflows/product-registration.md](../workflows/product-registration.md)). 실제 수행과 템플릿 개정은 Phase A 후속, 스캐너 선택은 Q21 | Phase A 통과 후 |

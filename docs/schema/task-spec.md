@@ -10,7 +10,7 @@
 | `trigger` | ✔ | `{kind: event\|routine\|manual\|task, ref}` | ref 없음 |
 | `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]` | 출처 없는 입력 |
 | `dependencies` | | 선행 업무 id 목록 | 순환 |
-| `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target}]`. 최종 권한은 정책이 결정 | 정책 판정이 deny |
+| `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target?}]`. `scope`·`impact`는 항목마다 필수(`target`만 선택). 최종 권한은 정책이 결정 | `scope`·`impact` 누락(스키마 검증 단계, 정책 판정 이전), 정책 판정이 deny |
 | `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
 | `acceptance_criteria` | ✔ | 완료 조건 목록 (검증 가능한 문장 또는 체크 id) | 비어 있음 |
 | `validation` | ✔ | `{deterministic: [...], llm: {...}\|null, human: bool}` | 검증 방식 없음 |
@@ -31,7 +31,7 @@
   "trigger": {"kind": "routine", "ref": "weekly-market-research@2026-W42"},
   "inputs": [{"name": "keywords", "ref": "strategy:active#research_keywords", "kind": "strategy"}],
   "dependencies": [],
-  "allowed_tools": [{"tool": "web_search", "operations": ["search", "fetch"]}],
+  "allowed_tools": [{"tool": "web_search", "operations": ["search", "fetch"], "scope": "internal", "impact": "read"}],
   "constraints": {"time_limit": "30m", "network_allowlist": ["search.example.com", "docs.example.com"], "publish_scope": "internal"},
   "acceptance_criteria": [
     "각 주장에 접근 가능한 출처 URL이 1개 이상 있다",
@@ -79,5 +79,7 @@
 | 영향 | `read` / `write` / `delete` / `external_effect` |
 | 제약 | 예산, 횟수, 시간, 대상 수 상한 |
 | 승인 | 필요한 승인자/채널 |
+
+`scope`와 `impact`는 항목마다 필수다. 빠진 명세는 정책 판정에 도달하기 전에 스키마 검증에서 `scope is required`/`impact is required` 사유로 거부된다(정책이 추측해 채우지 않는다).
 
 같은 `publish_content`라도 내부 테스트 사이트(`internal`)와 외부 고객 공개(`public`)는 다른 판정을 받는다.

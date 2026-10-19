@@ -58,7 +58,7 @@
 - [x] 7요소 판정과 `policy_decision` 기록: `evaluate.ts`(결정론적, 가장 엄격한 결과, 기본 거부, 범위·영향 미선언 거부, 예산 상한), `decisions.ts`. `policy_decision.reason` 열 추가. 생성 거부 판정은 롤백 뒤 새 트랜잭션에서 남긴다
 - [x] `TaskPolicyGate` 실제 연결 (A2 이월): `gate.ts`가 구현하고 `apps/daemon/src/assemble.ts`가 조립한다. 포트에 `beforeEffect`(부작용 직전 재검증)를 더했다. 데몬은 더 이상 모든 업무를 `needs_review`로 보내지 않고 정책 판정대로 실행·검토 대기를 나눈다
 - [x] 승인 엔진(`approved_hash`)과 실행 시점 재검증: `approval.ts`·`engine.ts`. 승인은 대상 해시(명세 + 승인 시점 정책 버전)에 묶이고, 실행 직전·부작용 직전에 해시·정책 버전·역할 버전·승인자 수·자기 승인·취소·cooldown·재인증을 다시 확인한다. 정책이 강화되면 새 정책으로 재판정되고 과거 승인은 무효
-- [x] 위험 변경 승인 구성 (D3): `risky_change` 파라미터(기본 1인, 1h, 재인증, 자기 승인 금지). 보안 하향 정책 변경은 현재 정책의 위험 변경 절차를 거친다(`change.ts`). 대기 중 `cancel`로 취소
+- [x] 위험 변경 승인 구성 (D3): `risky_change` 파라미터(기본 1인, 1h, 재인증). 자기 승인은 파라미터가 아니라 `min_approvers == 1`일 때만 허용(아래 "사용자 결정 반영"). 보안 하향 정책 변경은 현재 정책의 위험 변경 절차를 거친다(`change.ts`). 대기 중 `cancel`로 취소
 - [x] 사람 승인 채널 (D5): Unix 소켓(`channel.ts`) + 승인 CLI(`apps/daemon/src/approve.ts`), TOTP(RFC 6238, `totp.ts`) 재인증, 같은 시간창 재사용 거부(`human_reauth`), 연속 실패 제한. **편차:** 피어 UID 확인 대신 소켓 파일 권한(0700/0600) — [trust-boundaries §3.1](../security/trust-boundaries.md)
 - [x] 게시 게이트: `publication.ts` — 승인 없는 `public`/`customer` 게시 거부, internal 이상 입력의 `public` 게시 거부, `confidential` 이상 입력은 승인 필요(A1 이월: memory 규칙 7)
 - [x] memory 규칙 5 (A1 이월): 기본 만료 기간을 정책 파라미터(`memory.default_validity`)로, domain `MemoryContext.defaultValiditySeconds`에 연결. 값은 비워 두었다([Q17](../open-questions.md))
@@ -66,7 +66,14 @@
 - [x] 시험: 단위 `test/unit/policy-*.test.ts`·`publication-gate.test.ts`(7요소 각각의 거부, 기본 거부, 해시 불일치·정책 강화·cooldown·취소·자기 승인·에이전트 승인 거부, TOTP 벡터·오답·재사용·시간창 경계, 보안 하향 배포의 위험 변경 절차), 통합 `test/integration/approval-channel.test.ts`(소켓 권한, 권한 없는 접속 EACCES), `policy-approval-multiprocess.test.ts`(데몬 + 승인 CLI 별도 프로세스로 승인 → 대기 → TOTP 해제 → 실행·부작용 1건, 실제 엔트리포인트 소켓). 통합 5회 반복 무실패
 - [ ] 별도 UID에서의 접근 실패 시험: 다른 UID로 프로세스를 띄울 수 없어 파일 권한으로 대신했다. A5(Q26)에서 OS 수준 시험으로 한다
 - [ ] 외부 입력 영향 호출 표시(trust-boundaries §2-3)와 호출별 게이트웨이 재판정: 도구 게이트웨이(A5)
-- 해석: `require_approval`은 외부 부작용이 아니어도(예: `customer` 범위 읽기) 같은 `risky_change` 절차를 쓴다. D4의 "write는 업무 범위 내"는 `*:task-own` 대상 패턴으로 표현했다. 정책 규칙 변경은 강화임을 증명할 수 없으면 위험 변경으로 분류한다
+- 해석: D4의 "write는 업무 범위 내"는 `*:task-own` 대상 패턴으로 표현했다. 정책 규칙 변경은 강화임을 증명할 수 없으면 위험 변경으로 분류한다. (구현 당시 해석 "외부 부작용이 아닌 `require_approval`도 같은 `risky_change` 절차"는 아래 결정 2로 대체되었다)
+
+#### A3 사용자 결정 반영 (2026-10-19)
+
+1. **자기 승인.** `self_approval` 파라미터를 없애고 `min_approvers`에서 정한다: 1이면 오너(사람 actor)의 자기 승인을 허용하되 cooldown·TOTP는 그대로, 2 이상이면 자동 금지, 에이전트 actor는 항상 불가. 보안 하향 판정과 모순이 없다 — 자기 승인이 허용으로 바뀌는 변경은 `min_approvers`를 2 이상에서 1로 내리는 변경뿐이고 이미 위험 변경이며, 사유에 "self-approval becomes allowed"를 남긴다. 정책 배포는 제안과 첫 승인이 한 번의 승인 명령이라 요청자 기록이 없어 자기 승인 검사를 하지 않았다: 1인에서는 규칙상 검사할 것이 없고, 2인 이상에서는 서로 다른 사람 승인이 승인자 수를 채우는 것으로 충분하다(제안자가 첫 승인자로 센다). 제안자를 승인자 수에서 빼는 엄격한 해석은 제안 기록을 따로 두어야 하므로 열린 질문이다.
+2. **승인 절차 범위.** cooldown·TOTP·승인자 수는 외부 부작용(`external_effect`)과 정책 변경에만 적용한다. 그 밖의 `require_approval`(예: `customer` 범위 읽기, `internal` 게시의 `confidential` 입력)은 사람 1인 승인만 받는다(`humanApprovalParams`). 업무에 외부 부작용 요청이 하나라도 있으면 위험 변경 절차다. 승인 요건은 `policy_decision.approval_required`에 요청별로 남는다.
+3. **`scope`·`impact` 필수.** 이전에는 `task_spec` 검증이 선택으로 받고 정책 판정에서 거부했다. 이제 `validateTaskSpec`이 항목마다 필수로 요구해 생성 단계(정책 판정 이전)에서 사유와 함께 거부한다. `docs/schema/task-spec.md`의 주간 조사 예시와 시험용 기본 명세에 `internal`/`read`를 넣었다. 판정기의 미선언 거부는 저장된 옛 명세·부작용 직전 재검증을 위한 방어로 남긴다.
+4. **기본 정책 internal 게시.** `policies/default.yaml`(시드 `policy-v1`)에 `internal-publish`(`publication.publish` + `internal` + `write` → allow)를 더했다. 게시 대상(`<channel>:<content_ref>`)이 `*:task-own`에 맞지 않아 가장 좁은 별도 규칙을 썼다. 외부 게시는 그대로 `require_approval`. 시드의 `policy_version.content_hash`가 바뀌었다(`POLICY_V1_DOCUMENT`에서 계산하므로 마이그레이션 SQL에는 해시가 없고, 0001 직접 수정은 없었다). 시드·드리프트 시험(`seed.test.ts`, `policy-document.test.ts`)은 새 내용에 맞췄다.
 
 ## 3. 필수 테스트 매핑
 

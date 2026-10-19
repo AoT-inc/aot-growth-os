@@ -22,7 +22,7 @@
 |---|---|---|---|---|
 | D1 | Q2 런타임/DB | TypeScript(Node LTS) + SQLite, Postgres 이식 가능 DDL 유지 **결정: 권장안 채택 (2026-10-19)** | A0 | ADR-0001 상태 → accepted |
 | D2 | Q5 측정 신호 | 랜딩 페이지 1개의 주간 목표 행동 전환 수(읽기 전용 분석 API, Phase A는 수동 입력 허용) | A6 (정의 형식은 A1) | ADR-0007 Amendment, 실제 값은 `instance/` |
-| D3 | Q6 위험 변경 승인자 | 1인 승인 + 대기 시간 + 실행 직전 재인증. 승인자 수는 정책 파라미터로 두어 2인 체제로 전환 가능 **결정: 권장안 채택, 대기 기본 1h, 인스턴스 정책에서 변경 가능 (2026-10-19)** | A3 | ADR-0006 Amendment |
+| D3 | Q6 위험 변경 승인자 | 1인 승인 + 대기 시간 + 실행 직전 재인증. 승인자 수는 정책 파라미터로 두어 2인 체제로 전환 가능 **결정: 권장안 채택, 대기 기본 1h, 인스턴스 정책에서 변경 가능 (2026-10-19). 후속: 자기 승인은 1인 승인일 때만 허용, cooldown·TOTP는 외부 부작용·정책 변경에만 (2026-10-19)** | A3 | ADR-0006 Amendment |
 | D4 | Q23 시드 조직 | 오너 1 + `generalist` 1 + 읽기 전용 `registration-verifier` 1 + 초기 정책 v1(기본 거부) **결정: 권장안 채택 (2026-10-19)** | A1 | ADR-0011 Amendment, `seedPhaseA`(`packages/domain/src/seed.ts`, A1 구현) |
 | D5 | Q25 승인 채널 인증 | Unix 도메인 소켓 + 피어 자격 증명(UID) 확인, 위험 변경은 재인증 추가. 내부 웹 도입 시 패스키 **결정: 권장안 채택, 재인증은 TOTP(RFC 6238 자체 구현) (2026-10-19)** | A3 | trust-boundaries §3.1 |
 | D6 | 라이선스 | Apache-2.0 (+ DCO 서명) — 단, 호스팅 경쟁 방지가 우선이면 AGPL-3.0 **결정: Apache-2.0 + DCO (2026-10-19)** | 첫 공개 push | `LICENSE`, README |
@@ -61,12 +61,14 @@
 
 ## D3. 위험 변경 승인자 구성 (Q6)
 
-**결정: B (1인 승인 + 짧은 대기 + 실행 직전 재인증 + 자기 승인 금지) (2026-10-19).** 기록: [ADR-0006](../adr/0006-policy-separation.md) Amendment (2026-10-19).
+**결정: B (1인 승인 + 짧은 대기 + 실행 직전 재인증) (2026-10-19). 같은 날 후속 결정으로 자기 승인 금지를 "1인 승인일 때만 허용"으로 바꿨다(아래).** 기록: [ADR-0006](../adr/0006-policy-separation.md) Amendment (2026-10-19).
 
 - 아래 `risky_change` 블록을 정책 파라미터로 둔다. 저장소의 기본 템플릿 값이 기본값이고, 인스턴스 정책(`instance/`)에서 값을 바꿀 수 있다.
-- 기본값: `min_approvers: 1`, `cooldown: 1h`(대기 중 취소 가능), `reauth_before_effect: true`, `self_approval: false`.
-- 보안을 낮추는 방향의 변경(`min_approvers` 감소, `cooldown` 단축, `reauth_before_effect` 끄기, `self_approval` 허용)은 그 자체가 위험 변경이며, **변경 전(현재) 정책**의 `risky_change` 절차를 거친다.
-- 값 범위를 검증한다: `min_approvers`는 1 이상의 정수, `cooldown`은 0 이상의 기간, 나머지는 불리언. 범위를 벗어난 정책은 배포되지 않는다.
+- 기본값: `min_approvers: 1`, `cooldown: 1h`(대기 중 취소 가능), `reauth_before_effect: true`.
+- **자기 승인 (후속 결정, 2026-10-19).** `self_approval` 파라미터는 없다. `min_approvers == 1`이면 오너(사람 actor)의 자기 승인을 허용하되 cooldown과 TOTP 재인증은 그대로 거친다. `min_approvers ≥ 2`이면 자기 승인은 자동으로 금지된다. 에이전트 actor는 어떤 경우에도 승인할 수 없다. 따라서 "자기 승인이 허용으로 바뀌는 변경"은 `min_approvers`를 2 이상에서 1로 내리는 변경이며, 이미 보안 하향(위험 변경)이다.
+- **적용 범위 (후속 결정, 2026-10-19).** 위 절차(승인자 수·cooldown·TOTP)는 **외부 부작용(`external_effect`)과 정책 변경(위험 변경)에만** 적용한다. 외부 부작용이 아닌 `require_approval`(예: `customer` 범위 읽기, `internal` 게시의 `confidential` 입력 승인)은 사람 1인의 승인만 받고 cooldown·TOTP는 없다. 이때도 자기 승인은 `min_approvers`와 같은 규칙을 따른다(1이면 허용, 2 이상이면 요청자 제외).
+- 보안을 낮추는 방향의 변경(`min_approvers` 감소, `cooldown` 단축, `reauth_before_effect` 끄기)은 그 자체가 위험 변경이며, **변경 전(현재) 정책**의 `risky_change` 절차를 거친다.
+- 값 범위를 검증한다: `min_approvers`는 1 이상의 정수, `cooldown`은 0 이상의 기간, `reauth_before_effect`는 불리언. 범위를 벗어난 정책은 배포되지 않는다.
 
 ADR-0006은 위험 변경에 "2인 이상 또는 지정 역할" 승인을 요구하지만, 1인 운영에서는 불가능하다. Phase A에서 위험 변경은 정책 PR(런타임 API 없음)과 `require_approval` 판정을 받은 외부 부작용 업무 두 가지다.
 
@@ -84,7 +86,7 @@ risky_change:
   min_approvers: 1        # 2인 체제가 되면 2로 올린다 (이 변경 자체가 위험 변경)
   cooldown: 1h            # 승인 후 실행 가능까지 대기, 대기 중 취소 가능 (결정값. 초안은 24h)
   reauth_before_effect: true   # 실행 직전 사람 재인증 (D5)
-  self_approval: false    # 요청자와 승인자가 같은 actor면 거부 (에이전트 요청은 항상 해당 없음)
+  # 자기 승인(요청자 = 승인자)은 min_approvers == 1 일 때만 허용, 2 이상이면 금지. 에이전트는 승인 불가
 ```
 
 다른 사람이 받아 쓸 때도 팀 규모에 맞게 값만 바꾸면 된다는 점이 B의 배포상 장점이다.
@@ -108,7 +110,7 @@ risky_change:
 | `actor` | 오너 1명(`kind='human'`), 데몬·평가기·정책 엔진 시스템 주체 |
 | `org_version` | v1, 부서 없음(또는 `core` 하나) |
 | `role` | `generalist@v1`(주간 조사·실험 제안), `registration-verifier@v1`(읽기 전용) |
-| `policy_version` | v1: 기본 거부, `internal` 읽기 허용, `write`는 업무 범위 내 허용, `external_effect`·`customer`/`public` 범위는 `require_approval` |
+| `policy_version` | v1: 기본 거부, `internal` 읽기 허용, `write`는 업무 범위 내 허용, `internal` 게시(`publication.publish`)는 별도 규칙으로 허용(2026-10-19 후속 결정), `external_effect`·`customer`/`public` 범위는 `require_approval` |
 
 후속 정리: [task-spec 예시](../schema/task-spec.md)의 `planning`/`market-researcher`는 가상 예시로 두되, Phase A 시드와 맞추려면 `generalist`로 바꾼다.
 

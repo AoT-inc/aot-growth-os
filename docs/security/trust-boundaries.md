@@ -45,7 +45,7 @@
 결정(2026-10-19, [a0-decisions D5](../plans/a0-decisions.md), Q25 해소):
 
 - **채널.** 승인 CLI(사람용)와 데몬의 승인 엔진은 Unix 도메인 소켓으로만 통신한다. 승인 엔진은 접속한 피어의 UID를 확인한다. 에이전트 `actor`가 보낸 승인 요청은 어떤 경우에도 거부한다.
-- **재인증.** 위험 변경(ADR-0006 Amendment 2026-10-19의 `risky_change`)은 실행 직전 TOTP(RFC 6238)로 사람을 다시 확인한다. 구현은 `node:crypto`만 쓴다. 같은 시간창의 코드를 다시 넣으면 거부한다.
+- **재인증.** 위험 변경(외부 부작용과 정책 변경, ADR-0006 Amendment 2026-10-19의 `risky_change`)은 실행 직전 TOTP(RFC 6238)로 사람을 다시 확인한다. 구현은 `node:crypto`만 쓴다. 같은 시간창의 코드를 다시 넣으면 거부한다.
 - **비밀.** TOTP 비밀은 `instance/`에만 둔다. 저장소·로그·`policy_decision`·`approval`에 남기지 않는다.
 
 **Phase A 편차 (A3 구현, 2026-10-19): 피어 UID 대신 소켓 파일 권한.** Node는 피어 자격 증명(`SO_PEERCRED`/`getpeereid`)을 노출하지 않아 네이티브 애드온 없이는 접속한 프로세스의 UID를 확인할 수 없다. A3는 대신 다음으로 접근을 제한한다(`packages/policy/src/channel.ts`).

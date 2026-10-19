@@ -53,7 +53,7 @@ confirmed → compensated (보상 작업이 실행된 경우)
 | `confirmed` | 재전송하지 않고 결과 재사용 | 동일 |
 | `failed` | 재전송 가능(정책 허용 시) | 동일 |
 
-- 상태가 `unknown`인 부작용이 있는 run은 `outcome='effect_unknown'`으로 닫는다. 업무는 `retry_wait`가 아니라 `needs_review`로 간다.
+- 상태가 `unknown`인 부작용이 있는 run은 `outcome='effect_unknown'`으로 닫는다. 멱등 키 미지원 도구면 업무는 `retry_wait`가 아니라 `needs_review`로 간다. 멱등 키 지원 도구면 업무를 `queued`로 돌려 같은 키로 재전송한다(위 표, 2026-10-19 사람 확인).
 - 외부 부작용 도구를 쓰는 어댑터는 `supports_idempotency`를 계약에 선언해야 한다 (`tool_contract_version`에 포함).
 
 ## 4. 데몬 재시작 시나리오

@@ -18,7 +18,7 @@ A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확
 | Q12 | 조직 관리팀과의 대화 채널(Desktop / 내부 웹) 및 대화 내용 중 무엇을 `memory_item`으로 남길지 | ADR-0011, ADR-0008 | 사람 결정 | 조직 관리팀 구현 전 |
 | Q13 | 재편 신호의 임계값(예: 반복 실패 N회) | ADR-0011 | 초기 운영 데이터로 보정 | 시험 운영 후 |
 | Q14 | 외부 부작용 도구별 멱등 키 지원 여부 조사 (이메일 발송, 게시, CRM 쓰기) | recovery | 도구 어댑터 도입 시 조사 | 어댑터 착수 전 |
-| Q15 | (해소) lease 90초, heartbeat 30초, 데몬 폴링 5초. 복구 지연 목표 120초는 잠정(사람 확인 필요) | recovery | 2026-10-19 스파이크: 쓰기 경합 실측 + 가짜 시계 모의에서 오탐 인수 0 ([q15](spikes/q15-lease-parameters.md)) | 완료 (목표값 확인 대기) |
+| Q15 | (해소) lease 90초, heartbeat 30초, 데몬 폴링 5초. 복구 지연 목표 120초(2026-10-19 사람 확인) | recovery | 2026-10-19 스파이크: 쓰기 경합 실측 + 가짜 시계 모의에서 오탐 인수 0 ([q15](spikes/q15-lease-parameters.md)) | 완료 |
 | Q16 | 시험 연장 상한 횟수와 `inconclusive` 재시험 정책 | ADR-0011 | 사람 결정 | Phase B 전 |
 | Q17 | 변동성 높은 기억 종류의 기본 `valid_until` | memory-item | 정책 파라미터 | memory 구현 전 |
 | Q18 | `ProductDecision`을 `strategy_version` 하위로 둘지 분리할지 | product | 별도 검토 | Release/Capability 도입 시 |

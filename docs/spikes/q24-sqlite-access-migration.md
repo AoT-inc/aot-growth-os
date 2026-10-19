@@ -6,6 +6,7 @@
 
 - **접근 계층: `node:sqlite`(Node 24 내장) 위에 얇은 `Db` 인터페이스(`exec`/`run`/`get`/`all`)와 손으로 쓴 SQL.** 대체 드라이버는 `better-sqlite3` 13.0.3이며 같은 인터페이스의 어댑터 약 15줄로 교체되는 것을 확인했다.
 - **마이그레이션: 순서 번호가 붙은 순수 `.sql` 파일 + 자체 러너(약 30줄).** 파일마다 `BEGIN IMMEDIATE` 트랜잭션으로 적용하고 체크섬을 기록한다. `docs/schema/schema.sql`이 `0001`로 그대로 들어간다.
+- **원천 결정 (A1, 2026-10-19):** `docs/schema/schema.sql`이 설계 기준(단일 원천)이고 `migrations/0001_init.sql`은 그 복사본이다. 이후 변경은 새 마이그레이션 + `schema.sql` 동시 수정이며, 드리프트 시험이 두 결과의 `sqlite_master`(정규화)를 비교한다.
 - 쿼리 빌더/ORM(Kysely, Drizzle)은 채택하지 않는다. 필요해지면 아래 "도입 시 주의"를 지킨다.
 
 ## 판정 방법 (시험 전에 고정)

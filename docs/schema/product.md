@@ -6,7 +6,7 @@ ADR-0010의 구체화. MVP는 `Product`와 `Repository`만 구현하고, 첫 시
 
 | 엔터티 | 테이블 | 핵심 필드 |
 |---|---|---|
-| Product | `product` | `slug`, `name`, `lifecycle_stage`, `registration_status`, `owner_org_unit_id` |
+| Product | `product` | `slug`, `name`, `kind`(`software\|physical\|service\|other`), `lifecycle_stage`, `registration_status`, `owner_org_unit_id` |
 | Repository | `product_repo` | `local_path`, `remote_url`, `default_branch`, `stack`, `access_scope` |
 | Environment | `product_environment` | `name`, `url`, `access_class` |
 
@@ -29,5 +29,6 @@ ADR-0010의 구체화. MVP는 `Product`와 `Repository`만 구현하고, 첫 시
 - 이 저장소에는 실제 제품 데이터를 두지 않는다. 예시는 `example-product`만 사용한다 ([public-repository](../security/public-repository.md)).
 - `lifecycle_stage`의 `live` 전환과 운영 환경 접근 부여는 위험 변경이다.
 - 저장소 접근은 `access_scope`(`none` 기본)와 정책 판정을 모두 통과해야 한다.
-- 제품 하나는 여러 저장소를 가질 수 있다(1:N).
+- 제품 하나는 여러 저장소를 가질 수 있다(1:N). 저장소는 선택이며 0개도 허용한다(소프트웨어가 아닌 상품 등, [ADR-0012](../adr/0012-extension-unit-contract.md) §5).
+- `kind`는 필수이며 기본값이 없다. 등록 시 사람이 명시한다.
 - 레지스트리의 진실 원본은 내부 인스턴스 DB다 (YAML 시드 없음, ADR-0010).

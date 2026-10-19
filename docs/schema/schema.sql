@@ -1,4 +1,6 @@
--- AoT Growth OS — 스키마 초안 v0 (DRAFT, 미적용)
+-- AoT Growth OS — 스키마 v0 (설계 기준, 단일 원천)
+-- migrations/0001_init.sql 은 이 파일의 복사본이다. 이후 변경은 새 마이그레이션과 이 파일을 동시에 고친다
+-- (드리프트 시험: test/unit/schema-drift.test.ts, 결정 기록: docs/plans/phase-a.md §4 A0 "마이그레이션" 항목).
 -- SQLite로 시작, Postgres 이식 가능한 범위(JSON은 TEXT, 시간은 ISO8601 UTC TEXT).
 -- 규칙: 변경 이력이 중요한 테이블은 append-only(UPDATE/DELETE 금지)로 다룬다.
 
@@ -93,6 +95,7 @@ CREATE TABLE product (
   id              TEXT PRIMARY KEY,
   slug            TEXT NOT NULL UNIQUE,       -- 예: example-product (실제 제품명은 내부 DB에만)
   name            TEXT NOT NULL,
+  kind            TEXT NOT NULL CHECK (kind IN ('software','physical','service','other')),  -- 업종 중립 (ADR-0012 §5)
   description     TEXT,
   lifecycle_stage TEXT NOT NULL CHECK (lifecycle_stage IN
                     ('idea','development','beta','live','maintenance','sunset')),
@@ -107,6 +110,7 @@ CREATE TABLE product (
 
 -- 등록 검증 업무가 수집한 사실은 evidence로 저장하고, 승인 시 아래 컬럼에 반영한다.
 -- registered가 아닌 product는 task/event/... 의 product_id가 가리킬 수 없다 (애플리케이션 규칙).
+-- 저장소는 선택이다: product 하나가 0..N개의 product_repo를 가진다 (ADR-0012 §5). 소프트웨어가 아닌 상품은 0개.
 CREATE TABLE product_repo (
   id           TEXT PRIMARY KEY,
   product_id   TEXT NOT NULL REFERENCES product(id),

@@ -222,6 +222,20 @@ export function failRun(db: Db, clock: Clock, lease: Lease, options: FailRunOpti
   });
 }
 
+/**
+ * 실행 중 재검증(부작용 직전 정책 게이트)이 거부했다: run 을 `killed`(시스템이 강제 종료)로 닫고 running → needs_review.
+ * 반드시 펜싱을 확인한 같은 쓰기 트랜잭션 안에서 부른다. 시도 횟수는 소모하지 않는다(실행 실패가 아니라 재승인 대기).
+ */
+export function stopRunForReview(tx: Db, lease: Lease, now: string, reason: string): RunEnd {
+  settleRunEffects(tx, lease.runId, now);
+  closeRun(tx, lease.runId, 'killed', now);
+  transitionTask(tx, {
+    taskId: lease.taskId, from: 'running', to: 'needs_review', by: 'scheduler', now,
+    reason: `run ${lease.runId} stopped before an external effect: ${reason}`.slice(0, 500),
+  });
+  return { outcome: 'killed', taskStatus: 'needs_review' };
+}
+
 const unknownEffectReason = (runId: string) =>
   `run ${runId} left an 'unknown' external effect on a tool without idempotency keys; not resent automatically (recovery §3)`;
 

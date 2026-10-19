@@ -1,5 +1,6 @@
 // @aot/domain 공개 API 진입점. 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
 // 시계 주입(Clock), SQLite 접근 계층(Db), 엔터티 타입, 상태 전이 허용표, task_spec·팩 manifest 검증.
+export { canonicalJson, contentHash, sha256Hex } from './canonical.ts';
 export { FakeClock, systemClock, type Clock } from './clock.ts';
 export { createDb } from './db/create-db.ts';
 export { applyMigrations } from './db/migrate.ts';
@@ -35,9 +36,10 @@ export {
 } from './memory.ts';
 export {
   DENY_ALL_TASK_POLICY_GATE,
-  type TaskCreationGateRequest, type TaskCreationVerdict, type TaskPolicyGate, type TaskRunGateRequest, type TaskRunVerdict,
+  type EffectDispatchKind, type TaskCreationGateRequest, type TaskCreationVerdict, type TaskEffectGateRequest, type TaskEffectVerdict,
+  type TaskPolicyGate, type TaskRunGateRequest, type TaskRunVerdict,
 } from './ports/task-policy-gate.ts';
 export {
-  currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_BASELINE, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
+  currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
   taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,
 } from './seed.ts';

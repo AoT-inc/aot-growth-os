@@ -9,6 +9,7 @@ import { minimalDraft } from './spec-fixtures.ts';
 export const ALLOW_ALL_GATE: TaskPolicyGate = {
   beforeCreate: () => ({ decision: 'allow' }),
   beforeRun: () => ({ decision: 'allow' }),
+  beforeEffect: () => ({ decision: 'allow' }),
 };
 
 /** setInterval 이 저절로 불리지 않는 타이머. `fire()` 를 부를 때만 등록된 콜백이 돈다. */

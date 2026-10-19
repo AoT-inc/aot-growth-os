@@ -3,7 +3,7 @@
 import type {
   AbortReason, ActorKind, ApprovalDecision, ApprovalSubjectKind, CatchUpMode, ChangeClass, CostCategory,
   EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
-  OrgProposalStatus, OrgVersionStatus, PolicyDecisionValue, ProductKind, ProductLifecycleStage,
+  OrgProposalStatus, OrgVersionStatus, PolicyDecisionValue, ReauthMethod, ProductKind, ProductLifecycleStage,
   ProductRegistrationStatus, PublicationStatus, SafetyResult, Scope, Sensitivity, StrategyStatus,
   TaskRunOutcome, TaskStatus, TriggerKind, TrustOrigin, VerificationStatus,
 } from './enums.ts';
@@ -104,7 +104,7 @@ export type ExternalEffectRow = {
 export type PolicyDecisionRow = {
   id: number; task_id: string | null; task_run_id: string | null; subject: string; action: string; resource: string;
   scope: Scope; impact: Impact; constraints: Json | null; approval_required: Json | null; decision: PolicyDecisionValue;
-  policy_version_id: string; at: Iso;
+  reason: string; policy_version_id: string; at: Iso;
 }
 
 export type EvidenceRow = {
@@ -120,6 +120,10 @@ export type CostEntryRow = {
 export type ApprovalRow = {
   id: string; subject_kind: ApprovalSubjectKind; subject_id: string; decision: ApprovalDecision;
   subject_hash: string | null; decided_by: string; comment: string | null; at: Iso;
+}
+
+export type HumanReauthRow = {
+  id: number; actor_id: string; method: ReauthMethod; time_step: number; purpose: string; at: Iso;
 }
 
 export type EvaluationRow = {

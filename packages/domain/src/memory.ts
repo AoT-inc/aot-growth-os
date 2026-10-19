@@ -57,6 +57,11 @@ export interface MemoryContext {
   clock: Clock;
   /** 시험용 id 생성기 */
   newId?: () => string;
+  /**
+   * 규칙 5: 변동성 높은 종류의 기본 만료 기간(초). `valid_until` 을 주지 않은 항목에 `observed_at + 기간` 을 채운다.
+   * 값은 정책 파라미터(`memory.default_validity`)이며 `@aot/policy` 가 정책 문서에서 만든다. null 이면 기본 만료 없음.
+   */
+  defaultValiditySeconds?: (kind: MemoryKind) => number | null;
 }
 
 const isIso = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Date.parse(value));
@@ -90,7 +95,10 @@ export function createMemoryItem(tx: Db, input: NewMemoryItem, context: MemoryCo
   if (rawValidUntil !== null && !isIso(rawValidUntil)) throw new MemoryRuleError('invalid_field', 'valid_until must be an ISO timestamp or null');
   // 시각은 UTC ISO 8601(밀리초, Z) 로 정규화해 저장한다: 문자열 비교가 곧 시간순 비교가 된다 (clock.ts 와 같은 규약).
   const observedAt = new Date(input.observed_at).toISOString();
-  const validUntil = rawValidUntil === null ? null : new Date(rawValidUntil).toISOString();
+  const defaultSeconds = rawValidUntil === null && input.valid_until === undefined ? context.defaultValiditySeconds?.(kind) ?? null : null;
+  const validUntil = rawValidUntil !== null
+    ? new Date(rawValidUntil).toISOString()
+    : defaultSeconds === null ? null : new Date(Date.parse(observedAt) + defaultSeconds * 1000).toISOString();
 
   // 규칙 3: 외부 입력 유래는 hypothesis / unverified / external_untrusted 로만 시작한다. 승격은 검증 업무의 몫이다.
   if (trust === 'external_untrusted' && (kind !== 'hypothesis' || verification !== 'unverified')) {

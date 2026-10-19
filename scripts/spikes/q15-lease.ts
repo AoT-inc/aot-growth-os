@@ -20,7 +20,9 @@ import {
 } from '@aot/task-engine';
 
 const MIGRATIONS = fileURLToPath(new URL('../../migrations', import.meta.url));
-const ALLOW: TaskPolicyGate = { beforeCreate: () => ({ decision: 'allow' }), beforeRun: () => ({ decision: 'allow' }) };
+const ALLOW: TaskPolicyGate = {
+  beforeCreate: () => ({ decision: 'allow' }), beforeRun: () => ({ decision: 'allow' }), beforeEffect: () => ({ decision: 'allow' }),
+};
 
 const spec = (n: string) => ({
   objective: `example-product 조사 ${n}`,

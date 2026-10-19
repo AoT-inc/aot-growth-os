@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  checkTaskSpecReferences, currentPolicyVersionId, DEFAULT_OWNER_NAME, FakeClock, POLICY_V1_BASELINE, policyV1ContentHash,
+  checkTaskSpecReferences, currentPolicyVersionId, DEFAULT_OWNER_NAME, FakeClock, POLICY_V1_DOCUMENT, policyV1ContentHash,
   SEED_IDS, SEED_SLUGS, seedPhaseA, taskCreationPrerequisites, validateTaskSpec, type Db, type TaskSpec,
 } from '@aot/domain';
 
@@ -93,16 +93,15 @@ test('policy v1: default deny, internal read allowed, write within task scope, e
   assert.match(row.content_hash, /^[0-9a-f]{64}$/);
   assert.equal(row.content_hash, policyV1ContentHash());
 
-  const rules = POLICY_V1_BASELINE.rules;
-  assert.equal(POLICY_V1_BASELINE.default, 'deny');
-  const find = (predicate: (r: Record<string, unknown>) => boolean) => rules.filter((r) => predicate(r as Record<string, unknown>));
-  assert.deepEqual(find((r) => r['scope'] === 'internal' && r['impact'] === 'read').map((r) => r.decision), ['allow']);
-  assert.deepEqual(find((r) => r['impact'] === 'write').map((r) => r.decision), ['allow']);
-  assert.deepEqual(find((r) => r['impact'] === 'external_effect').map((r) => r.decision), ['require_approval']);
-  for (const scope of ['customer', 'public']) {
-    assert.deepEqual(find((r) => r['scope'] === scope).map((r) => r.decision), ['require_approval'], scope);
-  }
-  assert.ok(!rules.some((r) => r.decision === 'allow' && ('scope' in r ? r.scope !== 'internal' : true)), 'nothing outside internal is auto-allowed');
+  const rules: readonly { scope?: readonly string[]; impact?: readonly string[]; decision: string }[] = POLICY_V1_DOCUMENT.rules;
+  assert.equal(POLICY_V1_DOCUMENT.default, 'deny');
+  const find = (predicate: (r: (typeof rules)[number]) => boolean) => rules.filter(predicate).map((r) => r.decision);
+  assert.deepEqual(find((r) => r.scope?.includes('internal') === true && r.impact?.includes('read') === true), ['allow']);
+  assert.deepEqual(find((r) => r.impact?.includes('write') === true), ['allow']);
+  assert.deepEqual(find((r) => r.impact?.includes('external_effect') === true), ['require_approval']);
+  for (const scope of ['customer', 'public']) assert.deepEqual(find((r) => r.scope?.includes(scope) === true), ['require_approval'], scope);
+  assert.ok(!rules.some((r) => r.decision === 'allow' && !(r.scope?.length === 1 && r.scope[0] === 'internal')), 'nothing outside internal is auto-allowed');
+  assert.deepEqual(POLICY_V1_DOCUMENT.risky_change, { min_approvers: 1, cooldown: 3600, reauth_before_effect: true, self_approval: false });
 });
 
 test('seeding twice changes nothing; owner name and time come from the arguments, never from the system', (t) => {

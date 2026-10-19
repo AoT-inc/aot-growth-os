@@ -77,6 +77,10 @@ export type ApprovalSubjectKind = (typeof APPROVAL_SUBJECT_KINDS)[number];
 export const APPROVAL_DECISIONS = ['approved', 'rejected', 'changes_requested'] as const;
 export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
 
+/** human_reauth.method (trust-boundaries §3.1: 위험 변경 재인증은 TOTP) */
+export const REAUTH_METHODS = ['totp'] as const;
+export type ReauthMethod = (typeof REAUTH_METHODS)[number];
+
 export const SAFETY_RESULTS = ['pass', 'fail'] as const;
 export type SafetyResult = (typeof SAFETY_RESULTS)[number];
 

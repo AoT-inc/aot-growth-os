@@ -8,7 +8,7 @@ import {
 } from '@aot/domain';
 
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
-import { LeaseLostError } from './errors.ts';
+import { EffectRefusedError, LeaseLostError } from './errors.ts';
 import {
   claimNextTask, failRun, findExpiredRuns, heartbeat, promoteDueRetries, saveCheckpoint, submitRun, takeOverExpiredRun,
   type EffectLookups, type Lease, type RunEnd, type TakeoverResult,
@@ -78,7 +78,7 @@ export interface ExecutionReport {
   taskId: string;
   runId: string;
   attempt: number;
-  /** lease 를 잃어 아무것도 기록하지 않았으면 'lease_lost' */
+  /** lease 를 잃어 아무것도 기록하지 않았으면 'lease_lost'. 부작용 직전 정책 거부면 {killed, needs_review} */
   end: RunEnd | 'lease_lost';
 }
 
@@ -156,7 +156,14 @@ export class TaskWorker {
   async #execute(lease: Lease, spec: TaskSpec, checkpoint: unknown): Promise<ExecutionReport> {
     const { db, clock, executor, tools } = this.#options;
     const abort = new AbortController();
+    // 부작용 직전 재검증이 거부하면 run 은 이미 닫혔다(killed, needs_review). 이후 쓰기는 펜싱이 막는다.
+    let refused: RunEnd | null = null;
     const lost = (error: unknown): boolean => {
+      if (error instanceof EffectRefusedError) {
+        refused = { outcome: 'killed', taskStatus: 'needs_review' };
+        abort.abort(error);
+        return true;
+      }
       if (error instanceof LeaseLostError) {
         abort.abort(error);
         return true;
@@ -199,7 +206,7 @@ export class TaskWorker {
         if (!tool) throw new Error(`external effect tool '${toolName}' is not registered`);
         if (abort.signal.aborted) throw new LeaseLostError(lease.runId, 'external effect after lease loss');
         try {
-          return await performEffect(db, clock, lease, tool, step);
+          return await performEffect(db, clock, lease, tool, step, this.#gate);
         } catch (error) {
           lost(error);
           throw error;
@@ -207,7 +214,9 @@ export class TaskWorker {
       },
     };
 
-    const report = (end: ExecutionReport['end']): ExecutionReport => ({ taskId: lease.taskId, runId: lease.runId, attempt: lease.attempt, end });
+    const report = (end: ExecutionReport['end']): ExecutionReport => ({
+      taskId: lease.taskId, runId: lease.runId, attempt: lease.attempt, end: refused ?? end,
+    });
     try {
       let output: { result: unknown };
       try {

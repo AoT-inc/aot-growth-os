@@ -9,9 +9,9 @@ export {
 } from './create.ts';
 export {
   beginDispatch, confirmByLookup, effectKeyOf, performEffect, planEffect, recordDispatchResult,
-  type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
+  type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
 } from './effects.ts';
-export { LeaseLostError, StaleStateError, TaskCreationError } from './errors.ts';
+export { EffectRefusedError, LeaseLostError, StaleStateError, TaskCreationError } from './errors.ts';
 export {
   assertLeaseHeld, claimNextTask, failRun, findExpiredRuns, heartbeat, promoteDueRetries, saveCheckpoint, submitRun,
   takeOverExpiredRun,

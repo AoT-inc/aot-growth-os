@@ -4,7 +4,7 @@
 //  - 루틴:   routine_firing (routine_id, scheduled_for) PK — 같은 발화는 한 번만
 //  - 업무:   task.dedupe_key 활성 유일 인덱스 — 같은 트리거·같은 입력의 활성 업무는 1건 (ADR-0004)
 // 생성 거부 조건은 docs/schema/task-spec.md 표: 스키마(validateTaskSpec), 참조(checkTaskSpecReferences),
-// 의존 순환(여기), 정책 판정(TaskPolicyGate.beforeCreate, A3).
+// 의존 순환(여기), 정책 판정(TaskPolicyGate.beforeCreate, A3 — 거부 판정은 롤백 뒤에도 기록한다).
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -44,7 +44,23 @@ export interface CreateTaskResult {
 }
 
 export function createTask(db: Db, context: CreateContext, input: CreateTaskInput): CreateTaskResult {
-  return db.writeTx((tx) => createTaskInTx(tx, context, input));
+  return withRefusalRecord(db, () => db.writeTx((tx) => createTaskInTx(tx, context, input)));
+}
+
+/**
+ * 정책이 생성을 거부하면 생성 트랜잭션은 되돌려진다. 거부 판정도 policy_decision 에 남아야 하므로(ADR-0006)
+ * 롤백 뒤 새 쓰기 트랜잭션에서 기록하고 원래 오류를 다시 던진다.
+ */
+function withRefusalRecord<T>(db: Db, fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof TaskCreationError && error.recordRefusal && !db.inWriteTx) {
+      const record = error.recordRefusal;
+      db.writeTx((tx) => record(tx));
+    }
+    throw error;
+  }
 }
 
 /** 쓰기 트랜잭션 안에서 업무를 만든다. 이벤트·루틴 기록과 같은 트랜잭션에 묶을 때 쓴다. */
@@ -76,11 +92,6 @@ export function createTaskInTx(tx: Db, context: CreateContext, input: CreateTask
   const stored = validateTaskSpec(filled.spec, 'stored');
   if (!stored.ok) throw new TaskCreationError(stored.errors);
 
-  const verdict = context.gate.beforeCreate(tx, { spec: filled.spec, now });
-  if (verdict.decision !== 'allow') {
-    throw new TaskCreationError([{ path: 'allowed_tools', code: 'policy_denied', message: verdict.reason }]);
-  }
-
   // 역할이 없으면 unassigned (조직 관리팀의 재편 신호). 역할의 배정 가능 여부는 참조 검증이 이미 확인했다.
   const status: TaskStatus = filled.role ? 'queued' : 'unassigned';
   tx.run(
@@ -97,6 +108,12 @@ export function createTaskInTx(tx: Db, context: CreateContext, input: CreateTask
   );
   for (const dependsOn of draft.dependencies ?? []) {
     tx.run('INSERT INTO task_dependency (task_id, depends_on) VALUES (?, ?)', [taskId, dependsOn]);
+  }
+  // 정책 판정은 task 행이 생긴 뒤에 한다 (policy_decision.task_id 가 업무를 가리키게). 거부면 트랜잭션 전체가 되돌려지고,
+  // 거부 판정 기록은 호출자(createTask 등)가 롤백 뒤에 남긴다.
+  const verdict = context.gate.beforeCreate(tx, { spec: filled.spec, taskId, now });
+  if (verdict.decision !== 'allow') {
+    throw new TaskCreationError([{ path: 'allowed_tools', code: 'policy_denied', message: verdict.reason }], verdict.recordRefusal);
   }
   recordTaskCreation(tx, {
     taskId, to: status, by: 'task_creator', now,
@@ -215,7 +232,7 @@ export function eventIdempotencyKey(event: IncomingEvent): string {
  */
 export function recordEvent(db: Db, context: CreateContext, event: IncomingEvent, spec: Record<string, unknown>): RecordEventResult {
   const key = eventIdempotencyKey(event);
-  return db.writeTx((tx) => {
+  return withRefusalRecord(db, () => db.writeTx((tx) => {
     const existing = tx.get<{ id: string }>('SELECT id FROM event WHERE idempotency_key = ?', [key]);
     if (existing) return { created: false, eventId: existing.id, taskId: taskByTrigger(tx, 'event', existing.id) };
     const eventId = context.newId?.() ?? `event-${randomUUID()}`;
@@ -227,7 +244,7 @@ export function recordEvent(db: Db, context: CreateContext, event: IncomingEvent
     );
     const task = createTaskInTx(tx, context, { spec: { ...spec, trigger: { kind: 'event', ref: eventId } } });
     return { created: true, eventId, taskId: task.taskId };
-  });
+  }));
 }
 
 // ===== 루틴 =====
@@ -248,7 +265,7 @@ export interface FireRoutineResult {
  * 언제 발화할지(cron 계산, catch_up) 는 여기서 정하지 않는다 — 호출하는 쪽이 `scheduledFor` 를 넘긴다.
  */
 export function fireRoutine(db: Db, context: CreateContext, firing: RoutineFiring, spec: Record<string, unknown>): FireRoutineResult {
-  return db.writeTx((tx) => {
+  return withRefusalRecord(db, () => db.writeTx((tx) => {
     const routine = tx.get<{ slug: string; enabled: number }>('SELECT slug, enabled FROM routine WHERE id = ?', [firing.routineId]);
     if (!routine) throw new TaskCreationError([{ path: 'routine', code: 'not_found', message: `routine '${firing.routineId}' does not exist` }]);
     if (Number(routine.enabled) !== 1) {
@@ -263,7 +280,7 @@ export function fireRoutine(db: Db, context: CreateContext, firing: RoutineFirin
     ]);
     const task = createTaskInTx(tx, context, { spec: { ...spec, trigger: { kind: 'routine', ref } } });
     return { created: true, taskId: task.taskId };
-  });
+  }));
 }
 
 function taskByTrigger(tx: Db, kind: TriggerKind, ref: string): string | null {

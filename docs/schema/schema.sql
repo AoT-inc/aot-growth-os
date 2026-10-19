@@ -134,9 +134,9 @@ CREATE TABLE product_environment (
 -- ===== 정책 / 전략 (버전) =====
 CREATE TABLE policy_version (
   id           TEXT PRIMARY KEY,              -- 예: policy-2026-10-14.1
-  content_hash TEXT NOT NULL,                 -- policies/ 디렉터리 해시
+  content_hash TEXT NOT NULL,                 -- 정책 문서의 정규화 내용 해시 (ADR-0013)
   change_class TEXT NOT NULL CHECK (change_class IN ('normal','risky')),
-  approved_by  TEXT NOT NULL,                 -- JSON: approver actor ids (risky는 2인 이상)
+  approved_by  TEXT NOT NULL,                 -- JSON: approver actor ids (risky는 현재 정책의 risky_change.min_approvers 이상)
   deployed_at  TEXT NOT NULL,
   rollback_of  TEXT REFERENCES policy_version(id)
 );
@@ -283,6 +283,7 @@ CREATE TABLE policy_decision (
   constraints  TEXT,                          -- JSON: 예산·횟수·시간·대상 수
   approval_required TEXT,                     -- JSON: 필요한 승인자/채널
   decision     TEXT NOT NULL CHECK (decision IN ('allow','deny','require_approval')),
+  reason       TEXT NOT NULL,                 -- 판정 사유 (일치한 규칙, 거부·승인 미충족 이유). 비밀값을 넣지 않는다
   policy_version_id TEXT NOT NULL REFERENCES policy_version(id),
   at           TEXT NOT NULL
 );
@@ -320,6 +321,19 @@ CREATE TABLE approval (
   decided_by   TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 허용 (애플리케이션 규칙)
   comment      TEXT,
   at           TEXT NOT NULL
+);
+CREATE INDEX approval_subject ON approval(subject_kind, subject_id, at);
+
+-- 사람 재인증 기록 (trust-boundaries §3.1, 위험 변경의 실행 직전 재인증). append-only.
+-- TOTP 비밀과 입력 코드는 남기지 않는다. 같은 시간창(time_step)의 코드는 다시 받지 않는다.
+CREATE TABLE human_reauth (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id     TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 (애플리케이션 규칙)
+  method       TEXT NOT NULL CHECK (method IN ('totp')),
+  time_step    INTEGER NOT NULL,              -- TOTP 시간창 번호 (RFC 6238 T)
+  purpose      TEXT NOT NULL,                 -- 재인증 대상 (예: release:task:<id>:<approved_hash>)
+  at           TEXT NOT NULL,
+  UNIQUE (actor_id, method, time_step)
 );
 
 -- ===== 평가 (ADR-0007) =====
@@ -386,3 +400,5 @@ CREATE TRIGGER cost_entry_no_update BEFORE UPDATE ON cost_entry BEGIN SELECT RAI
 CREATE TRIGGER cost_entry_no_delete BEFORE DELETE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER policy_decision_no_update BEFORE UPDATE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER policy_decision_no_delete BEFORE DELETE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER human_reauth_no_update BEFORE UPDATE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER human_reauth_no_delete BEFORE DELETE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;

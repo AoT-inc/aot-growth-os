@@ -50,11 +50,11 @@ test('planned -> dispatched -> confirmed; performing the same step again reuses 
   const fake = createIdempotentFakeTool();
   const tool = asEffectTool(fake);
   const lease = claim();
-  const first = await performEffect(db, clock, lease, tool, STEP);
+  const first = await performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE);
   assert.equal(first.state, 'confirmed');
   assert.equal(first.state === 'confirmed' && first.reused, false);
   for (let i = 0; i < 4; i += 1) {
-    const again = await performEffect(db, clock, lease, tool, STEP);
+    const again = await performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE);
     assert.ok(again.state === 'confirmed' && again.reused);
   }
   assert.equal(delivered(fake), 1);
@@ -67,8 +67,8 @@ test('idempotent tool: a lost response leaves the effect unknown; the retry rese
   const withoutLookup: EffectTool = { name: fake.name, supportsIdempotency: true, send: asEffectTool(fake).send };
   const lease = claim();
   fake.loseNextResponses(1);
-  assert.equal((await performEffect(db, clock, lease, withoutLookup, STEP)).state, 'unknown');
-  assert.equal((await performEffect(db, clock, lease, withoutLookup, STEP)).state, 'confirmed');
+  assert.equal((await performEffect(db, clock, lease, withoutLookup, STEP, ALLOW_ALL_GATE)).state, 'unknown');
+  assert.equal((await performEffect(db, clock, lease, withoutLookup, STEP, ALLOW_ALL_GATE)).state, 'confirmed');
   assert.equal(delivered(fake), 1, 'the resend with the same key did not create a second side effect');
   assert.deepEqual(submitRun(db, clock, lease, {}), { outcome: 'submitted', taskStatus: 'validating' });
   assert.equal(taskStatus(db, taskId), 'validating');
@@ -82,8 +82,8 @@ test('idempotent tool with a status lookup: an unknown effect is confirmed by lo
   const tool: EffectTool = { ...base, send: (call) => (sends++, base.send(call)) };
   const lease = claim();
   fake.loseNextResponses(1);
-  await performEffect(db, clock, lease, tool, STEP);
-  const outcome = await performEffect(db, clock, lease, tool, STEP);
+  await performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE);
+  const outcome = await performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE);
   assert.ok(outcome.state === 'confirmed' && outcome.reused);
   assert.equal(sends, 1);
   assert.equal(delivered(fake), 1);
@@ -95,10 +95,10 @@ test('tool without idempotency keys: unknown is never resent automatically; the 
   const tool = asEffectTool(fake);
   const lease = claim();
   fake.loseNextResponses(1);
-  assert.equal((await performEffect(db, clock, lease, tool, STEP)).state, 'unknown');
-  for (let i = 0; i < 3; i += 1) assert.equal((await performEffect(db, clock, lease, tool, STEP)).state, 'unknown');
+  assert.equal((await performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
+  for (let i = 0; i < 3; i += 1) assert.equal((await performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
   assert.equal(delivered(fake), 1, 'no resend');
-  assert.throws(() => beginDispatch(db, clock, lease, planEffect(db, clock, lease, tool, STEP)), /forbidden/);
+  assert.throws(() => beginDispatch(db, clock, lease, planEffect(db, clock, lease, tool, STEP), ALLOW_ALL_GATE), /forbidden/);
   assert.deepEqual(submitRun(db, clock, lease, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
   assert.equal(taskStatus(db, taskId), 'needs_review');
 });
@@ -110,11 +110,11 @@ test('a worker that lost its lease sends nothing: planning and dispatching are b
   const lease = claim();
   const planned = planEffect(db, clock, lease, tool, STEP);
   clock.advance(LEASE_MS); // 만료 (아직 아무도 인수하지 않음)
-  await assert.rejects(performEffect(db, clock, lease, tool, STEP), LeaseLostError);
-  assert.throws(() => beginDispatch(db, clock, lease, planned), LeaseLostError);
+  await assert.rejects(performEffect(db, clock, lease, tool, STEP, ALLOW_ALL_GATE), LeaseLostError);
+  assert.throws(() => beginDispatch(db, clock, lease, planned, ALLOW_ALL_GATE), LeaseLostError);
   clock.set(clock.nowMs() - LEASE_MS);
   expireAndTakeOver();
-  await assert.rejects(performEffect(db, clock, lease, tool, { ...STEP, stepId: 'other' }), LeaseLostError);
+  await assert.rejects(performEffect(db, clock, lease, tool, { ...STEP, stepId: 'other' }, ALLOW_ALL_GATE), LeaseLostError);
   assert.equal(delivered(fake), 0);
   assert.deepEqual(effectsOf(db, taskId).map((e) => e.state), ['planned'], 'planned only: considered not sent (recovery §4)');
 });
@@ -126,7 +126,7 @@ test('takeover after a crash with a planned-only effect: the new attempt adopts 
   planEffect(db, clock, claim(), tool, STEP);
   assert.equal(expireAndTakeOver()?.taskStatus, 'queued');
   const next = claim('w2');
-  assert.equal((await performEffect(db, clock, next, tool, STEP)).state, 'confirmed');
+  assert.equal((await performEffect(db, clock, next, tool, STEP, ALLOW_ALL_GATE)).state, 'confirmed');
   assert.equal(delivered(fake), 1);
   const [effect] = effectsOf(db, taskId);
   assert.equal(effect?.task_run_id, next.runId);
@@ -138,12 +138,12 @@ test('takeover with a dispatched effect, idempotent tool: lookup confirms it, th
   const tool = asEffectTool(fake);
   const lease = claim();
   const effect = planEffect(db, clock, lease, tool, STEP);
-  beginDispatch(db, clock, lease, effect);
+  beginDispatch(db, clock, lease, effect, ALLOW_ALL_GATE);
   fake.call({ effectKey: effect.effect_key, payload: STEP.request }); // 전달됐지만 기록 전에 프로세스가 죽었다
   assert.equal(expireAndTakeOver({ [tool.name]: tool })?.taskStatus, 'queued');
   assert.equal(taskStatus(db, taskId), 'queued');
   assert.deepEqual(effectsOf(db, taskId).map((e) => e.state), ['confirmed']);
-  const outcome = await performEffect(db, clock, claim('w2'), tool, STEP);
+  const outcome = await performEffect(db, clock, claim('w2'), tool, STEP, ALLOW_ALL_GATE);
   assert.ok(outcome.state === 'confirmed' && outcome.reused);
   assert.equal(delivered(fake), 1);
 });
@@ -154,12 +154,12 @@ test('takeover with a dispatched effect, idempotent tool without lookup: unknown
   const tool: EffectTool = { name: fake.name, supportsIdempotency: true, send: asEffectTool(fake).send };
   const lease = claim();
   const effect = planEffect(db, clock, lease, tool, STEP);
-  beginDispatch(db, clock, lease, effect);
+  beginDispatch(db, clock, lease, effect, ALLOW_ALL_GATE);
   fake.call({ effectKey: effect.effect_key, payload: STEP.request });
   const result = expireAndTakeOver();
   assert.deepEqual(result && [result.outcome, result.taskStatus], ['lease_expired', 'queued']);
   assert.deepEqual(effectsOf(db, taskId).map((e) => e.state), ['unknown']);
-  assert.equal((await performEffect(db, clock, claim('w2'), tool, STEP)).state, 'confirmed');
+  assert.equal((await performEffect(db, clock, claim('w2'), tool, STEP, ALLOW_ALL_GATE)).state, 'confirmed');
   assert.equal(delivered(fake), 1);
 });
 
@@ -169,7 +169,7 @@ test('takeover with a dispatched effect, tool without idempotency keys and no lo
   const tool = asEffectTool(fake);
   const lease = claim();
   const effect = planEffect(db, clock, lease, tool, STEP);
-  beginDispatch(db, clock, lease, effect);
+  beginDispatch(db, clock, lease, effect, ALLOW_ALL_GATE);
   fake.call({ effectKey: effect.effect_key, payload: STEP.request });
   const result = expireAndTakeOver({ [tool.name]: tool });
   assert.deepEqual(result && [result.outcome, result.taskStatus], ['effect_unknown', 'needs_review']);

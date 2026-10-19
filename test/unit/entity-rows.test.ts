@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { openDb } from '@aot/domain';
-import type { OrgVersionRow, OrgProposalRow, OrgTrialResultRow, OrgUnitRow, RoleRow, ActorRow, RoleAssignmentRow, ProductRow, ProductRepoRow, ProductEnvironmentRow, PolicyVersionRow, StrategyVersionRow, EventRow, RoutineRow, RoutineFiringRow, TaskRow, TaskDependencyRow, TaskTransitionRow, TaskRunRow, ExternalEffectRow, PolicyDecisionRow, EvidenceRow, CostEntryRow, ApprovalRow, EvaluationRow, MemoryItemRow, PublicationRow } from '@aot/domain';
+import type { OrgVersionRow, OrgProposalRow, OrgTrialResultRow, OrgUnitRow, RoleRow, ActorRow, RoleAssignmentRow, ProductRow, ProductRepoRow, ProductEnvironmentRow, PolicyVersionRow, StrategyVersionRow, EventRow, RoutineRow, RoutineFiringRow, TaskRow, TaskDependencyRow, TaskTransitionRow, TaskRunRow, ExternalEffectRow, PolicyDecisionRow, EvidenceRow, CostEntryRow, ApprovalRow, HumanReauthRow, EvaluationRow, MemoryItemRow, PublicationRow } from '@aot/domain';
 
 import { SCHEMA_SQL } from '../support/schema-snapshot.ts';
 
@@ -30,10 +30,11 @@ const COLUMNS = {
   task_transition: { id: true, task_id: true, from_status: true, to_status: true, reason: true, caused_by: true, at: true } satisfies Record<keyof TaskTransitionRow, true>,
   task_run: { id: true, task_id: true, attempt: true, actor_id: true, adapter: true, started_at: true, ended_at: true, lease_owner: true, lease_expires_at: true, heartbeat_at: true, checkpoint: true, outcome: true, result: true, run_log_ref: true } satisfies Record<keyof TaskRunRow, true>,
   external_effect: { id: true, effect_key: true, task_id: true, task_run_id: true, tool: true, action: true, target: true, request_hash: true, state: true, supports_idempotency: true, response_ref: true, compensation_ref: true, at: true } satisfies Record<keyof ExternalEffectRow, true>,
-  policy_decision: { id: true, task_id: true, task_run_id: true, subject: true, action: true, resource: true, scope: true, impact: true, constraints: true, approval_required: true, decision: true, policy_version_id: true, at: true } satisfies Record<keyof PolicyDecisionRow, true>,
+  policy_decision: { id: true, task_id: true, task_run_id: true, subject: true, action: true, resource: true, scope: true, impact: true, constraints: true, approval_required: true, decision: true, reason: true, policy_version_id: true, at: true } satisfies Record<keyof PolicyDecisionRow, true>,
   evidence: { id: true, task_id: true, task_run_id: true, kind: true, ref: true, content_hash: true, captured_at: true, verified: true, verification_note: true } satisfies Record<keyof EvidenceRow, true>,
   cost_entry: { id: true, task_id: true, task_run_id: true, product_id: true, category: true, amount_usd: true, units: true, at: true } satisfies Record<keyof CostEntryRow, true>,
   approval: { id: true, subject_kind: true, subject_id: true, decision: true, subject_hash: true, decided_by: true, comment: true, at: true } satisfies Record<keyof ApprovalRow, true>,
+  human_reauth: { id: true, actor_id: true, method: true, time_step: true, purpose: true, at: true } satisfies Record<keyof HumanReauthRow, true>,
   evaluation: { id: true, task_id: true, task_run_id: true, evaluator: true, validation_passed: true, outcome: true, primary_evidence_refs: true, agent_report_used: true, quality: true, quality_note: true, effect: true, effect_note: true, economics: true, economics_note: true, safety: true, safety_note: true, evidence_refs: true, total_cost_usd: true, human_minutes: true, at: true } satisfies Record<keyof EvaluationRow, true>,
   memory_item: { id: true, kind: true, body: true, source_ref: true, observed_at: true, verification_status: true, validity: true, valid_until: true, sensitivity: true, trust_origin: true, superseded_by: true, product_id: true, policy_version_id: true, strategy_version_id: true, created_by: true, created_at: true } satisfies Record<keyof MemoryItemRow, true>,
   publication: { id: true, task_id: true, product_id: true, channel: true, audience: true, content_ref: true, status: true, approval_id: true, published_at: true } satisfies Record<keyof PublicationRow, true>,

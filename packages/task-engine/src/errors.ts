@@ -1,13 +1,32 @@
-import type { Issue } from '@aot/domain';
+import type { Db, Issue } from '@aot/domain';
 
 /** 업무 생성 거부 (명세 검증, 참조, 의존 순환, 정책 판정). `issues` 에 이유가 모두 담긴다. */
 export class TaskCreationError extends Error {
   readonly issues: readonly Issue[];
+  /** 정책 거부 판정의 기록 (생성 트랜잭션이 되돌려진 뒤 새 트랜잭션에서 남긴다) */
+  readonly recordRefusal: ((tx: Db) => void) | undefined;
 
-  constructor(issues: readonly Issue[]) {
+  constructor(issues: readonly Issue[], recordRefusal?: (tx: Db) => void) {
     super(`task creation rejected: ${issues.map((i) => `${i.path || '(root)'}: ${i.message}`).join('; ')}`);
     this.name = 'TaskCreationError';
     this.issues = issues;
+    this.recordRefusal = recordRefusal;
+  }
+}
+
+/**
+ * 외부 부작용 직전 재검증(정책 게이트)이 전송을 거부했다. 보내지 않았고, run 은 `killed` 로 닫혔으며
+ * 업무는 running → needs_review 로 갔다 (state-machines.md "실행 중 재검증에서 정책 거부/승인 범위 이탈").
+ */
+export class EffectRefusedError extends Error {
+  readonly effectId: string;
+  readonly reason: string;
+
+  constructor(effectId: string, reason: string) {
+    super(`external effect ${effectId} refused by the policy gate: ${reason}`);
+    this.name = 'EffectRefusedError';
+    this.effectId = effectId;
+    this.reason = reason;
   }
 }
 

@@ -7,15 +7,17 @@
 //   dispatched/unknown    → 멱등 지원: 조회로 확인되면 confirmed, 아니면 같은 키로 재전송
 //                           멱등 미지원: 재전송 금지. 조회로 확인되면 confirmed, 아니면 unknown 으로 둔다 → needs_review
 //   confirmed             → 재전송하지 않고 결과 재사용
-//   failed                → 재전송은 정책 허용 시 (A3). 정책 훅이 없으므로 이 단계에서는 재전송하지 않는다
+//   failed                → 재전송은 정책 허용 시 (정책 게이트 beforeEffect 가 'resend_failed' 를 허용할 때만)
+// 모든 전송(처음·재전송) 직전에 정책 게이트(TaskPolicyGate.beforeEffect)로 재검증한다 (task-spec "외부 부작용 직전").
+// 처음 전송·같은 키 재전송이 거부되면 보내지 않고 run 을 멈춘다(running → needs_review, EffectRefusedError).
 // 외부 호출(send, lookup)은 쓰기 트랜잭션 밖에서 한다.
 import { randomUUID } from 'node:crypto';
 
-import type { Clock, Db, ExternalEffectRow } from '@aot/domain';
+import type { Clock, Db, EffectDispatchKind, ExternalEffectRow, TaskPolicyGate, TaskRow, TaskSpec } from '@aot/domain';
 
 import { canonicalJson, sha256 } from './canonical.ts';
-import { StaleStateError } from './errors.ts';
-import { assertLeaseHeld, heartbeatInTx, type Lease } from './lease.ts';
+import { EffectRefusedError, StaleStateError } from './errors.ts';
+import { assertLeaseHeld, heartbeatInTx, stopRunForReview, type Lease } from './lease.ts';
 import { transitionEffect } from './transitions.ts';
 
 /** 외부 부작용 도구의 계약 (실제 구현은 A5 의 도구 게이트웨이). */
@@ -97,20 +99,39 @@ export function planEffect(db: Db, clock: Clock, lease: Lease, tool: Pick<Effect
   });
 }
 
+export type DispatchStart = { started: true } | { started: false; reason: string; runStopped: boolean };
+
 /**
- * 전송 직전: 펜싱 + heartbeat + `planned|unknown → dispatched` 를 한 트랜잭션에서 (recovery §2 규칙 2).
- * `unknown` 에서의 재전송은 멱등 지원 도구만 허용한다. 실패하면 LeaseLostError 이고 호출자는 보내지 않는다.
+ * 전송 직전: 펜싱 + heartbeat + 정책 재검증 + `planned|unknown|failed → dispatched` 를 한 트랜잭션에서 (recovery §2 규칙 2).
+ * `unknown` 에서의 재전송은 멱등 지원 도구만, `failed` 에서의 재전송은 정책이 허용할 때만 한다.
+ * 정책이 거부하면 보내지 않는다: 처음 전송·같은 키 재전송이면 run 을 멈추고(`runStopped`), `failed` 재전송이면 그대로 둔다.
+ * 펜싱에 실패하면 LeaseLostError 이고 호출자는 보내지 않는다.
  */
-export function beginDispatch(db: Db, clock: Clock, lease: Lease, effect: Pick<ExternalEffectRow, 'id' | 'state' | 'supports_idempotency'>): void {
+export function beginDispatch(
+  db: Db, clock: Clock, lease: Lease, effect: Pick<ExternalEffectRow, 'id' | 'state' | 'supports_idempotency' | 'tool' | 'action' | 'target'>,
+  gate: TaskPolicyGate,
+): DispatchStart {
   if (effect.state === 'unknown' && Number(effect.supports_idempotency) !== 1) {
     throw new Error(`external effect ${effect.id}: resending an 'unknown' effect is forbidden for tools without idempotency keys`);
   }
-  if (effect.state !== 'planned' && effect.state !== 'unknown') {
-    throw new Error(`external effect ${effect.id}: cannot dispatch from '${effect.state}'`);
-  }
-  db.writeTx((tx) => {
+  const kinds: Partial<Record<ExternalEffectRow['state'], EffectDispatchKind>> = { planned: 'first', unknown: 'retry_unknown', failed: 'resend_failed' };
+  const dispatch = kinds[effect.state];
+  if (dispatch === undefined) throw new Error(`external effect ${effect.id}: cannot dispatch from '${effect.state}'`);
+  return db.writeTx((tx) => {
     heartbeatInTx(tx, clock, lease);
-    transitionEffect(tx, { effectId: effect.id, from: effect.state, to: 'dispatched', by: 'system', now: clock.nowIso() });
+    const now = clock.nowIso();
+    const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [lease.taskId])!;
+    const verdict = gate.beforeEffect(tx, {
+      task, spec: JSON.parse(task.spec) as TaskSpec, runId: lease.runId, tool: effect.tool, action: effect.action, target: effect.target,
+      dispatch, now,
+    });
+    if (verdict.decision !== 'allow') {
+      if (dispatch === 'resend_failed') return { started: false, reason: verdict.reason, runStopped: false };
+      stopRunForReview(tx, lease, now, verdict.reason);
+      return { started: false, reason: verdict.reason, runStopped: true };
+    }
+    transitionEffect(tx, { effectId: effect.id, from: effect.state, to: 'dispatched', by: 'system', now });
+    return { started: true };
   });
 }
 
@@ -139,10 +160,12 @@ export function confirmByLookup(db: Db, clock: Clock, lease: Lease, effectId: st
 }
 
 /**
- * 부작용 한 건을 §3 규칙대로 수행한다: 기록 → (필요하면 조회) → 펜싱 확인 후 전송 → 결과 기록.
- * lease 를 잃으면 LeaseLostError 를 던지고, 그 시점 이후로는 아무것도 보내지 않는다.
+ * 부작용 한 건을 §3 규칙대로 수행한다: 기록 → (필요하면 조회) → 펜싱·정책 재검증 후 전송 → 결과 기록.
+ * lease 를 잃으면 LeaseLostError, 정책이 처음 전송을 거부하면 EffectRefusedError 를 던지고, 그 뒤로는 아무것도 보내지 않는다.
  */
-export async function performEffect(db: Db, clock: Clock, lease: Lease, tool: EffectTool, step: EffectStep): Promise<EffectOutcome> {
+export async function performEffect(
+  db: Db, clock: Clock, lease: Lease, tool: EffectTool, step: EffectStep, gate: TaskPolicyGate,
+): Promise<EffectOutcome> {
   let effect = planEffect(db, clock, lease, tool, step);
 
   switch (effect.state) {
@@ -150,8 +173,6 @@ export async function performEffect(db: Db, clock: Clock, lease: Lease, tool: Ef
       return { state: 'confirmed', effectId: effect.id, responseRef: effect.response_ref, reused: true };
     case 'compensated':
       return { state: 'compensated', effectId: effect.id };
-    case 'failed':
-      return { state: 'failed', effectId: effect.id, reused: true };
     case 'unknown': {
       if (tool.lookup) {
         const found = await tool.lookup(effect.effect_key);
@@ -167,7 +188,11 @@ export async function performEffect(db: Db, clock: Clock, lease: Lease, tool: Ef
       break;
   }
 
-  beginDispatch(db, clock, lease, effect);
+  const start = beginDispatch(db, clock, lease, effect, gate);
+  if (!start.started) {
+    if (!start.runStopped) return { state: 'failed', effectId: effect.id, reused: true };
+    throw new EffectRefusedError(effect.id, start.reason);
+  }
   let result: EffectSendResult | { status: 'unknown' };
   try {
     result = await tool.send({ effectKey: effect.effect_key, action: step.action, target: step.target, request: step.request });

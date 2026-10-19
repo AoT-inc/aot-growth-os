@@ -38,6 +38,20 @@
 - [ ] 측정 신호 정의 형식: 필드가 문서에 정의되어 있지 않아 구현하지 않음 ([Q5](../open-questions.md), D2와 함께 정한다)
 - 이월: `memory-item` 규칙 5(변동성 높은 종류의 기본 만료, 정책 파라미터)·7(`confidential` 이상 게시 입력의 승인)은 A3, 규칙 8(`inconclusive`는 성공 사례 불가)은 A4. 정책 형식(Q7)이 정해지면 시드의 `policy_version.content_hash` 입력을 새 정책 버전으로 교체
 
+### A2 완료 기록 (2026-10-19)
+
+- [x] 업무 생성(멱등): `packages/task-engine/src/create.ts` — `createTask`(활성 `dedupe_key` = 동일 트리거·입력 해시), `recordEvent`(`event.idempotency_key`, 이벤트와 업무를 한 트랜잭션), `fireRoutine`(`routine_firing` PK). 생성 거부는 스키마·참조 검증, 의존 순환(A1 이월분, 자기 의존과 저장된 순환 모두), 정책 훅. 시스템 필드(`policy_version`, `versions`)는 엔진이 채운다
+- [x] `task_run` lease와 heartbeat: `src/lease.ts` — `queued → running`과 run 생성을 한 트랜잭션, run id를 펜싱 토큰으로 heartbeat·checkpoint·결과 제출·부작용 기록을 모두 `lease_owner = 나 AND lease_expires_at > now AND outcome IS NULL` 조건부로 쓴다. 만료 인수는 `lease_expired`로 닫고 `queued`(시도 미소모 기본, 소모는 옵션). 전이는 domain 허용표 + 비교 후 갱신
+- [x] `external_effect` 상태 머신: domain `EXTERNAL_EFFECT_MACHINE`(recovery §3 그림 + 재시도 표), `src/effects.ts` — `planned` 기록 → 펜싱·heartbeat·`dispatched`를 한 트랜잭션 → 전송 → 결과. 멱등 지원 도구는 조회 또는 같은 키 재전송, 미지원 도구의 `unknown`은 재전송 없이 `effect_unknown` → `needs_review`
+- [x] 스케줄러·폴링 데몬과 재시작 복구: `TaskWorker.tick`(만료 인수 → `retry_wait` 해제 → 선택·lease → 실행), `runPolling`, `apps/daemon/src/main.ts`. 재시작한 데몬의 첫 tick이 만료 lease를 인수한다. 실행기는 포트(`TaskExecutor`)로 두고 A5가 구현
+- [x] A3 전이 훅: domain `TaskPolicyGate`(`beforeCreate`, `beforeRun`, 쓰기 트랜잭션 안 동기 호출). 연결 전 기본값은 거부(`DENY_ALL_TASK_POLICY_GATE`: 생성 거부, 실행 직전 `needs_review`)
+- [x] 스파이크 Q15: lease 90초, heartbeat 30초, 폴링 5초 ([q15](../spikes/q15-lease-parameters.md)). 복구 지연 목표 120초는 잠정값
+- [x] 시험: 단위(`test/unit/task-create`·`task-lease`·`task-effects`), 다중 프로세스(`test/integration/task-engine-multiprocess.test.ts`: 두 데몬 경쟁, SIGKILL 후 인수, 같은 id 재시작, 멱등 지원/미지원 부작용 복구, lease 잃은 데몬의 무전송). 가짜 시계를 IPC로 넘겨 결정적으로 돌리며 5회 반복 무실패
+- [ ] 루틴 발화 시각 계산(`routine.schedule`의 cron + tz 해석, `catch_up`): 형식이 문서에 없어 구현하지 않음. `fireRoutine`은 호출자가 `scheduledFor`를 넘긴다
+- [ ] `time_limit` 초과 취소(`killed`)와 도구 호출 타임아웃: 취소 신호는 A5 어댑터 계약과 함께
+- [ ] `failed` 부작용 재전송("정책 허용 시"): 정책 훅이 정해지는 A3. 지금은 재전송하지 않는다
+- 해석: 인수 시 멱등 지원 도구의 `unknown`은 `needs_review`가 아니라 `queued`로 돌려 같은 키로 재전송한다(recovery §3 표가 정본이라는 state-machines 업무 규칙에 따름). 멱등 미지원 도구는 조회로 전달이 확인되지 않으면 `unknown`으로 둔다
+
 ## 3. 필수 테스트 매핑
 
 [overview §6 필수 테스트 표](../00-overview.md) 중 Phase A 항목. "주 패키지"는 테스트를 소유하는 곳이고, A6에서 통합 시나리오로 한 번 더 확인한다.

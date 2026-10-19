@@ -3,6 +3,7 @@
   "db_path": "instance/aot.db",
   "busy_timeout_ms": 5000,
   "worker_id": "daemon-1",
+  "actor_id": "actor-agent-1",
   "lease_ms": 90000,
   "heartbeat_ms": 30000,
   "poll_ms": 5000,

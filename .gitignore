@@ -16,3 +16,11 @@ secrets/
 plans/
 # 설계 문서 폴더(docs/plans)는 커밋 대상
 !/docs/plans/
+
+# 의존성·빌드·보고서 산출물
+node_modules/
+coverage/
+*.tsbuildinfo
+gitleaks-report*
+*.log
+.DS_Store

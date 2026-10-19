@@ -1,0 +1,11 @@
+{
+  "name": "@aot/domain",
+  "version": "0.0.0",
+  "private": true,
+  "description": "엔터티·상태 전이·task_spec 검증·DB 접근 계층 (A1)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

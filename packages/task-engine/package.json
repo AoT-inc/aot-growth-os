@@ -1,0 +1,14 @@
+{
+  "name": "@aot/task-engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "업무 생성·스케줄러·lease·부작용 원장 (A2)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@aot/domain": "0.0.0"
+  }
+}

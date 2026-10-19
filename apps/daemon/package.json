@@ -1,0 +1,18 @@
+{
+  "name": "@aot/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "description": "폴링 데몬 엔트리포인트 (A2 골격, A6 통합)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts"
+  },
+  "dependencies": {
+    "@aot/agent-runtime": "0.0.0",
+    "@aot/domain": "0.0.0",
+    "@aot/evaluation": "0.0.0",
+    "@aot/policy": "0.0.0",
+    "@aot/task-engine": "0.0.0"
+  }
+}

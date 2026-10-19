@@ -1,0 +1,14 @@
+{
+  "name": "@aot/evaluation",
+  "version": "0.0.0",
+  "private": true,
+  "description": "결정론적 검증·평가기·비용 집계 (A4)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@aot/domain": "0.0.0"
+  }
+}

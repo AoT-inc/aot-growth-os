@@ -1,0 +1,17 @@
+{
+  "name": "@aot/agent-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "어댑터 계약·도구 게이트웨이·샌드박스 (A5)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@aot/domain": "0.0.0",
+    "@aot/evaluation": "0.0.0",
+    "@aot/policy": "0.0.0",
+    "@aot/task-engine": "0.0.0"
+  }
+}

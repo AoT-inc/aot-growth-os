@@ -1,0 +1,6 @@
+{
+  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다.",
+  "db_path": "instance/aot.db",
+  "busy_timeout_ms": 5000,
+  "log_level": "info"
+}

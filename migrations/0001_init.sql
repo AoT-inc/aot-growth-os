@@ -1,5 +1,6 @@
 -- AoT Growth OS — 스키마 v0 (설계 기준, 단일 원천)
--- migrations/0001_init.sql 은 이 파일의 복사본이다. 이후 변경은 새 마이그레이션과 이 파일을 동시에 고친다
+-- migrations/0001_init.sql 은 이 파일의 복사본이다. 첫 공개 릴리스 전까지는(배포된 DB 없음) 0001 을 이 파일과 함께 직접 고치고,
+-- 첫 릴리스 이후에는 새 마이그레이션과 이 파일을 동시에 고친다
 -- (드리프트 시험: test/unit/schema-drift.test.ts, 결정 기록: docs/plans/phase-a.md §4 A0 "마이그레이션" 항목).
 -- SQLite로 시작, Postgres 이식 가능한 범위(JSON은 TEXT, 시간은 ISO8601 UTC TEXT).
 -- 규칙: 변경 이력이 중요한 테이블은 append-only(UPDATE/DELETE 금지)로 다룬다.
@@ -102,7 +103,7 @@ CREATE TABLE product (
   owner_org_unit_id TEXT REFERENCES org_unit(id),
   registration_status TEXT NOT NULL DEFAULT 'candidate' CHECK (registration_status IN
                     ('candidate','verifying','pending_approval','registered','rejected')),
-  registration_approval_id TEXT,              -- approval.id (registered 필수, 애플리케이션 규칙)
+  registration_approval_id TEXT,              -- approval.id (subject_kind='product'. registered 필수, 애플리케이션 규칙)
   registered_at   TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
@@ -312,7 +313,7 @@ CREATE TABLE cost_entry (                     -- append-only
 
 CREATE TABLE approval (
   id           TEXT PRIMARY KEY,
-  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('task','strategy_version','policy_version','publication','tool_call')),
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('task','strategy_version','policy_version','publication','tool_call','product','org_proposal')),  -- product: 상품 등록 승인, org_proposal: 조직 제안 승인
   subject_id   TEXT NOT NULL,
   decision     TEXT NOT NULL CHECK (decision IN ('approved','rejected','changes_requested')),
   subject_hash TEXT,                          -- 승인 당시 대상 내용의 해시 (내용이 바뀌면 승인 무효)

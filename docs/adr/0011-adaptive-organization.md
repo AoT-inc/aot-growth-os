@@ -25,7 +25,7 @@
 
 ### 3. 조직 변경은 제안 객체를 거친다
 - `org_proposal`: 변경 내용(diff), 이유, 근거(`evaluation`/`task` 통계/`memory_item` 참조), 예상 효과와 위험, 변경 등급(`normal|risky`).
-- 흐름: `proposed → approved → trial → active`, 거절 시 `rejected`, 실패 시 `rolled_back`.
+- 흐름: `proposed → approved → trial → active`, 거절 시 `rejected`, 실패 시 `rolled_back`. `approved`는 사람의 `approval`(`subject_kind='org_proposal'`) 기록으로만 일어난다.
 - 승인 후 곧바로 `active`가 되지 않고 **시험 기간(`trial`)** 을 거친다. 기본 최소 2주(주간 사이클 2회). 시험 기간 동안 영향 범위는 제안에 명시한 업무 유형으로 제한한다.
 - 확정마다 `org_version`을 만들고 이전 버전으로 롤백할 수 있다.
 

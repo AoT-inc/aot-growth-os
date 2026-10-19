@@ -38,6 +38,7 @@
 ## 애플리케이션에서 강제할 규칙 (SQL로 표현하지 않은 것)
 
 - `approval.decided_by`는 `actor.kind='human'`만.
+- `approval.subject_kind`: 업무 실행(`task`), 전략·정책 버전, 게시, 도구 호출, 상품 등록(`product`, `product.registration_approval_id`가 가리킴), 조직 제안(`org_proposal`, `proposed → approved`).
 - `completed` 전이는 검증기 주체만, 그리고 해당 업무의 최신 `evaluation.safety='pass'`일 때만.
 - `publication.audience != 'internal'`이고 `status='published'`이면 `approval_id` 필수.
 - 조직 변경은 `org_proposal` 승인 없이 `org_unit`/`role`/`org_version`에 쓸 수 없다. 조직 관리팀 역할은 정책·검증기·평가기를 대상으로 하는 제안을 만들 수 없다.

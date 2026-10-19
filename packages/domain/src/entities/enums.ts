@@ -70,7 +70,8 @@ export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 export const COST_CATEGORIES = ['llm', 'tool', 'infra', 'external', 'human_time'] as const;
 export type CostCategory = (typeof COST_CATEGORIES)[number];
 
-export const APPROVAL_SUBJECT_KINDS = ['task', 'strategy_version', 'policy_version', 'publication', 'tool_call'] as const;
+/** `product`: 상품 등록 승인(registered 전이), `org_proposal`: 조직 제안 승인(proposed → approved) */
+export const APPROVAL_SUBJECT_KINDS = ['task', 'strategy_version', 'policy_version', 'publication', 'tool_call', 'product', 'org_proposal'] as const;
 export type ApprovalSubjectKind = (typeof APPROVAL_SUBJECT_KINDS)[number];
 
 export const APPROVAL_DECISIONS = ['approved', 'rejected', 'changes_requested'] as const;

@@ -55,7 +55,7 @@ approved ──► trial ──► active ──► retired
 
 | From | To | 주체 | 조건 |
 |---|---|---|---|
-| proposed | approved | 사람 | 승인 시점에 `base_org_version_id` = 현재 활성 조직 버전. 다르면 충돌 → `superseded`, 최신 기준으로 재제안. `change_class='risky'`면 ADR-0006 위험 변경 승인자 요건 |
+| proposed | approved | 사람 (`approval`, `subject_kind='org_proposal'`) | 승인 시점에 `base_org_version_id` = 현재 활성 조직 버전. 다르면 충돌 → `superseded`, 최신 기준으로 재제안. `change_class='risky'`면 ADR-0006 위험 변경 승인자 요건 |
 | proposed | rejected / expired | 사람 / 시스템 | `expires_at` 경과 시 `expired` |
 | approved | trial | 시스템 | `evaluation_plan`·`rollback_plan` 완비. **`approved`는 변경안 승인이지 무조건적인 실행 허가가 아니다** |
 | trial | active | 시스템 | 독립 평가 `pass` + 필수 성공 조건 충족 + 사람 확인. 새 `org_version` 생성 |
@@ -105,7 +105,7 @@ approved ──► trial ──► active ──► retired
 
 ## 상품 등록 (`product.registration_status`)
 
-`candidate → verifying → pending_approval → registered`, 검증/승인 단계에서 `rejected`. `registered`로의 전이는 사람 승인(`approval`)이 필수이며, 검증 업무의 읽기 전용 증거가 연결되어야 한다. `registered` 전 제품은 업무의 `product_id`가 될 수 없다 ([절차](../products/README.md)).
+`candidate → verifying → pending_approval → registered`, 검증/승인 단계에서 `rejected`. `registered`로의 전이는 사람 승인(`approval`, `subject_kind='product'`, `product.registration_approval_id`가 가리킴)이 필수이며, 검증 업무의 읽기 전용 증거가 연결되어야 한다. `registered` 전 제품은 업무의 `product_id`가 될 수 없다 ([절차](../products/README.md)).
 
 ## 상품 단계 (`product.lifecycle_stage`)
 

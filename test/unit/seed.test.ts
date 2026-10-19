@@ -4,10 +4,10 @@ import { test } from 'node:test';
 
 import {
   checkTaskSpecReferences, currentPolicyVersionId, DEFAULT_OWNER_NAME, FakeClock, POLICY_V1_BASELINE, policyV1ContentHash,
-  SEED_IDS, seedPhaseA, taskCreationPrerequisites, validateTaskSpec, type Db, type TaskSpec,
+  SEED_IDS, SEED_SLUGS, seedPhaseA, taskCreationPrerequisites, validateTaskSpec, type Db, type TaskSpec,
 } from '@aot/domain';
 
-import { minimalDraft } from '../support/spec-fixtures.ts';
+import { minimalDraft, productRegistrationTemplate } from '../support/spec-fixtures.ts';
 import { migratedDb, seededDb, START } from '../support/seeded-db.ts';
 
 // node:sqlite 의 행은 프로토타입이 없는 객체라 strict deepEqual 전에 평범한 객체로 바꾼다.
@@ -125,6 +125,15 @@ test('a failure while seeding leaves nothing behind, and seeding cannot run insi
   assert.equal(count(db, 'policy_version'), 0);
   assert.equal(count(db, 'org_unit'), 0);
   assert.throws(() => db.writeTx(() => seedPhaseA(db, { clock })), /nested/);
+});
+
+test('the product-registration template references only seeded departments and roles (D4)', (t) => {
+  const { db } = seededDb(t);
+  const template = productRegistrationTemplate();
+  assert.equal(validateTaskSpec(template, 'draft').ok, true);
+  assert.deepEqual(checkTaskSpecReferences(db, template as Parameters<typeof checkTaskSpecReferences>[1]), []);
+  assert.equal(template['department'], SEED_SLUGS.unit);
+  assert.equal(template['role'], SEED_SLUGS.registrationVerifier);
 });
 
 test('checkTaskSpecReferences: seeded roles are usable; unknown/unassignable roles, departments, products and dependencies are not', (t) => {

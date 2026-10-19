@@ -42,7 +42,7 @@
 ```json
 {
   "objective": "example-product 후보의 저장소 구조·스택·원격·기본 브랜치·활동 이력·라이선스를 읽기 전용으로 수집하고, 비밀값 스캔과 공개/내부 분류 제안을 evidence로 제출한다",
-  "department": "development",
+  "department": "core",
   "role": "registration-verifier",
   "trigger": {"kind": "manual", "ref": "product-registration:example-product"},
   "inputs": [
@@ -89,7 +89,7 @@
 ```
 
 - `product` 필드는 비워 둔다. 등록 전 제품은 업무의 `product`가 될 수 없다 ([ADR-0010](../docs/adr/0010-product-registry.md)). 대상은 `inputs`의 후보 참조와 도구 `target`으로만 가리킨다.
-- `department`/`role`은 가상 예시다. 맞는 `trial`/`active` 역할이 없으면 비워 `unassigned`로 생성한다.
+- `department`/`role`은 Phase A 시드 값이다(부서 `core`, 역할 `registration-verifier@v1` — [a0-decisions D4](../docs/plans/a0-decisions.md), [ADR-0011 Amendment](../docs/adr/0011-adaptive-organization.md)). 시드와 다른 조직에서 쓰면 그 조직의 부서·역할로 바꾸고, 맞는 `trial`/`active` 역할이 없으면 비워 `unassigned`로 생성한다. 템플릿이 시드에 없는 부서·역할을 가리키지 않는지는 `test/unit/seed.test.ts`가 확인한다.
 - `policy_version`, `versions`, `approved_snapshot`은 시스템이 채운다. 에이전트가 지정할 수 없다.
 - 사람이 접근 범위를 승인할 때 `approved_snapshot`에 대상 저장소 식별자와 도구 인자 해시를 묶는다. 이후 대상이 바뀌면 `approved_hash` 불일치로 차단된다.
 

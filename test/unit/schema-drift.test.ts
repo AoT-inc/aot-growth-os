@@ -1,5 +1,6 @@
 // 설계 기준(docs/schema/schema.sql)과 마이그레이션(migrations/)이 어긋나지 않는지 고정한다.
-// 결정(2026-10-19): schema.sql 이 단일 원천, migrations/0001 은 그 복사본, 이후 변경은 새 마이그레이션 + schema.sql 동시 수정.
+// 결정(2026-10-19): schema.sql 이 단일 원천, migrations/0001 은 그 복사본. 첫 공개 릴리스 전에는 0001 을 함께 직접 고치고,
+// 그 뒤에는 새 마이그레이션 + schema.sql 동시 수정.
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

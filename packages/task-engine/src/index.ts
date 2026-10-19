@@ -18,7 +18,7 @@ export {
   type ClaimedTask, type ClaimOptions, type ClaimResult, type EffectLookups, type ExpiredRun, type FailRunOptions, type Lease,
   type RunEnd, type TakeoverOptions, type TakeoverResult,
 } from './lease.ts';
-export { checkLeaseParams, DEFAULT_LEASE_PARAMS, type LeaseParams } from './params.ts';
+export { checkLeaseParams, DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, type LeaseParams } from './params.ts';
 export { runPolling, type PollingOptions } from './polling.ts';
 export { transitionEffect, transitionTask, type EffectTransitionRequest, type TaskTransitionRequest } from './transitions.ts';
 export {

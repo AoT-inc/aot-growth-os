@@ -5,7 +5,7 @@ import { test } from 'node:test';
 
 import { DENY_ALL_TASK_POLICY_GATE, type Db, type FakeClock } from '@aot/domain';
 import {
-  claimNextTask, failRun, findExpiredRuns, heartbeat, LeaseLostError, promoteDueRetries, saveCheckpoint, submitRun,
+  checkLeaseParams, claimNextTask, DEFAULT_LEASE_PARAMS, failRun, findExpiredRuns, heartbeat, LeaseLostError, promoteDueRetries, saveCheckpoint, submitRun,
   takeOverExpiredRun, TaskWorker, transitionTask, type Lease, type TaskExecutor,
 } from '@aot/task-engine';
 
@@ -221,4 +221,11 @@ test('transitions refuse a stale "from" status (compare-and-set)', (t) => {
   const { db, clock } = setup(t);
   const taskId = queuedTask(db, clock);
   assert.throws(() => db.writeTx((tx) => transitionTask(tx, { taskId, from: 'running', to: 'validating', by: 'scheduler', reason: 'x', now: clock.nowIso() })), /no longer 'running'/);
+});
+
+test('lease parameters: Q15 defaults (90s / 30s), heartbeat must be shorter than the lease', () => {
+  assert.deepEqual(DEFAULT_LEASE_PARAMS, { leaseMs: 90_000, heartbeatMs: 30_000 });
+  assert.throws(() => checkLeaseParams({ leaseMs: 30_000, heartbeatMs: 30_000 }), RangeError);
+  assert.throws(() => checkLeaseParams({ leaseMs: 0, heartbeatMs: 1 }), RangeError);
+  assert.throws(() => new TaskWorker({ db: undefined as never, clock: undefined as never, workerId: 'w', actorId: 'a', adapter: 'a', executor: { execute: async () => ({ result: null }) }, lease: { heartbeatMs: 120_000 } }), RangeError);
 });

@@ -1,6 +1,11 @@
 {
-  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다.",
+  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다. lease 값의 근거: docs/spikes/q15-lease-parameters.md",
   "db_path": "instance/aot.db",
   "busy_timeout_ms": 5000,
+  "worker_id": "daemon-1",
+  "lease_ms": 90000,
+  "heartbeat_ms": 30000,
+  "poll_ms": 5000,
+  "retry_delay_ms": 60000,
   "log_level": "info"
 }

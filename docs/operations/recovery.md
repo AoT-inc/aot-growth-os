@@ -29,6 +29,7 @@ ADR-0004(생성 멱등성)를 **실행 소유권**과 **부작용 멱등성**으
 3. lease가 만료된 run은 다른 워커(또는 재시작한 데몬)가 인수할 수 있다. 인수 시 기존 run은 `outcome='lease_expired'`로 닫고 새 `attempt`를 만든다.
 4. 인수한 run은 `checkpoint`부터 이어 가되, **이미 `dispatched`/`unknown` 상태인 부작용은 §3 절차를 먼저 거친다.**
 5. 시각은 **주입되는 단일 `Clock`** 에서 얻어 쿼리 파라미터(`now`)로 넘긴다. Phase A는 단일 호스트의 SQLite만 지원하므로 모든 워커가 같은 호스트 시계를 쓴다. SQL 내부의 `now()`/`datetime('now')`는 lease 판정에 쓰지 않는다(테스트에서 시간을 제어할 수 없기 때문). 다중 호스트·Postgres로 옮길 때는 DB 시각을 `Clock` 구현으로 교체한다.
+6. 기본값은 lease 90초, heartbeat 30초다([스파이크 Q15](../spikes/q15-lease-parameters.md)). heartbeat 주기는 lease보다 짧아야 하고, heartbeat가 lease 상실이 아닌 이유(쓰기 대기 초과 등)로 실패하면 다음 주기에 다시 쓴다.
 
 ## 3. 부작용 멱등성
 

@@ -8,7 +8,7 @@ queued ──► running ──► validating ──► completed
   │           ├─► retry_wait ◄─┤ (검증 실패, 재시도 가능)
   │           │      │
   │           │      └──► queued (next_run_at 도달)
-  │           ├─► needs_review ◄── validating (사람 검토 필요 / 승인 대기)
+  │           ├─► needs_review ◄── validating (사람 검토 필요 / 승인 대기 / 평가 inconclusive)
   │           └─► failed
   └── cancelled (queued/running/retry_wait/needs_review 어디서나)
 ```
@@ -26,8 +26,8 @@ queued ──► running ──► validating ──► completed
 | running | retry_wait | 스케줄러 | error/timeout, `attempts < max_attempts` |
 | running | failed | 스케줄러 | `attempts >= max_attempts` 또는 치명적 정책 위반 |
 | validating | completed | **검증기만** | 모든 acceptance_criteria 충족 AND `safety != fail` |
-| validating | retry_wait | 검증기 | 기준 미충족, 재시도 가능 |
-| validating | needs_review | 검증기/정책 | `validation.human=true` 또는 승인 필요 |
+| validating | retry_wait | 검증기 | 기준 미충족, 재시도 가능 (`attempts + 1 < max_attempts`, 시도 1회 소모). 소진되면 `needs_review` — `validating → failed` 전이는 없으므로 사람이 정한다 |
+| validating | needs_review | 검증기/정책 | `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
 | needs_review | queued / completed / failed | 사람(approval 기록 필수) | |
 | retry_wait | queued | 스케줄러 | `next_run_at` 도달 |
 | * (비종료) | cancelled | 사람 또는 정책 | 사유 필수 |
@@ -37,6 +37,7 @@ queued ──► running ──► validating ──► completed
 - 모든 전이는 `task_transition`에 `caused_by`와 함께 기록한다.
 - 데몬 재시작·워커 사망 시 복구 규칙은 [recovery §2·§4](../operations/recovery.md)가 정본이다: lease가 만료된 `running` 업무의 run은 `outcome='lease_expired'`로 닫고(`killed`는 `time_limit` 초과 등으로 시스템이 강제 종료한 경우에만 쓴다), 업무는 `running → queued`로 돌아가 새 `attempt`로 인수된다(재시도 횟수 소모 여부는 정책 파라미터, 기본 소모하지 않음). `dispatched`/`unknown` 부작용이 남은 run은 `queued`가 아니라 `needs_review`로 간다.
 - 종료 상태: `completed`, `failed`, `cancelled`.
+- 검증 판정과 전이 (A4): 평가(`evaluation`)는 판정만 기록하고, 전이는 업무 엔진이 `validating` 행의 조건대로 한다. `completed`는 같은 run 의 `evaluation.outcome='pass'` AND `safety='pass'`가 기록되어 있을 때만 가능하다. `inconclusive`는 `retry_wait`가 아니라 `needs_review`다(증거 부족을 재시도로 덮지 않고 사람이 확인한다, 2026-10-21 결정).
 - 실행 소유권(lease)과 부작용 복구 규칙은 [recovery](../operations/recovery.md)를 따른다. 외부 부작용이 `unknown`인 run은 `retry_wait`가 아니라 `needs_review`로 간다.
 - `queued → running`은 task_run 생성(lease 획득)과 한 트랜잭션이다. 실행 인자가 `approved_hash`와 다르면 `running`으로 가지 못하고 `queued → needs_review`(재승인)로 간다.
 - 실행 시작 시 현재 `policy_version`이 생성 시점보다 엄격하면 새 정책으로 재검증한다.
@@ -71,6 +72,7 @@ approved ──► trial ──► active ──► retired
 - 조직 변경은 JSON 덮어쓰기가 아니라 승인된 diff를 기준 버전에 적용해 **새 `org_version`을 만드는 작업**이다.
 - 조직 관리팀은 정책·검증기·평가기·승인 엔진을 대상으로 하는 제안을 만들 수 없다.
 - 조직 관리팀은 `org_trial_result`를 쓸 수 없다 (평가기만).
+- **`inconclusive`는 재시험 승인(`inconclusive → trial`) 전까지 종료로 취급하는 상태다** (2026-10-21 결정). 조직에 반영된 적이 없으므로 자동으로 다음 상태로 가지 않고, 시험 연장도 자동 허용하지 않으며, 별도 상태(예: `closed`)를 추가하지 않는다. 사람이 재시험을 승인하지 않으면 그대로 종료 기록으로 남는다. 스키마·CHECK·마이그레이션은 바꾸지 않는다. 허용표 정의의 `terminal` 목록은 비워 둔다(나가는 전이 `inconclusive → trial`이 있으므로 기계적으로는 종료가 아니고, 의미상 "재시험 승인이 없으면 끝"이라는 취급이다).
 
 ### 롤백 처리 (`rolled_back`)
 

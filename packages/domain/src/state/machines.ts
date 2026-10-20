@@ -46,6 +46,7 @@ export const TASK_TERMINAL_STATUSES: readonly TaskStatus[] = TASK_MACHINE.termin
 export const isTaskTerminal = (status: TaskStatus): boolean => TASK_MACHINE.terminal.includes(status);
 
 // ===== 조직 제안 (org_proposal.status) =====
+// `inconclusive` 는 재시험 승인(→ trial) 전까지 종료로 취급한다 (state-machines.md, 2026-10-21 결정). 나가는 전이가 있으므로 terminal 목록에는 넣지 않고 별도 상태도 없다.
 export const ORG_PROPOSAL_MACHINE: StateMachine<OrgProposalStatus> = {
   name: 'org_proposal',
   states: ['proposed', 'rejected', 'approved', 'trial', 'active', 'inconclusive', 'rolled_back', 'retired', 'expired', 'superseded'],

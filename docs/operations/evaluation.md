@@ -20,7 +20,7 @@ ADR-0007의 구체화. 검증(validation)과 평가(evaluation)를 분리하고,
 |---|---|---|
 | `pass` | 사전 정의한 성공 기준을 충분한 증거로 충족 | 업무 `completed` / 조직 `active` 승격 후보 |
 | `fail` | 실패 기준 충족 또는 안전성 위반 | 업무 `retry_wait`/`failed` / 조직 `rolled_back` |
-| `inconclusive` | 증거 부족(관측 수 미달, 데이터 품질 불량, 측정 불가) | 업무 `needs_review` / 조직 `inconclusive` |
+| `inconclusive` | 증거 부족(관측 수 미달, 데이터 품질 불량, 측정 불가, 원본 증거 없음) | 업무 `needs_review`(평가 `inconclusive` 포함, 2026-10-21 결정) / 조직 `inconclusive`(재시험 승인 전까지 종료 취급, 별도 상태 없음) |
 
 평가기는 증거가 부족할 때 성공·실패를 억지로 결정하지 않는다. `inconclusive`는 실패도 성공도 아니며, 어느 쪽 사례로도 전략 갱신에 쓰지 않는다.
 
@@ -58,7 +58,7 @@ ADR-0007의 구체화. 검증(validation)과 평가(evaluation)를 분리하고,
 - 새 역할이 시험 기간 동안 업무를 한 건도 받지 못하면 `inconclusive`다.
 - `active` 승격 조건: 독립 평가 `pass` + 필수 성공 조건 충족 + 사람 확인.
 - **`trial` 연장은 자동 허용하지 않는다.** 연장은 사람 승인이 필요하고(`trial_extensions` 증가), 원래의 비용 상한과 영향 범위를 유지한다. 연장 횟수 상한은 정책이 정한다.
-- `inconclusive` 후 선택지: 재시험 승인(새 평가 계획으로 `trial` 재진입) / 제안 폐기(조직에 반영된 적이 없으므로 `inconclusive` 상태로 종료 기록만 유지).
+- `inconclusive`는 재시험 승인 전까지 **종료로 취급**한다. 별도 상태를 추가하지 않는다([state-machines](../schema/state-machines.md)). 선택지: 재시험 승인(새 평가 계획으로 `trial` 재진입) / 제안 폐기(조직에 반영된 적이 없으므로 `inconclusive` 상태로 종료 기록만 유지).
 
 ## 5. 업무 평가의 4축
 

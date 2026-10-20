@@ -48,6 +48,21 @@
 }
 ```
 
+## 결정론적 검사 id (`validation.deterministic`)
+
+`@aot/evaluation`(A4)이 구현한 검사 id. 목록에 없는 id는 "검증할 수 없음"으로 취급되어 평가가 `inconclusive`(업무 `needs_review`)가 된다. 검사 대상이 하나도 없는 검사도 통과가 아니라 "확인 불가"다.
+
+| id | 검사 | 근거(원본) |
+|---|---|---|
+| `schema_valid` (`schema`) | 저장된 명세가 스키마를 통과하고 run 결과가 JSON | `task.spec`, `task_run.result` |
+| `url_reachable` | 출처 URL(`evidence.kind='source_url'`과 보고서 주장이 든 출처)에 접근 가능 | 출처 조회 포트 |
+| `quote_in_source` | 인용문이 출처 원문에 존재(공백 차이 무시, 대소문자 구분) | 출처 조회 포트 |
+| `dedupe` | 같은 주장·같은 출처 중복 없음 | 보고서 주장, `evidence` |
+| `budget` | 비용 원장 합계가 `cost_budget`(USD, 토큰) 이내 | `cost_entry` |
+| `policy_compliance` | 보낸 외부 부작용마다 허용(또는 승인 대기) 정책 판정이 기록됨. 실패는 안전성 실패 | `external_effect`, `policy_decision` |
+
+보고서의 주장 목록은 `{"claims": [{"id"?, "statement", "source_url", "quote"?}]}` 모양을 읽는다(어댑터 출력 계약은 A5에서 확정). 필수 테스트 결과(`test_result`) 검사는 합격 표현 형식이 정해지지 않아 구현하지 않았다.
+
 ## 버전과 승인 스냅샷
 
 업무 생성 시점의 조건과 실행 시점의 조건은 다를 수 있다. 명세는 다음을 함께 기록한다.

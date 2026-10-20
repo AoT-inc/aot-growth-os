@@ -28,7 +28,7 @@ ADR-0008의 구체화. 기억은 대화 로그가 아니라 **출처, 신뢰 상
 5. `valid_until`이 없는 `fact`는 허용하지만, `measurement`·가격·정책 해석·시장 데이터 같은 변동성 높은 종류는 기본 만료 기간을 둔다(정책 파라미터).
 6. `commitment`는 만료로 `stale`이 되지 않고, 이행/취소로만 종료된다.
 7. `sensitivity`가 `confidential` 이상인 항목은 `publication`의 입력으로 사용할 때 정책 승인이 필요하다.
-8. `inconclusive` 평가 결과는 `lesson`/`strategy_record`의 성공 사례로 저장하지 않는다 ([evaluation](../operations/evaluation.md)).
+8. `inconclusive` 평가 결과는 `lesson`/`strategy_record`의 성공 사례로 저장하지 않는다 ([evaluation](../operations/evaluation.md)). 구현(A4): `source_ref`가 `evaluation:<id>`이고 그 평가가 `inconclusive`이면 `createMemoryItem`이 `lesson`/`strategy_record` 저장을 거부한다(`inconclusive_not_learnable`). 성공·실패 어느 쪽 사례도 아니므로 "성공 사례만"이 아니라 두 종류 모두에서 막는다. 존재하지 않는 평가 참조도 거부한다.
 
 ## 필수 테스트
 
@@ -36,3 +36,4 @@ ADR-0008의 구체화. 기억은 대화 로그가 아니라 **출처, 신뢰 상
 - 대체된 항목이 삭제되지 않고 과거 관측으로 조회된다.
 - 에이전트가 `fact`를 직접 생성할 수 없다.
 - 외부 입력 유래 항목이 `unverified`/`external_untrusted`로 저장된다.
+- `inconclusive` 평가를 근거로 한 `lesson`/`strategy_record`가 저장되지 않는다.

@@ -27,3 +27,9 @@
 - 평가기는 에이전트 보고서가 아니라 **원본 증거**(게시 콘텐츠·시각, 적용 페이지 버전, 실제 유입·전환, 비용 원장, 기준선)를 직접 조회한다. 보고서만으로 `pass` 불가.
 - 판단 층: 결정론적 검증 / LLM 검증 / 사업 성과 평가를 구분한다.
 - 상세는 [operations/evaluation.md](../operations/evaluation.md).
+
+## Amendment (2026-10-21): 판정의 후속과 구현 경계 (A4)
+- 업무: 평가 `inconclusive`는 `validating → needs_review`다(`retry_wait`가 아님). 증거 부족을 재시도로 덮지 않고 사람이 확인한다. 조직 제안: `inconclusive`는 재시험 승인 전까지 종료로 취급하며 별도 상태를 추가하지 않는다 ([state-machines](../schema/state-machines.md)).
+- 검증기·평가기는 `@aot/evaluation`이 구현하고 업무 상태 전이는 하지 않는다. 판정은 domain 의 `TaskValidator` 포트로 `task-engine`에 전달되고, 전이는 `task-engine`이 허용표대로 한다(경계 lint 유지, 조립은 `apps/daemon`).
+- LLM 검증은 인터페이스(`LlmVerifier`)만 정의한다. 입력은 원본 출처와 검증 대상 주장 문장, 명세의 완료 조건뿐이며 프롬프트·세션·보고서 전문은 타입에 자리가 없다. 실제 모델 선택은 [Q22](../open-questions.md).
+- 평가기 고정 코어: 평가기 로직은 코드이며 `evaluation.evaluator`에 `id@version`을 남긴다. 버전 변경을 정책 변경 절차에 연결하는 방법(정책 형식에 고정 키를 둘지)은 [Q27](../open-questions.md)로 남긴다.

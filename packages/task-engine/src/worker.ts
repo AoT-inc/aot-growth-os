@@ -1,10 +1,11 @@
-// 폴링 워커: 한 번의 tick 에서 (1) 만료 lease 인수 (2) 재시도 대기 해제 (3) 업무 하나 선택·lease 획득 (4) 실행.
+// 폴링 워커: 한 번의 tick 에서 (1) 만료 lease 인수 (2) 재시도 대기 해제 (3) 검증 대기(validating) 업무 검증·전이 (4) 업무 하나 선택·lease 획득 (5) 실행.
+// (3)은 TaskValidator 포트가 연결되었을 때만 한다 (A4, evaluation 이 구현). 연결 전에는 validating 업무가 그대로 남는다.
 // 실행 자체는 TaskExecutor 포트에 맡긴다 (A5 의 agent-runtime 이 구현한다. 의존 방향상 agent-runtime 이 이 패키지를 참조).
 // 실행 중에는 heartbeatMs 마다 heartbeat 를 쓰고, lease 를 잃으면 signal 을 abort 해 실행을 멈추게 한다.
 // lease 를 잃은 뒤에는 결과도 부작용도 기록하지 않는다 (펜싱이 거부한다).
 import {
   DENY_ALL_TASK_POLICY_GATE,
-  type Clock, type Db, type ExternalEffectRow, type TaskPolicyGate, type TaskSpec,
+  type Clock, type Db, type ExternalEffectRow, type TaskPolicyGate, type TaskSpec, type TaskValidator,
 } from '@aot/domain';
 
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
@@ -14,6 +15,7 @@ import {
   type EffectLookups, type Lease, type RunEnd, type TakeoverResult,
 } from './lease.ts';
 import { checkLeaseParams, DEFAULT_LEASE_PARAMS, type LeaseParams } from './params.ts';
+import { nextValidatingTask, validateTask, type ValidationEnd } from './validation.ts';
 
 /** 실행기가 받는 것. 상태 전이 API 는 없다 — 실행기는 결과만 돌려준다 (에이전트는 상태를 바꾸지 않는다). */
 export interface RunContext {
@@ -64,6 +66,8 @@ export interface WorkerOptions {
   executor: TaskExecutor;
   /** 정책 훅. 생략하면 기본 거부(DENY_ALL_TASK_POLICY_GATE) */
   gate?: TaskPolicyGate;
+  /** 검증기 (A4). 생략하면 validating 업무를 검증하지 않는다 */
+  validator?: TaskValidator;
   /** 외부 부작용 도구 (이름 → 도구). 인수 시 남은 부작용의 외부 상태 조회에도 쓴다 */
   tools?: Readonly<Record<string, EffectTool>>;
   lease?: Partial<LeaseParams>;
@@ -86,8 +90,15 @@ export interface TickReport {
   recovered: TakeoverResult[];
   promoted: string[];
   sentToReview: string[];
+  /** 이번 tick 에 검증하고 전이한 업무 */
+  validated: ValidationEnd[];
+  /** 검증 중 오류가 난 업무 (상태는 그대로 validating, 다음 tick 에 다시 시도) */
+  validationFailed: { taskId: string; error: string }[];
   executed: ExecutionReport | null;
 }
+
+/** 한 tick 에서 검증하는 업무 수의 상한 */
+export const VALIDATIONS_PER_TICK = 20;
 
 export const DEFAULT_RETRY_DELAY_MS = 60_000;
 
@@ -143,14 +154,36 @@ export class TaskWorker {
     return lookups;
   }
 
+  /** `validating` 업무를 검증하고 전이한다 (검증기가 연결된 경우). 오류가 난 업무는 이번 tick 에서 건너뛴다. */
+  async validatePending(): Promise<Pick<TickReport, 'validated' | 'validationFailed'>> {
+    const { db, clock, validator } = this.#options;
+    const validated: ValidationEnd[] = [];
+    const validationFailed: { taskId: string; error: string }[] = [];
+    if (!validator) return { validated, validationFailed };
+    const skipped = new Set<string>();
+    for (let i = 0; i < VALIDATIONS_PER_TICK; i += 1) {
+      const taskId = nextValidatingTask(db, skipped);
+      if (taskId === null) break;
+      skipped.add(taskId);
+      try {
+        const end = await validateTask(db, { clock, validator, retryDelayMs: this.#options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS }, taskId);
+        if (end) validated.push(end);
+      } catch (error) {
+        validationFailed.push({ taskId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { validated, validationFailed };
+  }
+
   async tick(): Promise<TickReport> {
     const { db, clock, workerId, actorId, adapter } = this.#options;
     const recovered = await this.recoverExpired();
     const promoted = promoteDueRetries(db, clock);
+    const { validated, validationFailed } = await this.validatePending();
     const claim = claimNextTask(db, { clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs });
-    if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, executed: null };
+    if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, executed: null };
     const executed = await this.#execute(claim.claimed.lease, claim.claimed.spec, claim.claimed.checkpoint);
-    return { recovered, promoted, sentToReview: claim.sentToReview, executed };
+    return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, executed };
   }
 
   async #execute(lease: Lease, spec: TaskSpec, checkpoint: unknown): Promise<ExecutionReport> {

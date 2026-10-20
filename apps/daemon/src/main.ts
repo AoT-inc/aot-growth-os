@@ -4,7 +4,7 @@
 //
 // 정책: 가장 최근 policy_version 의 내용(instance/policies/<hash>.yaml 또는 저장소 템플릿)으로 판정한다. 내용을 찾지 못하면 거부.
 // 승인: 사람용 승인 CLI(apps/daemon/src/approve.ts)가 approval_socket 으로 접속한다 (trust-boundaries §3.1).
-// 아직 연결되지 않은 것: 실행기(A5) — 연결 전까지 실행 요청은 오류로 끝난다.
+// 아직 연결되지 않은 것: 실행기(A5) — 연결 전까지 실행 요청은 오류로 끝난다. 검증기의 외부 포트(출처 조회·LLM 검증기·측정 값)도 A5/A6 — 연결 전까지 validating 업무는 검증되지 않는다.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +75,8 @@ async function main(): Promise<void> {
     onTick: (report) => {
       for (const r of report.recovered) console.log(`recovered ${r.taskId}: run ${r.runId} ${r.outcome} -> ${r.taskStatus}`);
       for (const id of report.sentToReview) console.log(`needs_review ${id}: refused by the policy gate before running`);
+      for (const v of report.validated) console.log(`validated ${v.taskId}: evaluation ${v.evaluationId} -> ${v.taskStatus}`);
+      for (const f of report.validationFailed) console.error(`validation failed ${f.taskId}: ${f.error}`);
       if (report.executed) console.log(`executed ${report.executed.taskId} attempt ${report.executed.attempt}: ${JSON.stringify(report.executed.end)}`);
     },
     onError: (error) => console.error('tick failed:', error),

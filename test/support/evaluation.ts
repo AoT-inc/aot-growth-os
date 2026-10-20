@@ -103,3 +103,21 @@ export function addProduct(db: Db, clock: FakeClock, slug = 'example-product'): 
   ));
   return id;
 }
+
+/** 평가 행을 직접 넣는다 (판정 → 전이 시험용). 반환값은 evaluation.id */
+export function recordEvaluation(
+  db: Db, clock: FakeClock, run: SubmittedRun, options: { outcome: 'pass' | 'fail' | 'inconclusive'; safety?: 'pass' | 'fail'; id?: string },
+): string {
+  const id = options.id ?? `eval-${run.runId}`;
+  db.writeTx((tx) => tx.run(
+    `INSERT INTO evaluation (id, task_id, task_run_id, evaluator, validation_passed, outcome, primary_evidence_refs, agent_report_used, safety, evidence_refs, at)
+     VALUES (?, ?, ?, 'task-evaluator@v1', ?, ?, '["evidence:x"]', 0, ?, '[]', ?)`,
+    [id, run.taskId, run.runId, options.outcome === 'pass' ? 1 : 0, options.outcome, options.safety ?? 'pass', clock.nowIso()],
+  ));
+  return id;
+}
+
+export const transitionsOf = (db: Db, taskId: string) =>
+  db.all<{ from_status: string | null; to_status: string; caused_by: string; reason: string }>(
+    'SELECT from_status, to_status, caused_by, reason FROM task_transition WHERE task_id = ? ORDER BY id', [taskId],
+  );

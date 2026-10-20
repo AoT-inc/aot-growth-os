@@ -33,7 +33,7 @@ export const TASK_MACHINE: StateMachine<TaskStatus> = {
     rule('running', 'failed', ['scheduler'], { preconditions: 'attempts >= max_attempts 또는 치명적 정책 위반' }),
     rule('validating', 'completed', ['validator'], { preconditions: "모든 acceptance_criteria 충족 AND safety != 'fail' (최신 evaluation.safety='pass')" }),
     rule('validating', 'retry_wait', ['validator'], { preconditions: '기준 미충족, 재시도 가능' }),
-    rule('validating', 'needs_review', ['validator', 'policy'], { preconditions: 'validation.human=true 또는 승인 필요' }),
+    rule('validating', 'needs_review', ['validator', 'policy'], { preconditions: "validation.human=true, 승인 필요, 또는 평가 'inconclusive' (증거 부족, 2026-10-21 결정)" }),
     rule('needs_review', 'queued', ['human'], { requires: ['approval'] }),
     rule('needs_review', 'completed', ['human'], { requires: ['approval'] }),
     rule('needs_review', 'failed', ['human'], { requires: ['approval'] }),

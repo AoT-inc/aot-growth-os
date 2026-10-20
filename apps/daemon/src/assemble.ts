@@ -1,9 +1,11 @@
-// 데몬 조립 (A3): 정책 게이트(@aot/policy) → 업무 엔진(@aot/task-engine) 의 TaskPolicyGate 포트, 승인 엔진 → 승인 소켓.
-// task-engine 과 policy 는 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
+// 데몬 조립 (A3, A4): 정책 게이트(@aot/policy) → 업무 엔진(@aot/task-engine) 의 TaskPolicyGate 포트, 승인 엔진 → 승인 소켓,
+// 검증기(@aot/evaluation) → 업무 엔진의 TaskValidator 포트.
+// task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { Clock, Db, TaskPolicyGate } from '@aot/domain';
+import { createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import { ApprovalEngine, createPolicyGate, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
 import { TaskWorker, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
@@ -39,6 +41,11 @@ export interface AssembleOptions {
   lease?: Partial<LeaseParams>;
   retryDelayMs?: number;
   timers?: Timers;
+  /**
+   * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
+   * 생략하면 validating 업무는 검증되지 않고 그대로 남는다 (실제 포트는 A5/A6 에서 게이트웨이를 거쳐 연결).
+   */
+  evaluation?: Omit<EvaluatorDeps, 'db' | 'clock'>;
 }
 
 export interface Daemon {
@@ -61,6 +68,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     adapter: options.adapter,
     executor: options.executor,
     gate,
+    ...(options.evaluation === undefined ? {} : { validator: createTaskValidator({ db: options.db, clock: options.clock, ...options.evaluation }) }),
     ...(options.tools === undefined ? {} : { tools: options.tools }),
     ...(options.lease === undefined ? {} : { lease: options.lease }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),

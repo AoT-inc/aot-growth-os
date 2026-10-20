@@ -30,7 +30,7 @@ export {
   type Issue, type PlainObject, type ValidationResult,
 } from './validation.ts';
 export {
-  createMemoryItem, currentFacts, getMemoryItem, isCurrentFact, listMemoryItems, MemoryRuleError, refuteMemoryItem,
+  createMemoryItem, currentFacts, EVALUATION_SOURCE_PREFIX, getMemoryItem, isCurrentFact, listMemoryItems, MemoryRuleError, refuteMemoryItem,
   supersedeMemoryItem, sweepExpiredMemory,
   type MemoryContext, type MemoryFilter, type MemoryRuleCode, type NewMemoryItem,
 } from './memory.ts';
@@ -39,6 +39,9 @@ export {
   type EffectDispatchKind, type TaskCreationGateRequest, type TaskCreationVerdict, type TaskEffectGateRequest, type TaskEffectVerdict,
   type TaskPolicyGate, type TaskRunGateRequest, type TaskRunVerdict,
 } from './ports/task-policy-gate.ts';
+export type {
+  TaskValidationRequest, TaskValidationVerdict, TaskValidator,
+} from './ports/task-validator.ts';
 export {
   currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
   taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,

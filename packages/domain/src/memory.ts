@@ -3,6 +3,7 @@
 //  - 반증/만료 항목은 현재 사실이 아니지만 삭제되지 않고 과거 관측으로 조회된다
 //  - 외부 입력 유래(external_untrusted)는 hypothesis/unverified 로만 저장한다
 //  - 에이전트는 kind != 'hypothesis' 를 쓸 수 없고, 스스로 검증됨(verified)으로 올릴 수도 없다
+//  - 규칙 8: `inconclusive` 평가 결과(source_ref = `evaluation:<id>`)는 lesson/strategy_record 로 저장하지 않는다 (성공·실패 어느 쪽 사례도 아니다)
 // 시각은 주입된 Clock 이 SQL 파라미터로 넘긴다. 쓰기 함수는 Db.writeTx 안에서만 동작한다.
 import { randomUUID } from 'node:crypto';
 
@@ -22,6 +23,7 @@ export type MemoryRuleCode =
   | 'external_must_be_hypothesis'
   | 'agent_kind_forbidden'
   | 'agent_cannot_verify'
+  | 'inconclusive_not_learnable'
   | 'not_found'
   | 'already_superseded';
 
@@ -64,6 +66,11 @@ export interface MemoryContext {
   defaultValiditySeconds?: (kind: MemoryKind) => number | null;
 }
 
+/** 평가 결과를 근거로 가리키는 `source_ref` 의 접두사 (규칙 8) */
+export const EVALUATION_SOURCE_PREFIX = 'evaluation:';
+/** 학습(성공·실패 사례) 기록으로 쓰는 기억 종류 */
+const LEARNING_KINDS: readonly MemoryKind[] = ['lesson', 'strategy_record'];
+
 const isIso = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Date.parse(value));
 const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => (list as readonly unknown[]).includes(value);
 
@@ -99,6 +106,16 @@ export function createMemoryItem(tx: Db, input: NewMemoryItem, context: MemoryCo
   const validUntil = rawValidUntil !== null
     ? new Date(rawValidUntil).toISOString()
     : defaultSeconds === null ? null : new Date(Date.parse(observedAt) + defaultSeconds * 1000).toISOString();
+
+  // 규칙 8: inconclusive 평가는 실패도 성공도 아니므로 어느 쪽 사례로도 학습 기록에 쓰지 않는다.
+  if (LEARNING_KINDS.includes(kind) && input.source_ref.startsWith(EVALUATION_SOURCE_PREFIX)) {
+    const evaluationId = input.source_ref.slice(EVALUATION_SOURCE_PREFIX.length);
+    const evaluation = tx.get<{ outcome: string }>('SELECT outcome FROM evaluation WHERE id = ?', [evaluationId]);
+    if (!evaluation) throw new MemoryRuleError('invalid_field', `source_ref points at evaluation '${evaluationId}', which does not exist`);
+    if (evaluation.outcome === 'inconclusive') {
+      throw new MemoryRuleError('inconclusive_not_learnable', `evaluation '${evaluationId}' is inconclusive; it is not stored as a '${kind}' (neither a success nor a failure case)`);
+    }
+  }
 
   // 규칙 3: 외부 입력 유래는 hypothesis / unverified / external_untrusted 로만 시작한다. 승격은 검증 업무의 몫이다.
   if (trust === 'external_untrusted' && (kind !== 'hypothesis' || verification !== 'unverified')) {

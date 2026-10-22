@@ -29,8 +29,8 @@ export interface ContractSuiteOptions {
   name?: string;
   /** abort 뒤 어댑터가 끝나야 하는 제한 시간(밀리초). 기본 2000 */
   cancelDeadlineMs?: number;
-  /** 시험 입력을 바꾸고 싶을 때. 기본은 `contractInput()` */
-  input?: () => AdapterInput;
+  /** 시험 입력을 바꾸고 싶을 때(시나리오별로 다른 입력을 줄 수 있다). 기본은 `contractInput()`. 호출마다 새 객체를 돌려줘야 한다 */
+  input?: (scenario: ContractScenario) => AdapterInput;
 }
 
 /** 계약 시험이 쓰는 허용 도구 이름 */
@@ -103,7 +103,7 @@ function assertValidOutput(output: unknown): asserts output is AdapterOutput {
 }
 
 export function runAdapterContractTests(factory: ContractAdapterFactory, options: ContractSuiteOptions = {}): void {
-  const makeInput = options.input ?? contractInput;
+  const makeInput = options.input ?? ((): AdapterInput => contractInput());
   const deadlineMs = options.cancelDeadlineMs ?? 2000;
 
   /** 실행 하나. abort 와 비용 보고를 수집한다 */
@@ -119,7 +119,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
     it('submitted output has the contract shape: structured result, evidence[], run_log, cost', async (t) => {
       const adapter = await factory('success');
       if (adapter === null) return void t.skip('scenario not supported');
-      const output = await start(adapter, makeInput()).done;
+      const output = await start(adapter, makeInput('success')).done;
       assertValidOutput(output);
       assert.equal(output.status, 'submitted');
       assert.notEqual(output.result, null);
@@ -132,7 +132,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
     it('calls tools only through the gateway and keeps a record in run_log', async (t) => {
       const adapter = await factory('tool_call');
       if (adapter === null) return void t.skip('scenario not supported');
-      const { gateway, done } = start(adapter, makeInput());
+      const { gateway, done } = start(adapter, makeInput('tool_call'));
       const output = await done;
       assertValidOutput(output);
       assert.equal(output.status, 'submitted');
@@ -144,7 +144,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
     it('cost_progress is valid and never decreases; the final cost is not below the last report', async (t) => {
       const adapter = await factory('cost_progress');
       if (adapter === null) return void t.skip('scenario not supported');
-      const { progress, done } = start(adapter, makeInput());
+      const { progress, done } = start(adapter, makeInput('cost_progress'));
       const output = await done;
       assertValidOutput(output);
       assert.ok(progress.length >= 1, 'at least one cost_progress report is expected');
@@ -168,7 +168,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
       const adapter = await factory('wait_for_cancel');
       if (adapter === null) return void t.skip('scenario not supported');
       const controller = new AbortController();
-      const { done } = start(adapter, makeInput(), controller.signal);
+      const { done } = start(adapter, makeInput('wait_for_cancel'), controller.signal);
       await tick();
       controller.abort(new Error('contract-test cancel'));
       const output = await withDeadline(done, deadlineMs, `adapter did not finish within ${deadlineMs} ms after the cancel signal`);
@@ -181,7 +181,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
       if (adapter === null) return void t.skip('scenario not supported');
       const controller = new AbortController();
       controller.abort(new Error('contract-test cancel'));
-      const { gateway, done } = start(adapter, makeInput(), controller.signal);
+      const { gateway, done } = start(adapter, makeInput('tool_call'), controller.signal);
       const output = await withDeadline(done, deadlineMs, `adapter did not finish within ${deadlineMs} ms with an aborted signal`);
       assertValidOutput(output);
       assert.equal(output.status, 'cancelled');
@@ -191,7 +191,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
     it('survives the gateway refusing a tool outside the allowed list (no crash, valid output, refusal recorded)', async (t) => {
       const adapter = await factory('denied_tool');
       if (adapter === null) return void t.skip('scenario not supported');
-      const { gateway, done } = start(adapter, makeInput());
+      const { gateway, done } = start(adapter, makeInput('denied_tool'));
       const output = await done;
       assertValidOutput(output);
       assert.ok(gateway.calls.some((call) => !call.allowed), 'the scenario must request a tool outside the allowed list');
@@ -207,7 +207,7 @@ export function runAdapterContractTests(factory: ContractAdapterFactory, options
           t.diagnostic(`scenario ${scenario} not supported`);
           continue;
         }
-        const input = deepFreeze(makeInput());
+        const input = deepFreeze(makeInput(scenario));
         const pristine = structuredClone(input);
         const output = await start(adapter, input).done; // 동결된 객체를 쓰려 하면 strict 모드에서 TypeError 로 실패한다
         assertValidOutput(output);

@@ -17,6 +17,6 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src", "apps/*/src", "test", "scripts"],
+  "include": ["packages/*/src", "packages/*/container", "apps/*/src", "test", "scripts"],
   "exclude": ["node_modules", "test/boundaries/fixtures"]
 }

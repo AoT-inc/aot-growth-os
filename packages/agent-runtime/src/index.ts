@@ -1,6 +1,6 @@
 // @aot/agent-runtime 공개 API 진입점 (단계 A5). 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
 // 책임: 어댑터 계약(U1), 게이트웨이 프레임, 가짜 어댑터, 도구 게이트웨이(U2). 계약 테스트 스위트는 test/support/adapter-contract.ts·gateway-contract.ts
-// (node:test 의존이라 공개 API에 넣지 않는다). 컨테이너 샌드박스(U3: 인자 생성기·docker CLI·러너·고아 정리)는 아래. 실행 관리(U4: time_limit·예산 초과 취소, 비용 기록 포트 연결, run_log 저장)는 run-manager.ts. 실제 어댑터는 뒤 단위.
+// (node:test 의존이라 공개 API에 넣지 않는다). 컨테이너 샌드박스(U3: 인자 생성기·docker CLI·러너·고아 정리)는 아래. 실행 관리(U4: time_limit·예산 초과 취소, 비용 기록 포트 연결, run_log 저장)는 run-manager.ts. 실제 어댑터(읽기 전용 조사, U5)는 research-adapter.ts·fetch-url.ts.
 export {
   ADAPTER_STATUSES, COST_UNITS,
   type AdapterBudget, type AdapterContext, type AdapterCost, type AdapterError, type AdapterInput, type AdapterOutput, type AdapterStatus,
@@ -38,6 +38,15 @@ export {
   type ContainerEnd, type ContainerRunner, type ContainerRunnerOptions, type ContainerRunOptions, type ContainerRunReport,
 } from './container-runner.ts';
 export { containerAgentAdapter } from './container-adapter.ts';
+// 읽기 전용 조사 에이전트(U5): 컨테이너 안 에이전트의 호스트 쪽 어댑터와 게이트웨이 도구 `fetch_url`(SSRF 방지), 검증기용 출처 조회기.
+// 시험용 주입점이 있는 `*WithHooks` 생성기는 내보내지 않는다(사설 주소 규칙을 푸는 길을 운영 설정으로 노출하지 않는다).
+export { createResearchAgentAdapter, RESEARCH_AGENT_LIMITS, RESEARCH_AGENT_NAME, type ResearchAgentAdapterOptions } from './research-adapter.ts';
+export {
+  createFetchUrlTool, createSourceFetcher, DEFAULT_ALLOWED_CONTENT_TYPES, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_REDIRECTS, DEFAULT_SOURCE_FETCH_TIMEOUT_MS,
+  FETCH_URL_OPERATION, FETCH_URL_TOOL, fetchUrlToolSpec, FetchUrlError, hostMatches, htmlToText, MAX_BODY_BYTES_LIMIT, MAX_REDIRECTS_LIMIT, MAX_URL_CHARS,
+  type FetchedPage, type FetchedRedirect, type FetchUrlErrorCode, type FetchUrlTool, type FetchUrlToolOptions, type SourceFetcherOptions,
+} from './fetch-url.ts';
+export { addressFamily, isPublicAddress, isPublicIPv4, isPublicIPv6, parseIPv4, parseIPv6 } from './ip-address.ts';
 export {
   createFileRunLogStore, MAX_RUN_LOG_ENTRIES, MAX_RUN_LOG_MESSAGE_CHARS, RUN_LOG_REF_PREFIX, runLogRefFor, type RunLogStore,
 } from './run-log-store.ts';

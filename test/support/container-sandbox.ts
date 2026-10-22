@@ -39,30 +39,57 @@ export interface SandboxEnvironment {
 
 export type SandboxPreparation = { ok: true; env: SandboxEnvironment } | { ok: false; reason: string };
 
-/** docker 가 있고 응답하며 시험 이미지를 빌드할 수 있으면 환경을, 아니면 건너뛸 이유를 돌려준다 */
-export async function prepareSandbox(): Promise<SandboxPreparation> {
+/** docker 가 있고 응답하면 CLI 를, 아니면 건너뛸 이유를 돌려준다 */
+export async function prepareDocker(): Promise<{ ok: true; docker: DockerCli; dockerVersion: string } | { ok: false; reason: string }> {
   const path = locateDocker();
   if (path === null) return { ok: false, reason: 'docker CLI not found (set AOT_DOCKER_PATH or put docker on PATH)' };
   const docker = createDockerCli({ path, env: pickDockerEnv(process.env), execTimeoutMs: 30_000 });
-  let dockerVersion: string;
   try {
-    dockerVersion = await checkDockerAvailable(docker);
+    return { ok: true, docker, dockerVersion: await checkDockerAvailable(docker) };
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : 'docker is unavailable' };
   }
+}
+
+export interface ImageSource {
+  /** 이미지 설명 (오류 문구와 태그 이름에 쓴다) */
+  label: string;
+  dockerfile: string;
+  /** 빌드 컨텍스트 디렉터리 */
+  context: string;
+  /** 내용 해시에 넣는 파일들 (같은 내용이면 이미 빌드한 이미지를 재사용한다) */
+  hashFiles: readonly string[];
+}
+
+/** 이미지를 빌드(또는 같은 내용의 기존 이미지를 재사용)해 이미지 ID 를 얻는다. 빌드할 수 없으면(오프라인 등) 이유를 돌려준다 */
+export async function buildImage(docker: DockerCli, source: ImageSource): Promise<{ ok: true; imageId: string } | { ok: false; reason: string }> {
   const hash = createHash('sha256');
-  for (const file of ['Dockerfile', 'agent.mjs']) hash.update(readFileSync(join(FIXTURE_DIR, file)));
-  const tag = `aot-test-container-agent:${hash.digest('hex').slice(0, 12)}`;
+  for (const file of source.hashFiles) hash.update(readFileSync(file));
+  const tag = `aot-test-${source.label}:${hash.digest('hex').slice(0, 12)}`;
   // 같은 내용으로 이미 빌드한 이미지가 있으면 재사용한다(태그에 내용 해시가 들어 있다)
   const existing = await docker.process.exec(docker.path, ['image', 'inspect', '--format', '{{.Id}}', tag], { env: docker.env, timeoutMs: docker.execTimeoutMs });
-  if (existing.code === 0 && /^sha256:[0-9a-f]{64}$/.test(existing.stdout.trim())) return { ok: true, env: { docker, dockerVersion, imageId: existing.stdout.trim() } };
-  const build = await docker.process.exec(docker.path, ['build', '-q', '-f', join(FIXTURE_DIR, 'Dockerfile'), '-t', tag, FIXTURE_DIR], { env: docker.env, timeoutMs: 600_000 });
+  if (existing.code === 0 && /^sha256:[0-9a-f]{64}$/.test(existing.stdout.trim())) return { ok: true, imageId: existing.stdout.trim() };
+  const build = await docker.process.exec(docker.path, ['build', '-q', '-f', source.dockerfile, '-t', tag, source.context], { env: docker.env, timeoutMs: 600_000 });
   const imageId = build.stdout.trim().split('\n').pop() ?? '';
   if (build.code !== 0 || !/^sha256:[0-9a-f]{64}$/.test(imageId)) {
     const why = (build.stderr.trim().split('\n').find((line) => line.trim() !== '') ?? `exit code ${String(build.code)}`).slice(0, 200);
-    return { ok: false, reason: `test agent image could not be built (offline or base image unavailable?): ${why}` };
+    return { ok: false, reason: `${source.label} image could not be built (offline or base image unavailable?): ${why}` };
   }
-  return { ok: true, env: { docker, dockerVersion, imageId } };
+  return { ok: true, imageId };
+}
+
+/** docker 가 있고 응답하며 시험 이미지를 빌드할 수 있으면 환경을, 아니면 건너뛸 이유를 돌려준다 */
+export async function prepareSandbox(): Promise<SandboxPreparation> {
+  const ready = await prepareDocker();
+  if (!ready.ok) return ready;
+  const built = await buildImage(ready.docker, {
+    label: 'container-agent',
+    dockerfile: join(FIXTURE_DIR, 'Dockerfile'),
+    context: FIXTURE_DIR,
+    hashFiles: ['Dockerfile', 'agent.mjs'].map((file) => join(FIXTURE_DIR, file)),
+  });
+  if (!built.ok) return { ok: false, reason: `test agent ${built.reason}` };
+  return { ok: true, env: { docker: ready.docker, dockerVersion: ready.dockerVersion, imageId: built.imageId } };
 }
 
 export async function dockerOut(docker: DockerCli, args: readonly string[]): Promise<string> {

@@ -29,6 +29,8 @@ export interface ContainerRunnerOptions {
   agentArgs?: readonly string[];
   /** 컨테이너 이름 = `<namePrefix>-<run_id>`. 기본 'aot-run' */
   namePrefix?: string;
+  /** 러너(어댑터)의 이름 = `task_run.adapter`. 기본 'container-sandbox' */
+  name?: string;
   clock: Clock;
   timers?: GatewayTimers;
   /** 수집할 stderr 최대 바이트. 기본 64 KiB */
@@ -374,5 +376,5 @@ export function createContainerRunner(options: ContainerRunnerOptions): Containe
     }
   }
 
-  return { name: 'container-sandbox', containerNameFor, run };
+  return { name: options.name ?? 'container-sandbox', containerNameFor, run };
 }

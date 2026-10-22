@@ -16,12 +16,10 @@ import { IssueCollector, isNonBlankString, isPlainObject, type Issue, type Plain
 import type { AdapterBudget, AdapterInput, AdapterOutput, AllowedTool, CostProgressEvent, JsonObject, JsonValue } from './contract.ts';
 import { maskSecrets } from './mask.ts';
 import { checkAdapterOutput, checkCostProgress, isJsonObject, isJsonValue, rejectUnknown } from './validate.ts';
+import { AGENT_TO_HOST_FRAME_TYPES, HOST_TO_AGENT_FRAME_TYPES, MAX_FRAME_BYTES } from './wire.ts';
 
-/** 한 프레임(개행 제외, UTF-8 바이트)의 최대 크기: 1 MiB */
-export const MAX_FRAME_BYTES = 1024 * 1024;
-
-export const AGENT_TO_HOST_FRAME_TYPES = ['tool_call', 'cost_progress', 'result'] as const;
-export const HOST_TO_AGENT_FRAME_TYPES = ['start', 'tool_result'] as const;
+// 상한과 프레임 종류 이름은 의존성 없는 wire.ts 에 있다(컨테이너 안 에이전트와 공유). 공개 API 는 그대로다.
+export { AGENT_TO_HOST_FRAME_TYPES, HOST_TO_AGENT_FRAME_TYPES, MAX_FRAME_BYTES };
 export type FrameDirection = 'agent_to_host' | 'host_to_agent';
 
 /** 컨테이너 에이전트에 주는 시작 프레임: `AdapterInput` 과 같은 내용이며 비밀값은 없다 */

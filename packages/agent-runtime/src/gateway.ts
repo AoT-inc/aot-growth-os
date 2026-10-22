@@ -56,6 +56,11 @@ export interface ToolExecutionRequest {
   args: Readonly<JsonObject>;
   /** 타임아웃·run 취소 때 abort 된다. 실행기는 가능한 한 빨리 멈춰야 한다 */
   signal: AbortSignal;
+  /**
+   * 이 run 의 업무 제약(예산·시간·`network_allowlist` 등). 동결된 사본이다. 정책 엔진은 `network_allowlist` 를 강제하지 않으므로
+   * 외부에 나가는 실행기(`fetch_url`)가 스스로 적용한다. 실행기는 이 값으로 권한을 넓히지 못한다(좁히기만 한다).
+   */
+  constraints: Readonly<ToolCallConstraints>;
 }
 
 export interface ToolExecutionResult {
@@ -206,6 +211,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
   const timers = options.timers ?? realGatewayTimers;
   const runSignal = options.signal ?? new AbortController().signal;
   const specs = indexTools(options);
+  const executorConstraints = deepFreeze(structuredClone(constraints));
 
   const records: ToolCallRecord[] = [];
   const spent = { usd: 0, tokens: 0 };
@@ -250,7 +256,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
       runSignal.addEventListener('abort', onRunAbort, { once: true });
       let running: Promise<ToolExecutionResult>;
       try {
-        running = Promise.resolve(executor({ runId, tool: spec.tool, operation: spec.operation, args, signal }));
+        running = Promise.resolve(executor({ runId, tool: spec.tool, operation: spec.operation, args, signal, constraints: executorConstraints }));
       } catch (error) {
         settle({ kind: 'error', error });
         return;

@@ -2,7 +2,10 @@
 //   에이전트 → 호스트  {"type":"tool_call","id":1,"tool":"fetch_url","args":{...}}
 //                      {"type":"cost_progress","cumulative":0.02,"unit":"usd"}
 //                      {"type":"result","status":"submitted","result":{...},"evidence":[...],"run_log":[...],"cost":{"usd":0.03}}
-//   호스트 → 에이전트  {"type":"tool_result","id":1,"result":{...}}  또는  {"type":"tool_result","id":1,"error":"tool_not_allowed"}
+//   호스트 → 에이전트  {"type":"start","run_id":"…","task_spec":{...},"allowed_tools":[...],"evidence_refs":[...],"budget":{...}}   (첫 프레임, 한 번)
+//                      {"type":"tool_result","id":1,"result":{...}}  또는  {"type":"tool_result","id":1,"error":"tool_not_allowed"}
+// `start` 는 U3(컨테이너 러너)가 더했다: 컨테이너에는 환경 변수·마운트·인자로 업무를 줄 수 없으므로 입력(task_spec·허용 도구·근거·예산)을 stdin 첫 줄로 준다.
+// 비밀값은 싣지 않는다(`startFrameOf` 는 비밀로 보이는 값이 있으면 거부한다).
 // 스파이크의 `result` 프레임(`{type,result,cost}`)에 `status`·`evidence`·`run_log` 를 더했다: 계약이 이 셋을 필수로 요구하기 때문이다.
 // 형식 오류·크기 초과·방향 위반은 예외가 아니라 거부 결과(`FrameRejection`)로 돌려준다. 거부 뒤의 처리(컨테이너 kill 등)는 U4 의 몫이다.
 // 줄을 읽는 쪽은 개행이 오기 전에도 누적 바이트가 MAX_FRAME_BYTES 를 넘으면 버려야 한다(여기는 완성된 한 줄만 받는다).
@@ -10,23 +13,34 @@ import { Buffer } from 'node:buffer';
 
 import { IssueCollector, isNonBlankString, isPlainObject, type Issue, type PlainObject } from '@aot/domain';
 
-import type { AdapterOutput, CostProgressEvent, JsonObject, JsonValue } from './contract.ts';
+import type { AdapterBudget, AdapterInput, AdapterOutput, AllowedTool, CostProgressEvent, JsonObject, JsonValue } from './contract.ts';
+import { maskSecrets } from './mask.ts';
 import { checkAdapterOutput, checkCostProgress, isJsonObject, isJsonValue, rejectUnknown } from './validate.ts';
 
 /** 한 프레임(개행 제외, UTF-8 바이트)의 최대 크기: 1 MiB */
 export const MAX_FRAME_BYTES = 1024 * 1024;
 
 export const AGENT_TO_HOST_FRAME_TYPES = ['tool_call', 'cost_progress', 'result'] as const;
-export const HOST_TO_AGENT_FRAME_TYPES = ['tool_result'] as const;
+export const HOST_TO_AGENT_FRAME_TYPES = ['start', 'tool_result'] as const;
 export type FrameDirection = 'agent_to_host' | 'host_to_agent';
 
+/** 컨테이너 에이전트에 주는 시작 프레임: `AdapterInput` 과 같은 내용이며 비밀값은 없다 */
+export interface StartFrame {
+  type: 'start';
+  run_id: string;
+  task_spec: JsonObject;
+  allowed_tools: AllowedTool[];
+  evidence_refs: string[];
+  budget: AdapterBudget;
+  time_limit_ms?: number;
+}
 export interface ToolCallFrame { type: 'tool_call'; id: number; tool: string; args: JsonObject }
 export type ToolResultFrame =
   | { type: 'tool_result'; id: number; result: JsonValue }
   | { type: 'tool_result'; id: number; error: string };
 export interface CostProgressFrame extends CostProgressEvent { type: 'cost_progress' }
 export interface ResultFrame extends AdapterOutput { type: 'result' }
-export type Frame = ToolCallFrame | ToolResultFrame | CostProgressFrame | ResultFrame;
+export type Frame = StartFrame | ToolCallFrame | ToolResultFrame | CostProgressFrame | ResultFrame;
 
 export type FrameRejectCode =
   | 'empty' | 'too_large' | 'multiple_lines' | 'not_json' | 'not_object'
@@ -90,6 +104,7 @@ function checkFrame(value: unknown, direction: FrameDirection | null): FramePars
   }
   const out = new IssueCollector();
   switch (type) {
+    case 'start': checkStart(value, out); break;
     case 'tool_call': checkToolCall(value, out); break;
     case 'tool_result': checkToolResult(value, out); break;
     case 'cost_progress': checkCostProgress(value, '', out, ['type']); break;
@@ -97,6 +112,28 @@ function checkFrame(value: unknown, direction: FrameDirection | null): FramePars
   }
   if (out.issues.length > 0) return reject('invalid_frame', `invalid '${type}' frame: ${out.issues.map((i) => `${i.path || '(root)'}: ${i.message}`).join('; ')}`, out.issues);
   return { ok: true, frame: value as unknown as Frame };
+}
+
+/**
+ * 실행 입력을 `start` 프레임으로 만든다. 입력에 비밀로 보이는 값(키 이름·값 모양, mask.ts)이 있으면 거부한다:
+ * 비밀은 컨테이너 안으로 들어가지 않는다 (trust-boundaries §3, 스파이크 Q26 §5). 입력은 바꾸지 않는다.
+ */
+export function startFrameOf(input: AdapterInput): { ok: true; frame: StartFrame } | { ok: false; rejection: FrameRejection } {
+  const frame: StartFrame = {
+    type: 'start',
+    run_id: input.run_id,
+    task_spec: input.task_spec as unknown as JsonObject,
+    allowed_tools: input.allowed_tools.map((t) => ({ tool: t.tool, operations: [...t.operations] })),
+    evidence_refs: [...input.evidence_refs],
+    budget: { ...input.budget },
+    ...(input.time_limit_ms === undefined ? {} : { time_limit_ms: input.time_limit_ms }),
+  };
+  const encoded = encodeFrame(frame);
+  if (!encoded.ok) return encoded;
+  if (JSON.stringify(maskSecrets(frame as unknown as JsonValue)) !== encoded.line) {
+    return reject('invalid_frame', 'the start frame would carry a secret-looking value; secrets never enter the container');
+  }
+  return { ok: true, frame };
 }
 
 const isFrameId = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
@@ -116,4 +153,35 @@ function checkToolResult(frame: PlainObject, out: IssueCollector): void {
   if (hasResult === hasError) return void out.add('', 'required', "exactly one of 'result' or 'error' is required");
   if (hasResult && !isJsonValue(frame['result'])) out.add('result', 'type', 'result must be a JSON value');
   if (hasError && !isNonBlankString(frame['error'])) out.add('error', 'type', 'error must be a non-empty string (an error code)');
+}
+
+function checkStart(frame: PlainObject, out: IssueCollector): void {
+  rejectUnknown(frame, ['type', 'run_id', 'task_spec', 'allowed_tools', 'evidence_refs', 'budget', 'time_limit_ms'], '', out);
+  if (!isNonBlankString(frame['run_id'])) out.add('run_id', 'required', 'run_id must be a non-empty string');
+  if (!isJsonObject(frame['task_spec'])) out.add('task_spec', 'type', 'task_spec must be a JSON object');
+  const tools = frame['allowed_tools'];
+  if (!Array.isArray(tools)) out.add('allowed_tools', 'type', 'allowed_tools must be an array');
+  else {
+    tools.forEach((item: unknown, index) => {
+      const base = `allowed_tools[${index}]`;
+      if (!isPlainObject(item)) return void out.add(base, 'type', 'allowed tool must be an object');
+      rejectUnknown(item, ['tool', 'operations'], base, out);
+      if (!isNonBlankString(item['tool'])) out.add(`${base}.tool`, 'required', 'tool must be a non-empty string');
+      const ops = item['operations'];
+      if (!Array.isArray(ops) || !ops.every((op: unknown) => isNonBlankString(op))) out.add(`${base}.operations`, 'type', 'operations must be an array of non-empty strings');
+    });
+  }
+  const refs = frame['evidence_refs'];
+  if (!Array.isArray(refs) || !refs.every((ref: unknown) => typeof ref === 'string')) out.add('evidence_refs', 'type', 'evidence_refs must be an array of strings');
+  const budget = frame['budget'];
+  if (!isPlainObject(budget)) out.add('budget', 'required', 'budget must be an object');
+  else {
+    rejectUnknown(budget, ['max_usd', 'max_tokens'], 'budget', out);
+    const usd = budget['max_usd'];
+    if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) out.add('budget.max_usd', 'type', 'max_usd must be a finite, non-negative number');
+    const tokens = budget['max_tokens'];
+    if ('max_tokens' in budget && !(typeof tokens === 'number' && Number.isInteger(tokens) && tokens >= 0)) out.add('budget.max_tokens', 'type', 'max_tokens must be a non-negative integer');
+  }
+  const limit = frame['time_limit_ms'];
+  if ('time_limit_ms' in frame && !(typeof limit === 'number' && Number.isFinite(limit) && limit > 0)) out.add('time_limit_ms', 'type', 'time_limit_ms must be a positive number');
 }

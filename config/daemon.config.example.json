@@ -1,5 +1,5 @@
 {
-  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다. lease 값의 근거: docs/spikes/q15-lease-parameters.md. instance/run 과 instance/totp 는 0700, 그 안의 파일은 0600 (trust-boundaries §3.1)",
+  "_comment": "예시 설정. 실제 값은 instance/daemon.config.json 에 두고 저장소에 커밋하지 않는다. lease 값의 근거: docs/spikes/q15-lease-parameters.md. instance/run 과 instance/totp 는 0700, 그 안의 파일은 0600 (trust-boundaries §3.1). container_agent: null 이면 에이전트 실행기를 연결하지 않는다. 쓰려면 {\"docker_path\": \"/절대/경로/docker\", \"image\": \"sha256:<이미지 ID>\", \"memory_mib\": 512, \"cpus\": 1, \"pids_limit\": 128, \"tmpfs_mib\": 64, \"agent_args\": []} (설정이 있으면 시작 때 Docker 확인과 aot.run 컨테이너 정리를 한다). default_time_limit: 명세에 constraints.time_limit 이 없을 때의 시간 제한(정수+s|m|h|d, 최대 7d)",
   "db_path": "instance/aot.db",
   "busy_timeout_ms": 5000,
   "worker_id": "daemon-1",
@@ -12,5 +12,8 @@
   "policy_store_dir": "instance/policies",
   "totp_dir": "instance/totp",
   "approval_socket": "instance/run/approval.sock",
+  "container_agent": null,
+  "run_log_dir": "instance/run-logs",
+  "default_time_limit": "30m",
   "log_level": "info"
 }

@@ -51,3 +51,16 @@ export class StaleStateError extends Error {
     this.name = 'StaleStateError';
   }
 }
+
+/** 실행 관리가 run 을 강제로 끝냈다(시간 제한 초과, 예산 초과). 실행기가 던지면 워커가 run 을 `killed` 로 닫는다 */
+export class RunKilledError extends Error {
+  readonly reason: 'time_limit' | 'budget_exceeded';
+  readonly detail: string;
+
+  constructor(reason: 'time_limit' | 'budget_exceeded', detail: string) {
+    super(`run killed (${reason}): ${detail}`);
+    this.name = 'RunKilledError';
+    this.reason = reason;
+    this.detail = detail;
+  }
+}

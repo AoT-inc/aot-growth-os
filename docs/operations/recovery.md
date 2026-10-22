@@ -72,7 +72,7 @@ confirmed → compensated (보상 작업이 실행된 경우)
 
 - 업무 단위 `time_limit`과 도구 호출 단위 타임아웃을 구분한다.
 - 도구 호출 타임아웃 후에는 해당 부작용이 `unknown`이다. "실패"로 간주하지 않는다.
-- `time_limit` 초과 시 워커에 취소 신호를 보내고, 종료 확인 전에는 lease를 해제하지 않는다.
+- `time_limit` 초과 시 워커에 취소 신호를 보내고, 종료 확인 전에는 lease를 해제하지 않는다. 구현(A5 U4, `agent-runtime`의 `runAgentTask`): 주입 타이머가 AbortSignal을 보내 어댑터(컨테이너는 `docker kill`)를 멈추고, run은 `killed`로 닫힌다. 취소를 무시하는 어댑터는 유예(기본 10초) 뒤에 포기하고 `terminationConfirmed=false`로 표시하며 그 뒤 도착한 결과·비용 보고는 버린다. 업무 예산 초과도 같은 경로로 `killed`(사유 `budget_exceeded`)가 된다.
 
 ## 6. 롤백과의 구분
 

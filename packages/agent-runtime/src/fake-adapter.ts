@@ -1,7 +1,7 @@
 // 가짜 어댑터 (프로세스 안). 모델·네트워크·난수·실제 시계를 쓰지 않고, 설정으로 고른 시나리오대로 결정적으로 움직인다.
 // 어댑터 계약(contract.ts)을 구현하며 어댑터 계약 테스트(test/support/adapter-contract.ts)를 통과해야 한다.
 // 정책을 판단하지 않는다: 허용 목록 밖 도구도 일단 게이트웨이에 요청하고, 거부 응답을 받아 기록한 뒤 계속한다.
-// (test/support/fake-adapter.ts 는 A0 의 동기식 골격으로, 비용 집계 시험이 아직 쓴다. 새 시험은 이 어댑터를 쓴다.)
+// (A0 의 동기식 가짜 어댑터 test/support/fake-adapter.ts 는 A5 U4 에서 이 어댑터로 대체하고 지웠다.)
 import type { Clock, EvidenceKind } from '@aot/domain';
 
 import type {

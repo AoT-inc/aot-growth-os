@@ -66,6 +66,7 @@
 - [x] 시험: 단위 `test/unit/policy-*.test.ts`·`publication-gate.test.ts`(7요소 각각의 거부, 기본 거부, 해시 불일치·정책 강화·cooldown·취소·자기 승인·에이전트 승인 거부, TOTP 벡터·오답·재사용·시간창 경계, 보안 하향 배포의 위험 변경 절차), 통합 `test/integration/approval-channel.test.ts`(소켓 권한, 권한 없는 접속 EACCES), `policy-approval-multiprocess.test.ts`(데몬 + 승인 CLI 별도 프로세스로 승인 → 대기 → TOTP 해제 → 실행·부작용 1건, 실제 엔트리포인트 소켓). 통합 5회 반복 무실패
 - [ ] 별도 UID에서의 접근 실패 시험: 다른 UID로 프로세스를 띄울 수 없어 파일 권한으로 대신했다. A5(Q26)에서 OS 수준 시험으로 한다 → Q26 결정(컨테이너)에 따라 A5에서 "컨테이너 안에서 `instance/run/`·DB·`policies/` 접근 실패 + `Mounts` 비어 있음" 시험으로 대체한다 ([q26](../spikes/q26-agent-container-isolation.md))
 - [ ] 외부 입력 영향 호출 표시(trust-boundaries §2-3)와 호출별 게이트웨이 재판정: 도구 게이트웨이(A5)
+- [ ] 열린 항목 (A5-U2, 2026-10-23): 도구 게이트웨이는 정책이 `require_approval`을 주는 호출을 항상 막는다(에이전트가 승인을 대신하지 못함). 업무 승인(`approved_hash`)이 있는 업무가 호출 시점에 `verifyTaskApproval`로 그 도구를 쓸 수 있게 할지는 정하지 않았다. 지금은 "막힘 유지"가 기본이며 승인이 필요한 부작용 도구는 Phase A 실제 어댑터(읽기 전용)에 없으므로 A6 전에 다시 본다
 - 해석: D4의 "write는 업무 범위 내"는 `*:task-own` 대상 패턴으로 표현했다. 정책 규칙 변경은 강화임을 증명할 수 없으면 위험 변경으로 분류한다. (구현 당시 해석 "외부 부작용이 아닌 `require_approval`도 같은 `risky_change` 절차"는 아래 결정 2로 대체되었다)
 
 #### A3 사용자 결정 반영 (2026-10-19)
@@ -125,7 +126,7 @@
 - [x] 비밀값 스캔과 금지어 스캔을 CI(및 커밋 전)에 연결 — [Q21](../open-questions.md), [공개 전 검사](../security/public-repository.md). gitleaks 8.30.1 `--redact`: `.gitleaks.toml`, `npm run scan:secrets`/`scan:history`, `.githooks/pre-commit`(`npm run hooks:install`). 인스턴스별 금지어 목록은 저장소 밖(`instance/gitleaks-banned.toml` 또는 `AOT_BANNED_CONFIG`)
 - [x] 설정 분리 (`.env.example`, `config/daemon.config.example.json`): 저장소에는 `*.example`만, 실제 값은 `instance/`·환경 변수. `.gitignore`에 `instance/`·`*.db`·`*.db-*`·`*.sqlite*`·`*-wal`·`*-shm`·`*-journal`·`plans/` 포함 확인 ([공개 저장소 규칙](../security/public-repository.md))
 - [x] 시계 주입: lease 판정·heartbeat·만료 계산은 주입된 `Clock`이 준 시각을 SQL 파라미터로 넘긴다. SQL의 `now()`/`CURRENT_TIMESTAMP`는 쓰지 않는다 ([recovery §2](../operations/recovery.md)). `Clock`/`FakeClock`(`@aot/domain`), 세 겹 강제: `Db`가 SQL 문자열을 거부, ESLint 규칙 `aot/no-sql-clock`, `.sql` 파일 스캔 시험
-- [x] 가짜 어댑터·가짜 외부 도구(멱등 키 지원/미지원 두 종류) 골격 — `test/support/fake-tool.ts`(멱등 지원/미지원), `fake-adapter.ts`. 어댑터 계약 자체는 A5에서 정의
+- [x] 가짜 어댑터·가짜 외부 도구(멱등 키 지원/미지원 두 종류) 골격 — `test/support/fake-tool.ts`(멱등 지원/미지원), `fake-adapter.ts`(A5 U4에서 `packages/agent-runtime/src/fake-adapter.ts`로 대체). 어댑터 계약 자체는 A5에서 정의
 - [x] 스파이크 결과 기록 위치 `docs/spikes/` 생성 ([ADR-0009](../adr/0009-build-vs-reuse.md))
 - [x] CI 필수 통과 항목 정의: 타입 검사, lint(경계 포함), 테스트, 스캔 — `.github/workflows/ci.yml`(스키마 적용 `sqlite3 :memory: < docs/schema/schema.sql` 포함). 원격 실행은 첫 push 후 확인
 

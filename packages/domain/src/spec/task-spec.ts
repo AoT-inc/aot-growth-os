@@ -12,6 +12,7 @@ import {
   IssueCollector, isNonBlankString, isPlainObject, joinPath, rejectUnknownKeys,
   type PlainObject, type ValidationResult,
 } from '../validation.ts';
+import { parseTimeLimit } from './time-limit.ts';
 
 export interface TaskTrigger { kind: TriggerKind; ref: string }
 export interface TaskInput { name: string; ref: string; kind: string }
@@ -196,7 +197,12 @@ function checkAllowedTools(value: unknown, out: IssueCollector): void {
 function checkConstraints(value: unknown, out: IssueCollector): void {
   if (!isPlainObject(value)) return void out.add('constraints', 'required', 'constraints must be an object');
   rejectUnknownKeys(value, ['time_limit', 'network_allowlist', 'fs_scope', 'publish_scope', 'data_classes'], 'constraints', out);
-  if ('time_limit' in value) requiredText(value, 'time_limit', 'constraints', out);
+  if ('time_limit' in value) {
+    requiredText(value, 'time_limit', 'constraints', out);
+    if (isNonBlankString(value['time_limit']) && parseTimeLimit(value['time_limit']) === null) {
+      out.add('constraints.time_limit', 'format', 'time_limit must be a whole number plus one unit (s|m|h|d), at most 7d (for example "30m")');
+    }
+  }
   if ('network_allowlist' in value) {
     const path = 'constraints.network_allowlist';
     checkStringList(value['network_allowlist'], path, out, { required: true });

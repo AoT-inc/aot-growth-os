@@ -1,6 +1,7 @@
 // 폴링 워커: 한 번의 tick 에서 (1) 만료 lease 인수 (2) 재시도 대기 해제 (3) 검증 대기(validating) 업무 검증·전이 (4) 업무 하나 선택·lease 획득 (5) 실행.
 // (3)은 TaskValidator 포트가 연결되었을 때만 한다 (A4, evaluation 이 구현). 연결 전에는 validating 업무가 그대로 남는다.
 // 실행 자체는 TaskExecutor 포트에 맡긴다 (A5 의 agent-runtime 이 구현한다. 의존 방향상 agent-runtime 이 이 패키지를 참조).
+// 실행기가 RunKilledError(시간 제한·예산 초과)를 던지면 run 을 killed 로 닫는다(killRun). 그 밖의 오류는 error, RunTimeoutError 는 timeout.
 // 실행 중에는 heartbeatMs 마다 heartbeat 를 쓰고, lease 를 잃으면 signal 을 abort 해 실행을 멈추게 한다.
 // lease 를 잃은 뒤에는 결과도 부작용도 기록하지 않는다 (펜싱이 거부한다).
 import {
@@ -9,10 +10,10 @@ import {
 } from '@aot/domain';
 
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
-import { EffectRefusedError, LeaseLostError } from './errors.ts';
+import { EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
 import {
-  claimNextTask, failRun, findExpiredRuns, heartbeat, promoteDueRetries, saveCheckpoint, submitRun, takeOverExpiredRun,
-  type EffectLookups, type Lease, type RunEnd, type TakeoverResult,
+  claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun, takeOverExpiredRun,
+  type EffectLookups, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
 } from './lease.ts';
 import { checkLeaseParams, DEFAULT_LEASE_PARAMS, type LeaseParams } from './params.ts';
 import { nextValidatingTask, validateTask, type ValidationEnd } from './validation.ts';
@@ -29,6 +30,8 @@ export interface RunContext {
   readonly signal: AbortSignal;
   saveCheckpoint(value: unknown): void;
   heartbeat(): void;
+  /** 증거 행과 run_log 위치를 이 run 에 남긴다 (lease 펜싱: 잃었으면 던진다) */
+  recordOutput(record: RunOutputRecord): void;
   /** 등록된 도구로 외부 부작용 수행 (recovery §3 규칙) */
   performEffect(toolName: string, step: EffectStep): Promise<EffectOutcome>;
 }
@@ -234,6 +237,7 @@ export class TaskWorker {
       heartbeat: () => {
         guard(() => heartbeat(db, clock, lease));
       },
+      recordOutput: (record) => guard(() => recordRunOutput(db, clock, lease, record)),
       performEffect: async (toolName, step) => {
         const tool = tools?.[toolName];
         if (!tool) throw new Error(`external effect tool '${toolName}' is not registered`);
@@ -256,6 +260,10 @@ export class TaskWorker {
         output = await executor.execute(context);
       } catch (error) {
         if (lost(error) || abort.signal.aborted) return report('lease_lost');
+        if (error instanceof RunKilledError) {
+          // 시간 제한·예산 초과로 실행 관리가 죽였다: run 은 killed, 업무 전이는 killRun 이 허용표 안에서 정한다
+          return report(killRun(db, clock, lease, { reason: error.reason, detail: error.detail, retryDelayMs: this.#options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS }));
+        }
         const outcome = error instanceof RunTimeoutError ? 'timeout' : 'error';
         const reason = error instanceof Error ? error.message : String(error);
         return report(failRun(db, clock, lease, { outcome, reason, retryDelayMs: this.#options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS }));

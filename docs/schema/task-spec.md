@@ -11,7 +11,7 @@
 | `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]` | 출처 없는 입력 |
 | `dependencies` | | 선행 업무 id 목록 | 순환 |
 | `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target?}]`. `scope`·`impact`는 항목마다 필수(`target`만 선택). 최종 권한은 정책이 결정 | `scope`·`impact` 누락(스키마 검증 단계, 정책 판정 이전), 정책 판정이 deny |
-| `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
+| `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `time_limit`은 정수 + 단위 하나(`s`·`m`·`h`·`d`, 예 `"30m"`, 최대 `7d`)이며 해석할 수 없으면 생성 거부. 실행 관리가 초과 시 run을 취소하고 `killed`로 닫는다(없으면 데몬 기본 `default_time_limit`, 30분). `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
 | `acceptance_criteria` | ✔ | 완료 조건 목록 (검증 가능한 문장 또는 체크 id) | 비어 있음 |
 | `validation` | ✔ | `{deterministic: [...], llm: {...}\|null, human: bool}` | 검증 방식 없음 |
 | `policy_version` | ✔ | 적용 정책 버전 (생성 시 시스템이 채움) | 에이전트가 지정 시도 |

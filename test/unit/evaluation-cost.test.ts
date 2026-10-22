@@ -8,10 +8,11 @@ import { FakeClock, type Db } from '@aot/domain';
 import {
   costForProduct, costForRun, costForTask, CostRecordError, evaluateBudget, recordCost, reportCostProgress, summarizeCosts,
 } from '@aot/evaluation';
+import { createFakeAgentAdapter, type CostProgressEvent } from '@aot/agent-runtime';
 import { claimNextTask, failRun, promoteDueRetries } from '@aot/task-engine';
 
+import { contractInput } from '../support/adapter-contract.ts';
 import { ALLOW_ALL_GATE, queuedTask } from '../support/engine.ts';
-import { createFakeAdapter } from '../support/fake-adapter.ts';
 import { addProduct } from '../support/evaluation.ts';
 import { addAgent, seededDb } from '../support/seeded-db.ts';
 
@@ -31,26 +32,31 @@ function setup(t: Parameters<typeof seededDb>[0]) {
 const entries = (db: Db, taskId: string) =>
   db.all<{ task_run_id: string; amount_usd: number; category: string }>('SELECT task_run_id, amount_usd, category FROM cost_entry WHERE task_id = ? ORDER BY at, id', [taskId]);
 
-/** 가짜 어댑터를 돌려 보고한 진행 비용과 최종 비용을 원장에 기록한다 (A5 의 데몬이 할 일을 흉내) */
-function runAdapter(db: Db, clock: FakeClock, runId: string, costSteps: number[]) {
-  const adapter = createFakeAdapter(clock, { costSteps });
-  const output = adapter.run({ taskSpec: {}, allowedTools: [], evidenceRefs: [], budgetUsd: 1 });
-  const results = output.costProgress.map((cumulativeUsd) => reportCostProgress(db, clock, { taskRunId: runId, cumulativeUsd }));
-  results.push(reportCostProgress(db, clock, { taskRunId: runId, cumulativeUsd: output.cost.amount }));
+/** 가짜 어댑터를 돌려 보고한 진행 비용과 최종 비용을 원장에 기록한다 (실행 관리가 하는 일을 흉내. 실제 연결은 test/integration/agent-run-management.test.ts) */
+async function runAdapter(db: Db, clock: FakeClock, runId: string, costSteps: number[]) {
+  const adapter = createFakeAgentAdapter({ clock, scenario: 'cost_progress', costSteps });
+  const progress: CostProgressEvent[] = [];
+  const output = await adapter.run(contractInput(), {
+    gateway: { call: () => Promise.resolve({ ok: false, error: 'tool_not_allowed' }) },
+    signal: new AbortController().signal,
+    onCostProgress: (event) => void progress.push(event),
+  });
+  const results = progress.map((event) => reportCostProgress(db, clock, { taskRunId: runId, cumulativeUsd: event.cumulative }));
+  results.push(reportCostProgress(db, clock, { taskRunId: runId, cumulativeUsd: output.cost.usd ?? 0 }));
   return results;
 }
 
-test('cost: costs reported by the fake adapter are summed per task and per task_run', (t) => {
+test('cost: costs reported by the fake adapter are summed per task and per task_run', async (t) => {
   const { db, clock, claim } = setup(t);
   const taskId = queuedTask(db, clock, {}, 'task-cost');
   const first = claim(taskId);
-  runAdapter(db, clock, first.runId, [0.01, 0.03]);
+  await runAdapter(db, clock, first.runId, [0.01, 0.03]);
   // 첫 시도가 오류로 끝나고 재시도에서 두 번째 run 이 같은 업무에 비용을 더한다
   failRun(db, clock, first, { outcome: 'error', reason: 'boom', retryDelayMs: 1000 });
   clock.advance(1000);
   promoteDueRetries(db, clock);
   const second = claim(taskId);
-  runAdapter(db, clock, second.runId, [0.2, 0.25]);
+  await runAdapter(db, clock, second.runId, [0.2, 0.25]);
 
   assert.equal(costForRun(db, first.runId).totalUsd, 0.03);
   assert.equal(costForRun(db, second.runId).totalUsd, 0.25);

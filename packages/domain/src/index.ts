@@ -23,6 +23,7 @@ export {
   type CostBudget, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
   type TaskSpecVersions, type TaskTrigger, type TaskValidation, type ToolRequest,
 } from './spec/task-spec.ts';
+export { MAX_TIME_LIMIT_MS, parseTimeLimit } from './spec/time-limit.ts';
 export { checkTaskSpecReferences } from './spec/spec-references.ts';
 export { PACK_CONTENT_KEYS, validatePackManifest, type PackContentKey, type PackManifest } from './spec/pack-manifest.ts';
 export {
@@ -39,6 +40,9 @@ export {
   type EffectDispatchKind, type TaskCreationGateRequest, type TaskCreationVerdict, type TaskEffectGateRequest, type TaskEffectVerdict,
   type TaskPolicyGate, type TaskRunGateRequest, type TaskRunVerdict,
 } from './ports/task-policy-gate.ts';
+export type {
+  AgentBudgetBreach, AgentCostSource, AgentCostTotals, AgentEvidenceInput, AgentRunHost, AgentRunOutputRecord,
+} from './ports/agent-run-host.ts';
 export type {
   ToolCallConstraints, ToolCallPolicy, ToolCallPolicyRequest, ToolCallPolicyVerdict,
 } from './ports/tool-call-policy.ts';

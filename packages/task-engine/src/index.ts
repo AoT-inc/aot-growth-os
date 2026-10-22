@@ -11,12 +11,12 @@ export {
   beginDispatch, confirmByLookup, effectKeyOf, performEffect, planEffect, recordDispatchResult,
   type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
 } from './effects.ts';
-export { EffectRefusedError, LeaseLostError, StaleStateError, TaskCreationError } from './errors.ts';
+export { EffectRefusedError, LeaseLostError, RunKilledError, StaleStateError, TaskCreationError } from './errors.ts';
 export {
-  assertLeaseHeld, claimNextTask, failRun, findExpiredRuns, heartbeat, promoteDueRetries, saveCheckpoint, submitRun,
+  assertLeaseHeld, claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun,
   takeOverExpiredRun,
-  type ClaimedTask, type ClaimOptions, type ClaimResult, type EffectLookups, type ExpiredRun, type FailRunOptions, type Lease,
-  type RunEnd, type TakeoverOptions, type TakeoverResult,
+  type ClaimedTask, type ClaimOptions, type ClaimResult, type EffectLookups, type ExpiredRun, type FailRunOptions, type KillRunOptions, type Lease,
+  type RunEnd, type RunEvidence, type RunOutputRecord, type TakeoverOptions, type TakeoverResult,
 } from './lease.ts';
 export { checkLeaseParams, DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, type LeaseParams } from './params.ts';
 export { runPolling, type PollingOptions } from './polling.ts';

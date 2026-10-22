@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { FakeClock } from '@aot/domain';
-
-import { createFakeAdapter } from '../support/fake-adapter.ts';
 import {
   createIdempotentFakeTool,
   createNonIdempotentFakeTool,
@@ -37,17 +34,4 @@ test('lost response still leaves the side effect (the "unknown" case)', () => {
   tool.loseNextResponses(1);
   assert.throws(() => tool.call(request), FakeToolTimeoutError);
   assert.equal(tool.deliveries.length, 1);
-});
-
-test('fake adapter is deterministic and reports ADR-0005 output fields', () => {
-  const adapter = createFakeAdapter(new FakeClock('2026-10-19T00:00:00.000Z'), {
-    costSteps: [0.01, 0.03],
-    evidence: [{ kind: 'note', ref: 'evidence/1' }],
-  });
-  const input = { taskSpec: {}, allowedTools: ['fake-idempotent-tool'], evidenceRefs: [], budgetUsd: 1 };
-  const a = adapter.run(input);
-  assert.deepEqual(a, adapter.run(input));
-  assert.deepEqual(a.cost, { amount: 0.03, unit: 'USD' });
-  assert.deepEqual(a.costProgress, [0.01, 0.03]);
-  assert.equal(a.evidence[0]?.observedAt, '2026-10-19T00:00:00.000Z');
 });

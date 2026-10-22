@@ -7,7 +7,7 @@
 //  - 만료 인수 (규칙 3·4): 옛 run 을 lease_expired 로 닫고, 남은 부작용을 §3 절차로 먼저 처리한 뒤 업무를 되돌린다.
 import { randomUUID } from 'node:crypto';
 
-import type { Clock, Db, ExternalEffectRow, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
+import type { Clock, Db, EvidenceRow, ExternalEffectRow, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
 
 import { LeaseLostError } from './errors.ts';
 import { isoAfter } from './params.ts';
@@ -184,7 +184,7 @@ export function submitRun(db: Db, clock: Clock, lease: Lease, result: unknown): 
 }
 
 export interface FailRunOptions {
-  outcome: 'error' | 'timeout';
+  outcome: 'error' | 'timeout' | 'killed';
   reason: string;
   /** retry_wait 의 next_run_at = now + retryDelayMs */
   retryDelayMs: number;
@@ -219,6 +219,68 @@ export function failRun(db: Db, clock: Clock, lease: Lease, options: FailRunOpti
     }
     transitionTask(tx, { taskId: lease.taskId, from: 'running', to: 'failed', by: 'scheduler', now, reason: `${reason} (attempts exhausted)`, set: { attempts } });
     return { outcome: options.outcome, taskStatus: 'failed' };
+  });
+}
+
+export interface KillRunOptions {
+  /** time_limit: 시간 제한 초과, budget_exceeded: 업무 예산 초과 */
+  reason: 'time_limit' | 'budget_exceeded';
+  detail: string;
+  /** time_limit 의 retry_wait 대기 시간 */
+  retryDelayMs: number;
+}
+
+/**
+ * 실행 관리가 run 을 강제로 끝냈다(시스템이 죽임): run 은 `killed`. 업무 전이는 기존 허용표 안에서 정한다.
+ *  - time_limit: `timeout` 과 같다. 시도 1회를 소모하고 attempts < max_attempts 면 retry_wait, 아니면 failed
+ *  - budget_exceeded: 재시도해도 같은 예산이라 소용이 없으므로 시도를 소모하지 않고 needs_review (사람이 예산·명세를 정한다)
+ * 어느 쪽이든 미지원 도구의 unknown 부작용이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
+ */
+export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOptions): RunEnd {
+  if (options.reason === 'time_limit') {
+    return failRun(db, clock, lease, { outcome: 'killed', reason: `time_limit: ${options.detail}`, retryDelayMs: options.retryDelayMs });
+  }
+  return db.writeTx((tx) => {
+    const now = clock.nowIso();
+    assertLeaseHeld(tx, lease, now, 'kill');
+    const reason = `run ${lease.runId} killed: budget_exceeded: ${options.detail}`.slice(0, 500);
+    const blocked = settleRunEffects(tx, lease.runId, now);
+    closeRun(tx, lease.runId, blocked ? 'effect_unknown' : 'killed', now);
+    transitionTask(tx, {
+      taskId: lease.taskId, from: 'running', to: 'needs_review', by: 'scheduler', now,
+      reason: blocked ? `${unknownEffectReason(lease.runId)}; ${reason}` : reason,
+    });
+    return { outcome: blocked ? 'effect_unknown' : 'killed', taskStatus: 'needs_review' };
+  });
+}
+
+/** 증거 한 줄. 어댑터가 낸 출력을 `evidence` 행으로 옮길 때 쓴다 (verified 는 0, 검증기가 올린다) */
+export interface RunEvidence {
+  kind: EvidenceRow['kind'];
+  ref: string;
+  capturedAt: string;
+  contentHash?: string;
+}
+
+export interface RunOutputRecord {
+  evidence: readonly RunEvidence[];
+  runLogRef: string | null;
+}
+
+/**
+ * 실행 출력(증거 행과 `task_run.run_log_ref`)을 기록한다. 펜싱을 확인한 같은 쓰기 트랜잭션에서만 쓰므로
+ * lease 를 잃은 run 은 아무것도 남기지 못한다(LeaseLostError).
+ */
+export function recordRunOutput(db: Db, clock: Clock, lease: Lease, record: RunOutputRecord, newId: () => string = () => `ev-${randomUUID()}`): void {
+  db.writeTx((tx) => {
+    assertLeaseHeld(tx, lease, clock.nowIso(), 'record output');
+    for (const item of record.evidence) {
+      tx.run(
+        'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [newId(), lease.taskId, lease.runId, item.kind, item.ref, item.contentHash ?? null, item.capturedAt],
+      );
+    }
+    if (record.runLogRef !== null) tx.run('UPDATE task_run SET run_log_ref = ? WHERE id = ?', [record.runLogRef, lease.runId]);
   });
 }
 

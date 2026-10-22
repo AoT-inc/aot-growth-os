@@ -14,6 +14,10 @@ export interface RequestConstraints {
   network_allowlist?: string[];
   publish_scope?: Scope;
   data_classes?: Sensitivity[];
+  /** 도구 게이트웨이의 호출별 판정에서만 쓴다: 부작용 호출임 (정책 판정 기록 `constraints` 에 남는다) */
+  side_effect?: boolean;
+  /** 도구 게이트웨이의 호출별 판정에서만 쓴다: 외부 입력이 영향을 준 호출임 (trust-boundaries §2-3) */
+  influenced_by_external_input?: boolean;
 }
 
 export interface PolicyRequest {

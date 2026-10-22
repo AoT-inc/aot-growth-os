@@ -40,6 +40,9 @@ export {
   type TaskPolicyGate, type TaskRunGateRequest, type TaskRunVerdict,
 } from './ports/task-policy-gate.ts';
 export type {
+  ToolCallConstraints, ToolCallPolicy, ToolCallPolicyRequest, ToolCallPolicyVerdict,
+} from './ports/tool-call-policy.ts';
+export type {
   TaskValidationRequest, TaskValidationVerdict, TaskValidator,
 } from './ports/task-validator.ts';
 export {

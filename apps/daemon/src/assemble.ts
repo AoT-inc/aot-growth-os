@@ -1,12 +1,13 @@
-// 데몬 조립 (A3, A4): 정책 게이트(@aot/policy) → 업무 엔진(@aot/task-engine) 의 TaskPolicyGate 포트, 승인 엔진 → 승인 소켓,
-// 검증기(@aot/evaluation) → 업무 엔진의 TaskValidator 포트.
+// 데몬 조립 (A3, A4, A5): 정책 게이트(@aot/policy) → 업무 엔진(@aot/task-engine) 의 TaskPolicyGate 포트, 승인 엔진 → 승인 소켓,
+// 검증기(@aot/evaluation) → 업무 엔진의 TaskValidator 포트, 도구 호출별 정책 판정(@aot/policy) → 도구 게이트웨이(@aot/agent-runtime)의
+// ToolCallPolicy 포트. 게이트웨이는 run 마다 만들므로(허용 도구·실행기·예산이 run 별) 여기서는 정책 쪽 포트만 내놓고, run 별 조립은 실행 관리(U3)에서 한다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Clock, Db, TaskPolicyGate } from '@aot/domain';
+import type { Clock, Db, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
-import { ApprovalEngine, createPolicyGate, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
+import { ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
 import { TaskWorker, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 /** 저장소의 기본 정책 템플릿 (시드의 policy-v1 내용) */
@@ -51,6 +52,8 @@ export interface AssembleOptions {
 export interface Daemon {
   store: PolicyStore;
   gate: TaskPolicyGate;
+  /** 도구 게이트웨이가 호출마다 부르는 정책 재판정 (판정은 policy_decision 에 남는다) */
+  toolCallPolicy: ToolCallPolicy;
   engine: ApprovalEngine;
   worker: TaskWorker;
   startApprovalChannel(onError?: (error: unknown) => void): Promise<ApprovalServer>;
@@ -77,6 +80,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   return {
     store,
     gate,
+    toolCallPolicy: createToolCallPolicy({ db: options.db, store }),
     engine,
     worker,
     startApprovalChannel: (onError) => startApprovalServer({

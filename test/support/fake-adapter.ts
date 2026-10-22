@@ -1,7 +1,8 @@
 // 가짜 에이전트 어댑터 (A0 골격). 대본(script)대로 결정적으로 동작하고 모델·네트워크를 쓰지 않는다.
 // 입출력 모양은 ADR-0005 를 따른다: 입력 = task_spec + 허용 도구 + 근거 참조 + 예산,
 // 출력 = result + evidence[] + run_log + cost (+ 실행 중 cost_progress).
-// 어댑터 계약 자체(A5)가 정해지면 그 계약을 구현하도록 이 파일을 옮기고, 계약 테스트를 이 가짜에도 적용한다.
+// 어댑터 계약은 A5 U1 에서 정해졌다: 계약을 구현하는 가짜는 `@aot/agent-runtime` 의 `createFakeAgentAdapter` 다.
+// 이 동기식 골격은 비용 집계 시험(evaluation-cost)이 아직 쓰므로 남겨 두며, U3(비용 기록 연결)에서 새 가짜로 옮기고 지운다.
 import type { Clock } from '@aot/domain';
 
 export interface FakeAdapterInput {

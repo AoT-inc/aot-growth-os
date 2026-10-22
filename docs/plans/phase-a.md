@@ -64,7 +64,7 @@
 - [x] memory 규칙 5 (A1 이월): 기본 만료 기간을 정책 파라미터(`memory.default_validity`)로, domain `MemoryContext.defaultValiditySeconds`에 연결. 값은 비워 두었다([Q17](../open-questions.md))
 - [x] `failed` 부작용 재전송 (A2 이월): 정책 판정이 `allow`일 때만 재전송. 승인(`require_approval`)은 한 번의 전송에 대한 것이므로 재전송을 덮지 않는다
 - [x] 시험: 단위 `test/unit/policy-*.test.ts`·`publication-gate.test.ts`(7요소 각각의 거부, 기본 거부, 해시 불일치·정책 강화·cooldown·취소·자기 승인·에이전트 승인 거부, TOTP 벡터·오답·재사용·시간창 경계, 보안 하향 배포의 위험 변경 절차), 통합 `test/integration/approval-channel.test.ts`(소켓 권한, 권한 없는 접속 EACCES), `policy-approval-multiprocess.test.ts`(데몬 + 승인 CLI 별도 프로세스로 승인 → 대기 → TOTP 해제 → 실행·부작용 1건, 실제 엔트리포인트 소켓). 통합 5회 반복 무실패
-- [ ] 별도 UID에서의 접근 실패 시험: 다른 UID로 프로세스를 띄울 수 없어 파일 권한으로 대신했다. A5(Q26)에서 OS 수준 시험으로 한다
+- [ ] 별도 UID에서의 접근 실패 시험: 다른 UID로 프로세스를 띄울 수 없어 파일 권한으로 대신했다. A5(Q26)에서 OS 수준 시험으로 한다 → Q26 결정(컨테이너)에 따라 A5에서 "컨테이너 안에서 `instance/run/`·DB·`policies/` 접근 실패 + `Mounts` 비어 있음" 시험으로 대체한다 ([q26](../spikes/q26-agent-container-isolation.md))
 - [ ] 외부 입력 영향 호출 표시(trust-boundaries §2-3)와 호출별 게이트웨이 재판정: 도구 게이트웨이(A5)
 - 해석: D4의 "write는 업무 범위 내"는 `*:task-own` 대상 패턴으로 표현했다. 정책 규칙 변경은 강화임을 증명할 수 없으면 위험 변경으로 분류한다. (구현 당시 해석 "외부 부작용이 아닌 `require_approval`도 같은 `risky_change` 절차"는 아래 결정 2로 대체되었다)
 

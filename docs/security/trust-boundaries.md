@@ -56,6 +56,8 @@
 - 시험(`test/integration/approval-channel.test.ts`)은 다른 UID로 프로세스를 띄울 권한이 없어, 파일 권한을 없앤 소켓·디렉터리로 접속이 실패하는지(EACCES)와 넓은 권한 디렉터리에서 시작을 거부하는지를 확인한다. 별도 UID 시험은 A5(Q26)에서 한다.
 - 피어 UID 확인을 넣으려면 네이티브 애드온 또는 OS 도구가 필요하다. 넣을지는 Q26과 함께 정한다.
 
+결정(2026-10-22, [스파이크 Q26](../spikes/q26-agent-container-isolation.md), Q26 해소): **에이전트는 Docker 컨테이너 안에서만 실행한다.** 데몬은 `docker` CLI로 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`, 비루트 사용자, 크기 제한 tmpfs 작업 디렉터리, 메모리·CPU·pids 제한으로 컨테이너를 띄우고, 게이트웨이와는 stdin/stdout의 줄 단위 JSON으로만 통신한다. 바인드 마운트는 두지 않으며(`instance/`·DB·`policies/`·Docker 소켓 포함), 비밀값은 환경 변수로도 넘기지 않는다. macOS Docker Desktop에서 컨테이너가 `instance/run/` 소켓·TOTP 비밀·DB에 도달하지 못함(ENOENT)을 확인했으므로 위 편차는 에이전트 경로에 대해 해소로 보고 피어 UID 확인은 넣지 않는다. 다만 Docker Desktop은 바인드 마운트에 호스트 파일 권한을 적용하지 않으므로(실측) "마운트 0개"를 코드와 시험으로 고정해야 하고, Docker를 쓸 수 없을 때 호스트 실행으로 대체하지 않는다. 취소·시간 제한은 `docker kill`로 한다(CLI 프로세스 종료만으로는 컨테이너가 멈추지 않음). Linux는 미실측이다.
+
 ## 4. 실행 시점 재검증
 
 승인된 업무라도 실행 직전과 부작용 직전에 재검증한다 ([task-spec §버전과 스냅샷](../schema/task-spec.md)).

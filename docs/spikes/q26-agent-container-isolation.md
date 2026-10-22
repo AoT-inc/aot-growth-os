@@ -258,7 +258,7 @@ docker buildx imagetools inspect gcr.io/distroless/nodejs24-debian12:nonroot   #
 
 1. **마운트 실수가 곧 노출이다.** Docker Desktop은 바인드 마운트에 호스트 권한을 적용하지 않는다(실측). A5에서 컨테이너 인자 생성기를 한 곳에 두고 `-v`/`--mount`/`--volumes-from`/`--privileged`/`--network` 값 변경/`--cap-add`/`--device`를 거부하는 단위 시험, 실행 후 `docker inspect`의 `Mounts`가 비었는지 확인하는 OS 수준 시험을 둔다.
 2. **에이전트가 호스트에서 돌면 무효다.** 같은 UID 문제(trust-boundaries §3.1)는 그대로 남는다. Docker를 쓸 수 없을 때 호스트 실행으로 대체하는 경로를 만들지 않는다.
-3. **Docker 소켓 = root 동등.** 데몬 프로세스 탈취 시 피해가 커진다(§5). 사람 결정 필요: Linux 배포에서 rootful + `docker` 그룹을 받아들일지, rootless Docker/Podman을 요구할지.
+3. **Docker 소켓 = root 동등.** 데몬 프로세스 탈취 시 피해가 커진다(§5). **결정(2026-10-22, 사용자): Linux 배포는 rootful Docker로 진행하고 `docker` 그룹 위험을 문서에 기록한다.** 위험: `docker` 그룹 구성원(데몬 계정)이 탈취되면 호스트 root와 같고, 에이전트 컨테이너가 탈출하면 그 영향도 root 수준이다(커널 공유, 위 8). 완화: 데몬 전용 계정만 `docker` 그룹에 넣고 다른 용도로 쓰지 않는다, 에이전트 컨테이너에는 소켓·바인드 마운트를 주지 않는다, 마운트·권한 플래그 거부 인자 생성기와 `docker inspect` 시험(위 1), 데몬 시작 시 라벨 고아 정리. rootless Docker·Podman은 후속 검토로 남기며 이번 결정에 반영하지 않는다.
 4. **stdout 오염·프레임 크기.** 에이전트 제품이 stdout에 아무 글이나 쓰면 프레임이 깨진다. 컨테이너 PID 1을 우리 shim으로 두고 에이전트 제품의 stdout은 stderr로 돌리는 것, 호스트가 프레임 최대 크기·형식 오류 시 즉시 `docker kill`하는 것은 A5 구현 항목이다(미구현·미실측).
 5. **HTTP를 직접 쓰는 에이전트 제품.** 모델 API 호출도 게이트웨이를 거쳐야 하므로(비밀값은 호스트의 도구 어댑터가 주입) 컨테이너 안 루프백 shim이 필요하다. Phase A의 읽기 전용 조사 에이전트는 도구 호출 프레임만 쓰면 되므로 선행 조건은 아니다.
 6. **Linux 미실측.** `--network none`·cgroup 제한·`no-new-privileges`는 커널 기능이라 같게 동작할 것으로 보지만, 바인드 마운트 권한(Linux는 호스트 UID·권한이 그대로 적용), 소켓 마운트 동작, `host-gateway`는 다르다. CI(Linux)에서 OS 수준 시험을 돌려 확인한다.

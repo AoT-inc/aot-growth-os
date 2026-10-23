@@ -258,6 +258,8 @@ export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOpti
 export interface RunEvidence {
   kind: EvidenceRow['kind'];
   ref: string;
+  /** 근거의 신뢰 출처. 기본값 없이 호출자가 밝힌다 */
+  trustOrigin: EvidenceRow['trust_origin'];
   capturedAt: string;
   contentHash?: string;
 }
@@ -276,8 +278,8 @@ export function recordRunOutput(db: Db, clock: Clock, lease: Lease, record: RunO
     assertLeaseHeld(tx, lease, clock.nowIso(), 'record output');
     for (const item of record.evidence) {
       tx.run(
-        'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [newId(), lease.taskId, lease.runId, item.kind, item.ref, item.contentHash ?? null, item.capturedAt],
+        'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [newId(), lease.taskId, lease.runId, item.kind, item.ref, item.contentHash ?? null, item.trustOrigin, item.capturedAt],
       );
     }
     if (record.runLogRef !== null) tx.run('UPDATE task_run SET run_log_ref = ? WHERE id = ?', [record.runLogRef, lease.runId]);

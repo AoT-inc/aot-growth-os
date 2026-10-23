@@ -1,16 +1,17 @@
 // A5 U5: 읽기 전용 조사 에이전트의 판단 코드(packages/agent-runtime/container/research-agent/core.ts)를 프로세스 안에서 시험한다. docker 불필요.
-//  - 입력 형식: task_spec 의 기존 필드(`inputs[].kind|name|ref`)만 읽는다 — 같은 입력이 도메인 스키마 검증을 통과해야 한다
+//  - 입력 형식: task_spec 의 `inputs[]`(kind=source_url)와 `expected_quotes[]`(source, text)만 읽는다 — 같은 입력이 도메인 스키마 검증을 통과해야 한다
+//  - 기대 인용문은 모두 found/not found 로 보고된다(출처를 못 읽었거나 출처가 없어도 조용히 빠지지 않는다). 근거(evidence)의 신뢰 출처는 external_untrusted
 //  - 출력: 어댑터 계약(validateAdapterOutput)과 result 프레임(encodeFrame) 형식을 만족한다
 //  - 외부 페이지 텍스트는 데이터로만 쓰인다: 지시문이 든 페이지와 대조 페이지에서 게이트웨이 호출 순서·인자가 같다
 // 컨테이너 안 실제 실행과 주입 시나리오는 test/integration/research-agent-*.test.ts 다.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { validateTaskSpec } from '@aot/domain';
+import { MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, validateTaskSpec } from '@aot/domain';
 import { encodeFrame, MAX_FRAME_BYTES, parseFrame, validateAdapterOutput, type AdapterOutput } from '@aot/agent-runtime';
 
 import {
-  CONTEXT_CHARS, EXCERPT_CHARS, MAX_QUOTES_PER_SOURCE, MAX_QUOTE_CHARS, MAX_SOURCES, researchTargetsOf, runResearch,
+  CONTEXT_CHARS, EXCERPT_CHARS, MAX_QUOTES_PER_SOURCE, MAX_QUOTES_TOTAL, MAX_QUOTE_CHARS, MAX_SOURCES, researchTargetsOf, runResearch,
   type Json, type JsonObject, type ResearchDeps, type ResearchOutput, type ToolReply,
 } from '../../packages/agent-runtime/container/research-agent/core.ts';
 import { marketResearchExample, minimalDraft } from '../support/spec-fixtures.ts';
@@ -46,19 +47,25 @@ function harness(taskSpec: JsonObject, reply: (url: string) => ToolReply | Promi
   };
 }
 
-const spec = (...inputs: JsonObject[]): JsonObject => ({ objective: 'check the cited sources', inputs });
+/** 항목 중 `source` 와 `text` 를 가진 것은 expected_quotes 로, 나머지는 inputs 로 나눈다 */
+const spec = (...items: JsonObject[]): JsonObject => ({
+  objective: 'check the cited sources',
+  inputs: items.filter((item) => !('text' in item)),
+  expected_quotes: items.filter((item) => 'text' in item),
+});
 const src = (name: string, url: string): JsonObject => ({ name, kind: 'source_url', ref: url });
-const quote = (name: string, text: string): JsonObject => ({ name, kind: 'quote', ref: text });
+const quote = (source: string, text: string): JsonObject => ({ source, text });
 
-describe('research targets come from existing task_spec fields', () => {
-  it('a draft that uses inputs[] of kind source_url / quote passes the domain schema check (no new field is needed)', () => {
+describe('research targets come from inputs[] (source_url) and expected_quotes[]', () => {
+  it('a draft that uses source_url inputs and expected_quotes passes the domain schema check and yields the targets', () => {
     const draft = {
       ...minimalDraft(),
       inputs: [
         { name: 'keywords', ref: 'strategy:active#research_keywords', kind: 'strategy' },
         { name: 'release-notes', ref: 'https://docs.example.com/release-notes', kind: 'source_url' },
-        { name: 'release-notes', ref: 'supports single sign-on', kind: 'quote' },
       ],
+      expected_quotes: [{ source: 'release-notes', text: 'supports single sign-on' }],
+      validation: { deterministic: ['url_reachable', 'quote_in_source'], llm: null, human: false },
       allowed_tools: [{ tool: 'fetch_url', operations: ['fetch'], scope: 'internal', impact: 'read' }],
       constraints: { time_limit: '10m', network_allowlist: ['docs.example.com'], publish_scope: 'internal' },
     };
@@ -79,20 +86,43 @@ describe('research targets come from existing task_spec fields', () => {
     const targets = researchTargetsOf(spec(
       src('ok', 'https://docs.example.com/a'), src('', 'https://docs.example.com/b'), src('badscheme', 'file:///etc/passwd'), src('ftp', 'ftp://example.com/x'),
       src('userinfo', 'https://user:pw@docs.example.com/'), src('relative', '/relative/path'), { name: 'nref', kind: 'source_url' }, quote('', 'orphan'), quote('ok', '   '),
-      { name: 'other', kind: 'strategy', ref: 'strategy:x' }, 'junk' as unknown as JsonObject,
+      { name: 'other', kind: 'strategy', ref: 'strategy:x' },
     ));
+    // 쓸 수 없는 항목(객체가 아닌 값, 알 수 없는 kind 의 옛 `quote` 입력)은 조용히 무시되고 인용문으로 읽히지 않는다
+    const legacy = researchTargetsOf({ inputs: ['junk', { name: 'ok', kind: 'quote', ref: 'legacy convention' }, src('ok', 'https://docs.example.com/a')], expected_quotes: ['junk', 5, null] } as unknown as JsonObject);
+    assert.deepEqual(legacy, { sources: [{ name: 'ok', url: 'https://docs.example.com/a' }], quotes: [], skipped: [{ name: '(unnamed)', reason: 'invalid_quote_input' }, { name: '(unnamed)', reason: 'invalid_quote_input' }, { name: '(unnamed)', reason: 'invalid_quote_input' }] });
     assert.deepEqual(targets.sources, [{ name: 'ok', url: 'https://docs.example.com/a' }]);
     assert.deepEqual(targets.skipped.map((s) => s.reason), ['invalid_source_input', 'invalid_url', 'invalid_url', 'invalid_url', 'invalid_url', 'invalid_source_input', 'invalid_quote_input', 'invalid_quote_input']);
     assert.deepEqual(researchTargetsOf({ objective: 'x' }), { sources: [], quotes: [], skipped: [] });
     assert.deepEqual(researchTargetsOf({ inputs: 'nope' }), { sources: [], quotes: [], skipped: [] });
   });
 
-  it('caps the number of sources, and the quote text', () => {
+  it('caps the number of sources; a quotation that is too long is skipped (never cut short, which could report a partial match as found)', () => {
     const many = Array.from({ length: MAX_SOURCES + 5 }, (_, i) => src(`s${i}`, `https://docs.example.com/${i}`));
-    const targets = researchTargetsOf(spec(...many, quote('s0', 'q'.repeat(MAX_QUOTE_CHARS + 50))));
+    const targets = researchTargetsOf(spec(...many, quote('s0', 'q'.repeat(MAX_QUOTE_CHARS + 50)), quote('s0', 'q'.repeat(MAX_QUOTE_CHARS))));
     assert.equal(targets.sources.length, MAX_SOURCES);
     assert.equal(targets.skipped.filter((s) => s.reason === 'too_many_sources').length, 5);
-    assert.equal(targets.quotes[0]?.quote.length, MAX_QUOTE_CHARS);
+    assert.deepEqual(targets.quotes, [{ source: 's0', quote: 'q'.repeat(MAX_QUOTE_CHARS) }]);
+    assert.deepEqual(targets.skipped.filter((s) => s.reason === 'quote_too_long'), [{ name: 's0', reason: 'quote_too_long' }]);
+  });
+
+  it('caps the quotations per source and in total; the rest is skipped with a reason, not dropped silently', () => {
+    const quotes = Array.from({ length: MAX_QUOTES_PER_SOURCE + 3 }, (_, i) => quote('a', `sentence ${i}`));
+    const targets = researchTargetsOf(spec(src('a', 'https://docs.example.com/a'), ...quotes));
+    assert.equal(targets.quotes.length, MAX_QUOTES_PER_SOURCE);
+    assert.equal(targets.skipped.filter((s) => s.reason === 'too_many_quotes').length, 3);
+    const names = Array.from({ length: MAX_SOURCES }, (_, i) => src(`s${i}`, `https://docs.example.com/${i}`));
+    const spread = names.flatMap((source, i) => Array.from({ length: MAX_QUOTES_PER_SOURCE }, (_, q) => quote(`s${i}`, `q${q}`)));
+    const total = researchTargetsOf(spec(...names, ...spread, quote('s0', 'one more')));
+    assert.equal(total.quotes.length, MAX_QUOTES_TOTAL);
+    assert.equal(total.skipped.filter((s) => s.reason === 'too_many_quotes').length, 1);
+  });
+
+  it('the limits are the same as the ones the task_spec validation enforces (the container cannot import @aot/domain, so the values are copied)', () => {
+    assert.equal(MAX_QUOTES_PER_SOURCE, MAX_EXPECTED_QUOTES_PER_SOURCE);
+    assert.equal(MAX_QUOTES_TOTAL, MAX_EXPECTED_QUOTES);
+    assert.equal(MAX_QUOTE_CHARS, MAX_EXPECTED_QUOTE_CHARS);
+    assert.equal(MAX_QUOTES_TOTAL, MAX_SOURCES * MAX_QUOTES_PER_SOURCE);
   });
 });
 
@@ -132,8 +162,8 @@ describe('runResearch: result shape', () => {
     // 인용문이 실제로 있었던 것만 "주장" 으로 보고된다 (검증기가 원본에서 다시 확인한다)
     assert.deepEqual(result['claims'], [{ id: 'notes#q1', statement: 'The source "notes" contains the quotation.', source_url: 'https://docs.example.com/notes', quote: 'single   sign-on' }]);
     assert.deepEqual(out.evidence, [
-      { kind: 'source_url', ref: 'https://docs.example.com/notes', captured_at: NOW, content_hash: 'b'.repeat(64) },
-      { kind: 'source_url', ref: 'https://docs.example.com/pricing', captured_at: NOW, content_hash: 'c'.repeat(64) },
+      { kind: 'source_url', ref: 'https://docs.example.com/notes', trust_origin: 'external_untrusted', captured_at: NOW, content_hash: 'b'.repeat(64) },
+      { kind: 'source_url', ref: 'https://docs.example.com/pricing', trust_origin: 'external_untrusted', captured_at: NOW, content_hash: 'c'.repeat(64) },
     ]);
     assert.ok(out.run_log.length >= 4 && out.run_log.every((e) => e.at === NOW));
     assert.ok(out.run_log.some((e) => /fetch_url #1 https:\/\/docs\.example\.com\/notes: status 200/.test(e.message)));
@@ -165,7 +195,7 @@ describe('runResearch: result shape', () => {
     const source = (out.result!['sources'] as JsonObject[])[0]!;
     assert.deepEqual([source['fetched'], source['body_skipped'], source['excerpt'], source['content_hash']], [true, 'content_type_not_allowed', null, null]);
     assert.deepEqual(((source['quotes'] as JsonObject[])[0])?.['found'], false);
-    assert.deepEqual(out.evidence, [{ kind: 'source_url', ref: 'https://docs.example.com/i.png', captured_at: NOW }], 'no content_hash when no body was read');
+    assert.deepEqual(out.evidence, [{ kind: 'source_url', ref: 'https://docs.example.com/i.png', trust_origin: 'external_untrusted', captured_at: NOW }], 'no content_hash when no body was read');
   });
 
   it('no inputs to fetch is a submitted, empty report with zero tool calls', async () => {
@@ -175,6 +205,37 @@ describe('runResearch: result shape', () => {
     assert.deepEqual(h.calls, []);
     assert.deepEqual(out.evidence, []);
     assert.equal((out.result!['counts'] as JsonObject)['sources'], 0);
+  });
+});
+
+describe('runResearch: every expected quotation gets a found / not found answer', () => {
+  it('quotations of a source that could not be fetched, and of a name that matches no source, are reported as found:false and counted', async () => {
+    const replies: Record<string, ToolReply> = { 'https://docs.example.com/denied': { ok: false, error: 'policy_denied' }, 'https://docs.example.com/fine': page('fine page with alpha') };
+    const out = await runResearch(harness(spec(
+      src('denied', 'https://docs.example.com/denied'), src('fine', 'https://docs.example.com/fine'),
+      quote('denied', 'beta'), quote('denied', 'gamma'), quote('fine', 'alpha'), quote('fine', 'delta'), quote('nowhere', 'epsilon'),
+    ), (url) => replies[url]!).deps);
+    const result = out.result!;
+    const [denied, fine] = result['sources'] as JsonObject[];
+    assert.deepEqual((denied!['quotes'] as JsonObject[]).map((c) => [c['quote'], c['found'], c['context']]), [['beta', false, null], ['gamma', false, null]]);
+    assert.deepEqual((fine!['quotes'] as JsonObject[]).map((c) => [c['quote'], c['found']]), [['alpha', true], ['delta', false]]);
+    assert.deepEqual(result['unmatched_quotes'], [{ source: 'nowhere', quote: 'epsilon', found: false }]);
+    assert.deepEqual(result['counts'], { sources: 2, fetched: 1, failed: 1, quotes_checked: 5, quotes_found: 1, quotes_without_source: 1, skipped_inputs: 0 });
+    assert.match(String(result['summary']), /1 of 5 quotation/);
+    // 찾은 것만 주장이 된다. 나머지 4건은 found:false 로만 남는다 (검증기가 명세의 기대 인용문과 대조해 빠진 것을 잡는다)
+    assert.deepEqual((result['claims'] as JsonObject[]).map((c) => c['quote']), ['alpha']);
+  });
+
+  it('every evidence item carries trust_origin external_untrusted (the page came from outside), and the output passes the contract validator', async () => {
+    const out = await runResearch(harness(spec(src('a', 'https://docs.example.com/a'), src('b', 'https://docs.example.com/b')), () => page('x')).deps);
+    assert.equal(out.evidence.length, 2);
+    assert.ok(out.evidence.every((item) => item.trust_origin === 'external_untrusted'));
+    assert.ok(validateAdapterOutput(out).ok);
+    const missing = JSON.parse(JSON.stringify(out)) as { evidence: Record<string, unknown>[] };
+    delete missing.evidence[0]!['trust_origin'];
+    assert.equal(validateAdapterOutput(missing).ok, false, 'an evidence item without a trust_origin is refused by the contract');
+    missing.evidence[0]!['trust_origin'] = 'trusted';
+    assert.equal(validateAdapterOutput(missing).ok, false, 'a value outside the vocabulary is refused');
   });
 });
 

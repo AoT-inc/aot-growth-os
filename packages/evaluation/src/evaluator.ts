@@ -243,7 +243,8 @@ async function runLlmVerification(
     const texts: SourceText[] = [];
     for (const [url, result] of fetched) {
       const row = evidence.find((candidate) => candidate.kind === 'source_url' && candidate.ref === url);
-      texts.push({ ref: url, kind: 'source_url', text: result.reachable ? result.text : null, contentHash: row?.content_hash ?? null });
+      // 본문은 검증기가 출처 조회기로 바깥에서 직접 읽은 것이므로, 근거 행(`evidence.trust_origin`, 에이전트가 밝힌 값)이 무엇이라 적었든 외부 입력이다
+      texts.push({ ref: url, kind: 'source_url', text: result.reachable ? result.text : null, contentHash: row?.content_hash ?? null, trustOrigin: 'external_untrusted' });
     }
     const input = buildIsolatedInput({
       check: wanted.check,

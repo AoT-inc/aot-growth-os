@@ -82,13 +82,13 @@ test('recordRunOutput stores evidence rows (unverified) and run_log_ref on the r
   let n = 0;
   recordRunOutput(db, clock, lease, {
     evidence: [
-      { kind: 'source_url', ref: 'https://docs.example.com/a', capturedAt: clock.nowIso(), contentHash: 'sha256:abc' },
-      { kind: 'run_log', ref: `run-log:${lease.runId}`, capturedAt: clock.nowIso() },
+      { kind: 'source_url', ref: 'https://docs.example.com/a', trustOrigin: 'external_untrusted', capturedAt: clock.nowIso(), contentHash: 'sha256:abc' },
+      { kind: 'run_log', ref: `run-log:${lease.runId}`, trustOrigin: 'internal', capturedAt: clock.nowIso() },
     ],
     runLogRef: `run-log:${lease.runId}`,
   }, () => `ev-test-${(n += 1)}`);
-  const rows = db.all<{ id: string; kind: string; ref: string; content_hash: string | null; verified: number; task_run_id: string }>('SELECT * FROM evidence WHERE task_id = ? ORDER BY id', [taskId]);
-  assert.deepEqual(rows.map((r) => [r.id, r.kind, r.content_hash, Number(r.verified), r.task_run_id]), [['ev-test-1', 'source_url', 'sha256:abc', 0, lease.runId], ['ev-test-2', 'run_log', null, 0, lease.runId]]);
+  const rows = db.all<{ id: string; kind: string; ref: string; content_hash: string | null; trust_origin: string; verified: number; task_run_id: string }>('SELECT * FROM evidence WHERE task_id = ? ORDER BY id', [taskId]);
+  assert.deepEqual(rows.map((r) => [r.id, r.kind, r.content_hash, r.trust_origin, Number(r.verified), r.task_run_id]), [['ev-test-1', 'source_url', 'sha256:abc', 'external_untrusted', 0, lease.runId], ['ev-test-2', 'run_log', null, 'internal', 0, lease.runId]]);
   assert.equal(db.get('SELECT run_log_ref FROM task_run WHERE id = ?', [lease.runId])?.['run_log_ref'], `run-log:${lease.runId}`);
 });
 

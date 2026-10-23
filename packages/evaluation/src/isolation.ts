@@ -40,7 +40,7 @@ export function buildIsolatedInput(parts: IsolatedInputParts): IsolatedVerificat
     criteria: Object.freeze([...parts.criteria]),
     claims: Object.freeze(claims),
     sources: Object.freeze(parts.sources.map((source) => Object.freeze({
-      ref: source.ref, kind: source.kind, text: source.text, contentHash: source.contentHash,
+      ref: source.ref, kind: source.kind, text: source.text, contentHash: source.contentHash, trustOrigin: source.trustOrigin,
     }))),
   });
 }

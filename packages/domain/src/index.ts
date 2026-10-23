@@ -19,8 +19,9 @@ export {
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
 export {
+  EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, resolveExpectedQuotes,
   SYSTEM_FILLED_FIELDS, validateTaskSpec,
-  type CostBudget, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
+  type CostBudget, type ExpectedQuote, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
   type TaskSpecVersions, type TaskTrigger, type TaskValidation, type ToolRequest,
 } from './spec/task-spec.ts';
 export { MAX_TIME_LIMIT_MS, parseTimeLimit } from './spec/time-limit.ts';
@@ -31,7 +32,7 @@ export {
   type Issue, type PlainObject, type ValidationResult,
 } from './validation.ts';
 export {
-  createMemoryItem, currentFacts, EVALUATION_SOURCE_PREFIX, getMemoryItem, isCurrentFact, listMemoryItems, MemoryRuleError, refuteMemoryItem,
+  createMemoryItem, currentFacts, EVALUATION_SOURCE_PREFIX, EVIDENCE_SOURCE_PREFIX, getMemoryItem, isCurrentFact, listMemoryItems, MemoryRuleError, refuteMemoryItem,
   supersedeMemoryItem, sweepExpiredMemory,
   type MemoryContext, type MemoryFilter, type MemoryRuleCode, type NewMemoryItem,
 } from './memory.ts';

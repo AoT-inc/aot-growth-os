@@ -99,7 +99,7 @@ const settle = async (): Promise<void> => {
 };
 
 const submitted = (cost: { usd: number }, extra: Partial<AdapterOutput> = {}): AdapterOutput => ({
-  status: 'submitted', result: { summary: 'done' }, evidence: [{ kind: 'source_url', ref: 'https://docs.example.com/a', captured_at: START }], run_log: [{ at: START, message: 'adapter finished' }], cost, ...extra,
+  status: 'submitted', result: { summary: 'done' }, evidence: [{ kind: 'source_url', ref: 'https://docs.example.com/a', trust_origin: 'external_untrusted', captured_at: START }], run_log: [{ at: START, message: 'adapter finished' }], cost, ...extra,
 });
 
 /** 취소 신호를 무시하고 `release` 가 풀릴 때까지 기다렸다가 결과를 낸다 */

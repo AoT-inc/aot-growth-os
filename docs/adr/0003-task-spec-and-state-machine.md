@@ -20,3 +20,7 @@
 - 업무는 생성 시점의 `org_version`, `role_version`, `task_spec_version`, `strategy_version`, `policy_version`, `tool_contract_version`과 승인된 입력·실행 인자 스냅샷(해시)을 기록한다.
 - 실행 직전과 부작용 직전에 재검증한다. 현재 정책이 더 엄격하면 새 정책을 적용하고, 실행 인자가 승인 스냅샷과 다르면 차단하여 재승인을 요청한다. 상세는 [task-spec](../schema/task-spec.md).
 - 금지된 전이를 [state-machines](../schema/state-machines.md)에 명시한다.
+
+## Amendment (2026-10-23): 기대 인용문 필드
+- 조사 업무가 "이 출처에 이 문장이 있어야 한다"를 구조로 담도록 선택 필드 `expected_quotes: [{source, text}]`를 둔다(`source` = `inputs[]`의 `source_url` 항목 이름). 인용문은 입력 데이터가 아니라 완료 조건에 속하므로 `inputs[]`가 아닌 최상위에 두며, 실행 인자이므로 승인 대상 해시에 포함된다.
+- 검증기의 `quote_in_source`가 명세의 기대 인용문 *전부*를 출처 원문과 에이전트 보고 양쪽에서 확인한다. 하나라도 원문에 없거나 보고에서 빠지면 `fail`이라, 에이전트가 찾은 인용만 보고해도 일부만으로 `pass`가 될 수 없다. `expected_quotes`를 두려면 `validation.deterministic`에 `quote_in_source`가 있어야 한다. 상세는 [task-spec](../schema/task-spec.md).

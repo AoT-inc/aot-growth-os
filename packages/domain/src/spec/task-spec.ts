@@ -17,6 +17,16 @@ import { parseTimeLimit } from './time-limit.ts';
 export interface TaskTrigger { kind: TriggerKind; ref: string }
 export interface TaskInput { name: string; ref: string; kind: string }
 
+/** 기대 인용문: `source` 는 `inputs[]` 의 `kind='source_url'` 항목의 `name`, `text` 는 그 출처 원문에 있어야 하는 문장 */
+export interface ExpectedQuote { source: string; text: string }
+
+/** 기대 인용문 개수·길이 상한. 조사 에이전트(container/research-agent/core.ts)의 상한과 같다(시험이 대조한다) */
+export const MAX_EXPECTED_QUOTES = 200;
+export const MAX_EXPECTED_QUOTES_PER_SOURCE = 10;
+export const MAX_EXPECTED_QUOTE_CHARS = 500;
+/** `expected_quotes` 를 두려면 `validation.deterministic` 에 있어야 하는 검사. 없으면 기대 인용문이 아무도 확인하지 않는 채로 남는다 */
+export const EXPECTED_QUOTES_CHECK_ID = 'quote_in_source';
+
 export interface ToolRequest {
   tool: string;
   operations: string[];
@@ -59,6 +69,8 @@ export interface TaskSpecDraft {
   product?: string;
   trigger: TaskTrigger;
   inputs: TaskInput[];
+  /** 출처 원문에 있어야 하는 인용문 (선택). 조사 에이전트는 모두에 대해 found/not found 를 보고하고, 검증기가 원문에서 다시 확인한다 */
+  expected_quotes?: ExpectedQuote[];
   dependencies?: string[];
   allowed_tools: ToolRequest[];
   constraints: TaskConstraints;
@@ -78,7 +90,7 @@ export interface TaskSpec extends TaskSpecDraft {
 export type TaskSpecStage = 'draft' | 'stored';
 
 const DRAFT_KEYS = [
-  'objective', 'department', 'role', 'product', 'trigger', 'inputs', 'dependencies', 'allowed_tools',
+  'objective', 'department', 'role', 'product', 'trigger', 'inputs', 'expected_quotes', 'dependencies', 'allowed_tools',
   'constraints', 'acceptance_criteria', 'validation', 'evidence_refs', 'cost_budget',
 ] as const;
 /** 시스템만 채우는 필드 */
@@ -107,6 +119,7 @@ export function validateTaskSpec(input: unknown, stage: TaskSpecStage): Validati
   for (const key of ['department', 'role', 'product'] as const) optionalText(input, key, out);
   checkTrigger(input['trigger'], out);
   checkInputs(input['inputs'], out);
+  checkExpectedQuotes(input['expected_quotes'], input['inputs'], input['validation'], out);
   checkDependencies(input['dependencies'], out);
   checkAllowedTools(input['allowed_tools'], out);
   checkConstraints(input['constraints'], out);
@@ -163,6 +176,59 @@ function checkInputs(value: unknown, out: IssueCollector): void {
     requiredText(item, 'ref', path, out, 'an input without a source (ref) is rejected');
     requiredText(item, 'kind', path, out);
   });
+}
+
+function checkExpectedQuotes(value: unknown, inputs: unknown, validation: unknown, out: IssueCollector): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) return void out.add('expected_quotes', 'type', 'expected_quotes must be an array of {source, text}');
+  if (value.length > MAX_EXPECTED_QUOTES) out.add('expected_quotes', 'too_many', `expected_quotes has more than ${MAX_EXPECTED_QUOTES} entries`);
+  // `source` 가 가리키는 출처: 이름이 같은 source_url 입력 (정확히 하나여야 한다)
+  const sourceCounts = new Map<string, number>();
+  if (Array.isArray(inputs)) {
+    for (const item of inputs as unknown[]) {
+      if (isPlainObject(item) && item['kind'] === 'source_url' && isNonBlankString(item['name'])) sourceCounts.set(item['name'], (sourceCounts.get(item['name']) ?? 0) + 1);
+    }
+  }
+  const perSource = new Map<string, number>();
+  const seen = new Set<string>();
+  value.forEach((item: unknown, index) => {
+    const path = joinPath('expected_quotes', index);
+    if (!isPlainObject(item)) return void out.add(path, 'type', 'each expected quotation must be {source, text}');
+    rejectUnknownKeys(item, ['source', 'text'], path, out);
+    requiredText(item, 'source', path, out, 'source (the name of a source_url input) is required');
+    requiredText(item, 'text', path, out, 'text must be a non-empty quotation');
+    const source = item['source'];
+    const text = item['text'];
+    if (isNonBlankString(text) && text.trim().length > MAX_EXPECTED_QUOTE_CHARS) {
+      out.add(joinPath(path, 'text'), 'too_long', `a quotation is at most ${MAX_EXPECTED_QUOTE_CHARS} characters`);
+    }
+    if (!isNonBlankString(source)) return;
+    const matches = sourceCounts.get(source) ?? 0;
+    if (matches === 0) out.add(joinPath(path, 'source'), 'unknown_source', `no inputs[] entry of kind 'source_url' is named '${source}'`);
+    else if (matches > 1) out.add(joinPath(path, 'source'), 'ambiguous_source', `more than one 'source_url' input is named '${source}'; give each source its own name`);
+    const count = (perSource.get(source) ?? 0) + 1;
+    perSource.set(source, count);
+    if (count === MAX_EXPECTED_QUOTES_PER_SOURCE + 1) out.add(joinPath(path, 'source'), 'too_many', `more than ${MAX_EXPECTED_QUOTES_PER_SOURCE} quotations for source '${source}'`);
+    if (isNonBlankString(text)) {
+      const key = `${source}\u0000${text.replace(/\s+/g, ' ').trim()}`;
+      if (seen.has(key)) out.add(path, 'duplicate', `duplicate expected quotation for source '${source}'`);
+      seen.add(key);
+    }
+  });
+  // 기대 인용문은 `quote_in_source` 검사가 확인한다. 검사 목록에 없으면 적어 두기만 하고 아무도 확인하지 않으므로 거부한다.
+  if (value.length > 0 && isPlainObject(validation) && Array.isArray(validation['deterministic']) && !validation['deterministic'].includes(EXPECTED_QUOTES_CHECK_ID)) {
+    out.add('validation.deterministic', 'check_required', `expected_quotes needs '${EXPECTED_QUOTES_CHECK_ID}' in validation.deterministic (otherwise nothing verifies the quotations)`);
+  }
+}
+
+/** 기대 인용문을 출처 URL 로 풀어 낸다. `validateTaskSpec` 을 통과한 명세를 받는다고 가정하며, 풀리지 않는 항목은 건너뛴다 */
+export function resolveExpectedQuotes(spec: Pick<TaskSpecDraft, 'inputs' | 'expected_quotes'>): { source: string; url: string; text: string }[] {
+  const resolved: { source: string; url: string; text: string }[] = [];
+  for (const quote of spec.expected_quotes ?? []) {
+    const input = spec.inputs.find((candidate) => candidate.kind === 'source_url' && candidate.name === quote.source);
+    if (input) resolved.push({ source: quote.source, url: input.ref.trim(), text: quote.text.trim() });
+  }
+  return resolved;
 }
 
 function checkDependencies(value: unknown, out: IssueCollector): void {

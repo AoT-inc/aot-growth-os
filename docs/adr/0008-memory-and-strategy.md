@@ -23,3 +23,6 @@
 
 ## Amendment (2026-10-14): 기억 항목 속성
 `memory_item`에 `observed_at`, `verification_status`, `sensitivity`, `trust_origin`을 추가하고 `valid_until`을 재검토 시점으로 쓴다. 외부 입력 유래 정보는 `hypothesis`/`unverified`로 시작하며 외부 콘텐츠 안의 지시는 기억이 아니라 데이터다. 상세는 [schema/memory-item.md](../schema/memory-item.md).
+
+## Amendment (2026-10-23): 근거의 신뢰 출처
+`evidence`에도 `trust_origin`(필수, 기본값 없음, `memory_item`과 같은 어휘)을 둔다. 외부 입력에서 만든 근거(`external_untrusted`)를 `source_ref = evidence:<id>`로 가리키는 기억 항목은 같은 신뢰 출처를 물려받고 `internal`로 적을 수 없으므로, 기존 규칙(외부 입력 유래는 `hypothesis`/`unverified`)에 따라 근거를 거쳐도 현재 사실이 되지 않는다. 규칙 9, [memory-item](../schema/memory-item.md).

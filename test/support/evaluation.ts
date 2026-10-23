@@ -65,12 +65,12 @@ export function submittedRun(
 let evidenceCounter = 0;
 
 export function addEvidence(
-  db: Db, clock: FakeClock, run: SubmittedRun, input: { kind: string; ref: string; id?: string; contentHash?: string | null },
+  db: Db, clock: FakeClock, run: SubmittedRun, input: { kind: string; ref: string; id?: string; contentHash?: string | null; trustOrigin?: 'internal' | 'external_untrusted' },
 ): string {
   const id = input.id ?? `ev-${(evidenceCounter += 1)}`;
   db.writeTx((tx) => tx.run(
-    'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, run.taskId, run.runId, input.kind, input.ref, input.contentHash ?? null, clock.nowIso()],
+    'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, run.taskId, run.runId, input.kind, input.ref, input.contentHash ?? null, input.trustOrigin ?? 'external_untrusted', clock.nowIso()],
   ));
   return id;
 }

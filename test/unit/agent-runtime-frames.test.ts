@@ -6,7 +6,7 @@ import { encodeFrame, MAX_FRAME_BYTES, parseFrame, validateCostProgress, type Fr
 
 const AT = '2026-10-22T00:00:00.000Z';
 const resultFrame = {
-  type: 'result', status: 'submitted', result: { a: 1 }, evidence: [{ kind: 'source_url', ref: 'https://example.com/', captured_at: AT }],
+  type: 'result', status: 'submitted', result: { a: 1 }, evidence: [{ kind: 'source_url', ref: 'https://example.com/', trust_origin: 'external_untrusted', captured_at: AT }],
   run_log: [{ at: AT, message: 'done' }], cost: { usd: 0.03 },
 };
 

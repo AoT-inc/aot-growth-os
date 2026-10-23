@@ -4,7 +4,9 @@
 // 지원하는 검사 id (docs/schema/task-spec.md 예시와 workflows/product-registration.md 의 이름을 따른다)
 //   schema | schema_valid  저장된 명세가 스키마를 통과하고 run 결과가 JSON 이다
 //   url_reachable          출처 URL(evidence source_url + 보고된 주장의 출처)에 접근할 수 있다
-//   quote_in_source        인용문이 출처 원문에 있다 (공백 차이는 무시)
+//   quote_in_source        인용문이 출처 원문에 있다 (공백 차이는 무시). 보고된 주장의 인용문과, 명세의 `expected_quotes` 전부:
+//                          기대 인용문은 (1) 검증기가 원본에서 직접 읽은 출처에 있어야 하고 (2) 에이전트 보고에도 같은 출처·같은 문장의 주장으로 올라와 있어야 한다.
+//                          하나라도 빠지면 fail (보고가 일부만 담고 있어도 pass 가 아니다)
 //   dedupe                 같은 주장·같은 출처가 중복되지 않는다
 //   budget                 비용 원장 합계가 업무 예산(USD, 토큰) 이내다
 //   policy_compliance      보낸 외부 부작용마다 기록된 정책 판정이 있다 (안전성 검사)
@@ -13,7 +15,7 @@
 //
 // 비동기 검사(URL 조회)는 트랜잭션 밖에서 하고, 결과는 `applyEvidenceVerification` 이 Db.writeTx 안에서
 // evidence.verified / verification_note 에 반영한다.
-import { validateTaskSpec, type Db, type EvidenceRow, type ExternalEffectRow, type TaskRow, type TaskRunRow, type TaskSpec } from '@aot/domain';
+import { resolveExpectedQuotes, validateTaskSpec, type Db, type EvidenceRow, type ExternalEffectRow, type TaskRow, type TaskRunRow, type TaskSpec } from '@aot/domain';
 
 import type { ReportedClaim } from './claims.ts';
 import { budgetLimitsOf, costForTask, evaluateBudget } from './cost.ts';
@@ -119,7 +121,8 @@ const quoteInSource: DeterministicCheck = {
   safety: false,
   async run(context) {
     const quoted = context.claims.filter((claim) => claim.quote !== null);
-    if (quoted.length === 0) return { status: 'unknown', note: 'no quotation to check' };
+    const expected = resolveExpectedQuotes(context.spec);
+    if (quoted.length === 0 && expected.length === 0) return { status: 'unknown', note: 'no quotation to check' };
     const failures: string[] = [];
     const missingByUrl = new Set<string>();
     for (const claim of quoted) {
@@ -132,13 +135,29 @@ const quoteInSource: DeterministicCheck = {
         missingByUrl.add(claim.sourceUrl);
       }
     }
+    // 명세의 기대 인용문: 보고서에 없는 인용문이 조용히 빠지지 않도록 하나씩 원본과 보고서 양쪽에서 확인한다
+    for (const [index, want] of expected.entries()) {
+      const label = `expected quotation #${index + 1} of '${want.source}'`;
+      const source = await context.sources.read(want.url);
+      if (!source.reachable) {
+        failures.push(`${label}: source unreachable (${source.reason})`);
+        missingByUrl.add(want.url);
+      } else if (!normalizeText(source.text).includes(normalizeText(want.text))) {
+        failures.push(`${label}: not found in ${want.url}`);
+        missingByUrl.add(want.url);
+      } else if (!quoted.some((claim) => normalizeUrl(claim.sourceUrl) === normalizeUrl(want.url) && normalizeText(claim.quote!) === normalizeText(want.text))) {
+        failures.push(`${label}: the source has it but the agent report does not claim it (incomplete report)`);
+        missingByUrl.add(want.url);
+      }
+    }
+    const checkedUrls = new Set<string>([...quoted.map((claim) => claim.sourceUrl), ...expected.map((want) => want.url)]);
     const evidence = new Map<string, EvidenceContribution>();
     for (const row of sourceUrlEvidence(context)) {
-      if (!quoted.some((claim) => claim.sourceUrl === row.ref)) continue;
+      if (!checkedUrls.has(row.ref)) continue;
       evidence.set(row.id, missingByUrl.has(row.ref) ? { verified: false, note: 'a quotation is not in the source' } : { verified: true, note: 'quotations found in the source' });
     }
     return failures.length === 0
-      ? { status: 'pass', note: `${quoted.length} quotation(s) found in their sources`, evidence }
+      ? { status: 'pass', note: expected.length === 0 ? `${quoted.length} quotation(s) found in their sources` : `${expected.length} expected and ${quoted.length} reported quotation(s) found in their sources`, evidence }
       : { status: 'fail', note: failures.join('; '), evidence };
   },
 };

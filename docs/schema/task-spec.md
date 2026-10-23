@@ -9,6 +9,7 @@
 | `product` | | 대상 상품 slug | 등록되지 않은 상품 |
 | `trigger` | ✔ | `{kind: event\|routine\|manual\|task, ref}` | ref 없음 |
 | `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]` | 출처 없는 입력 |
+| `expected_quotes` | | 출처 원문에 있어야 하는 인용문 `[{source, text}]`. `source`는 `inputs[]`에서 `kind='source_url'`인 항목의 `name`(같은 이름의 `source_url` 입력이 정확히 하나여야 한다), `text`는 그 출처에 있어야 하는 문장. 상한: 전체 200건, 출처당 10건, 한 문장 500자(앞뒤 공백 제외). 조사 에이전트는 이 목록의 *모든* 문장에 대해 found/not found를 보고하고, 검증기(`quote_in_source`)가 출처 원문에서 다시 확인한다. 승인 대상 해시에 포함된다(실행 인자) | 알 수 없거나 모호한 `source`, 빈 `text`, 상한 초과, 같은 출처의 같은 문장(공백 차이 무시) 중복, `validation.deterministic`에 `quote_in_source`가 없음 |
 | `dependencies` | | 선행 업무 id 목록 | 순환 |
 | `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target?}]`. `scope`·`impact`는 항목마다 필수(`target`만 선택). 최종 권한은 정책이 결정 | `scope`·`impact` 누락(스키마 검증 단계, 정책 판정 이전), 정책 판정이 deny |
 | `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `time_limit`은 정수 + 단위 하나(`s`·`m`·`h`·`d`, 예 `"30m"`, 최대 `7d`)이며 해석할 수 없으면 생성 거부. 실행 관리가 초과 시 run을 취소하고 `killed`로 닫는다(없으면 데몬 기본 `default_time_limit`, 30분). `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
@@ -48,6 +49,30 @@
 }
 ```
 
+## 예시: 출처 인용문 확인 (조사 에이전트)
+
+출처 페이지 두 개를 읽고, 기대하는 인용문이 각 원문에 있는지 확인하는 읽기 전용 업무. 인용문은 `inputs[]`가 아니라 `expected_quotes`에 둔다 (`inputs[]`는 입력 데이터와 출처이고, 인용문은 완료 조건에 속한다).
+
+```json
+{
+  "objective": "릴리스 노트와 가격 페이지가 예상한 문장을 담고 있는지 확인한다",
+  "trigger": {"kind": "manual", "ref": "actor:example-owner"},
+  "inputs": [
+    {"name": "release-notes", "ref": "https://docs.example.com/release-notes", "kind": "source_url"},
+    {"name": "pricing", "ref": "https://docs.example.com/pricing", "kind": "source_url"}
+  ],
+  "expected_quotes": [
+    {"source": "release-notes", "text": "supports single sign-on"},
+    {"source": "pricing", "text": "billed annually"}
+  ],
+  "allowed_tools": [{"tool": "fetch_url", "operations": ["fetch"], "scope": "internal", "impact": "read"}],
+  "constraints": {"time_limit": "10m", "network_allowlist": ["docs.example.com"], "publish_scope": "internal"},
+  "acceptance_criteria": ["각 기대 인용문이 지정한 출처 원문에 존재한다"],
+  "validation": {"deterministic": ["url_reachable", "quote_in_source"], "llm": null, "human": false},
+  "cost_budget": {"max_usd": 1.0}
+}
+```
+
 ## 결정론적 검사 id (`validation.deterministic`)
 
 `@aot/evaluation`(A4)이 구현한 검사 id. 목록에 없는 id는 "검증할 수 없음"으로 취급되어 평가가 `inconclusive`(업무 `needs_review`)가 된다. 검사 대상이 하나도 없는 검사도 통과가 아니라 "확인 불가"다.
@@ -56,12 +81,12 @@
 |---|---|---|
 | `schema_valid` (`schema`) | 저장된 명세가 스키마를 통과하고 run 결과가 JSON | `task.spec`, `task_run.result` |
 | `url_reachable` | 출처 URL(`evidence.kind='source_url'`과 보고서 주장이 든 출처)에 접근 가능 | 출처 조회 포트 |
-| `quote_in_source` | 인용문이 출처 원문에 존재(공백 차이 무시, 대소문자 구분) | 출처 조회 포트 |
+| `quote_in_source` | 인용문이 출처 원문에 존재(공백 차이 무시, 대소문자 구분). 보고서 주장의 인용문과, 명세의 `expected_quotes` 전부를 확인한다. 기대 인용문은 (1) 검증기가 출처를 직접 읽어 원문에 있고 (2) 에이전트 보고에도 같은 출처·같은 문장의 주장으로 올라와 있어야 통과한다. 하나라도 원문에 없거나, 출처를 읽지 못했거나, 보고에서 빠졌으면 `fail`(평가 `fail`, 업무는 재시도 대기 → 소진되면 `needs_review`)이다 | 출처 조회 포트, `expected_quotes`, 보고서 주장 |
 | `dedupe` | 같은 주장·같은 출처 중복 없음 | 보고서 주장, `evidence` |
 | `budget` | 비용 원장 합계가 `cost_budget`(USD, 토큰) 이내 | `cost_entry` |
 | `policy_compliance` | 보낸 외부 부작용마다 허용(또는 승인 대기) 정책 판정이 기록됨. 실패는 안전성 실패 | `external_effect`, `policy_decision` |
 
-보고서의 주장 목록은 `{"claims": [{"id"?, "statement", "source_url", "quote"?}]}` 모양을 읽는다(어댑터 출력 계약은 A5에서 확정). 필수 테스트 결과(`test_result`) 검사는 합격 표현 형식이 정해지지 않아 구현하지 않았다.
+보고서의 주장 목록은 `{"claims": [{"id"?, "statement", "source_url", "quote"?}]}` 모양을 읽는다(어댑터 출력 계약은 A5에서 확정). 조사 에이전트는 *찾은* 기대 인용문만 주장으로 올리고, 찾지 못한 것은 `result.sources[].quotes[]`에 `found:false`로 남긴다(출처를 읽지 못했거나 이름이 맞는 출처가 없는 인용문도 `found:false`, 후자는 `result.unmatched_quotes[]`). 주장으로 올라오지 않은 기대 인용문은 검증기가 `fail`로 잡으므로, 일부만 보고한 결과가 `pass`가 될 수 없다. `expected_quotes`가 없고 보고서에 인용문도 없으면 `quote_in_source`는 "확인 불가"다(`inconclusive`). 필수 테스트 결과(`test_result`) 검사는 합격 표현 형식이 정해지지 않아 구현하지 않았다.
 
 ## 버전과 승인 스냅샷
 

@@ -1,8 +1,9 @@
 // 읽기 전용 조사 에이전트의 판단 코드 (단계 A5 U5). 컨테이너 안에서 돌고, 모델 호출이 없는 결정론적 코드다(모델 호출은 Q26 남은 위험 5, Phase A 범위 밖).
-//  - 입력: `start` 프레임의 task_spec. 조사 대상은 `inputs[]` 의 기존 필드만 읽는다(새 스키마 필드 없음):
-//      · `{kind:'source_url', name, ref:<URL>}`     읽을 출처 페이지 (http/https)
-//      · `{kind:'quote', name:<출처 name>, ref:<인용문>}`  그 출처에 이 인용문이 있는지 확인 (관례. task_spec 스키마에 인용문 전용 필드가 없다 — 보고 대상)
+//  - 입력: `start` 프레임의 task_spec. 조사 대상은 두 필드에서 읽는다:
+//      · `inputs[]` 의 `{kind:'source_url', name, ref:<URL>}`   읽을 출처 페이지 (http/https)
+//      · `expected_quotes[]` 의 `{source:<출처 name>, text:<인용문>}`  그 출처에 이 인용문이 있는지 확인 (docs/schema/task-spec.md)
 //  - 동작: 허용 도구 `fetch_url` 로 출처마다 한 번 페이지를 가져와(같은 URL 은 한 번) 상태 코드·해시·발췌·인용 포함 여부를 구조화 결과로 낸다.
+//    기대 인용문 *전부*에 대해 found/not found 를 낸다(`sources[].quotes[]`, 출처를 못 읽었거나 출처가 없는 인용문도 found:false 로 남는다).
 //  - 외부 페이지 텍스트는 **데이터로만** 쓴다. 이 파일에서 페이지 텍스트가 가는 곳은 (1) 발췌·인용 주변 문맥 문자열, (2) 인용 포함 여부 불리언 — 둘 다 출력일 뿐이다.
 //    도구 이름·인자·호출 횟수·다음 행동은 task_spec 의 출처 목록과 허용 도구 목록으로만 정해진다. 링크를 따라가지 않고 지시문을 해석하지 않는다.
 //  - 게이트웨이로 나가는 길은 주입된 `fetchUrl` 하나뿐이다. 다른 도구를 부르는 코드 경로가 없다(허용 목록에 `fetch_url` 이 없으면 아무것도 부르지 않고 오류로 끝난다).
@@ -15,7 +16,9 @@ export type JsonObject = { [key: string]: Json };
 export const FETCH_TOOL = 'fetch_url';
 export const FETCH_OPERATION = 'fetch';
 export const MAX_SOURCES = 20;
+// 인용문 상한은 task_spec 검증(@aot/domain 의 MAX_EXPECTED_QUOTES*)과 같다. 이 파일은 컨테이너 이미지에 그대로 들어가 domain 을 import 할 수 없으므로 값을 복사했고, 시험이 두 값을 대조한다.
 export const MAX_QUOTES_PER_SOURCE = 10;
+export const MAX_QUOTES_TOTAL = 200;
 export const MAX_QUOTE_CHARS = 500;
 export const MAX_NAME_CHARS = 100;
 export const EXCERPT_CHARS = 300;
@@ -44,7 +47,7 @@ export interface ResearchDeps {
 export interface ResearchOutput {
   status: 'submitted' | 'error';
   result: JsonObject | null;
-  evidence: { kind: 'source_url'; ref: string; captured_at: string; content_hash?: string }[];
+  evidence: { kind: 'source_url'; ref: string; trust_origin: 'external_untrusted'; captured_at: string; content_hash?: string }[];
   run_log: { at: string; message: string }[];
   cost: { usd: number };
   error?: { code: string; message: string };
@@ -57,25 +60,23 @@ export interface ResearchQuote { source: string; quote: string }
 export interface ResearchTargets {
   sources: ResearchSource[];
   quotes: ResearchQuote[];
-  /** 읽지 않고 건너뛴 입력과 사유 (코드만) */
+  /** 읽지 않고 건너뛴 입력·인용문과 사유 (코드만) */
   skipped: { name: string; reason: string }[];
 }
 
 const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** task_spec 의 `inputs[]` 에서 조사 대상을 읽는다. 이 함수가 읽는 필드는 `inputs[].kind|name|ref` 뿐이다 */
+/** task_spec 에서 조사 대상을 읽는다. 읽는 필드는 `inputs[].kind|name|ref` 와 `expected_quotes[].source|text` 뿐이다 */
 export function researchTargetsOf(taskSpec: JsonObject): ResearchTargets {
   const sources: ResearchSource[] = [];
   const quotes: ResearchQuote[] = [];
   const skipped: { name: string; reason: string }[] = [];
   const inputs = taskSpec['inputs'];
-  if (!Array.isArray(inputs)) return { sources, quotes, skipped };
-  for (const item of inputs) {
-    if (!isObject(item)) continue;
-    const kind = item['kind'];
-    const name = typeof item['name'] === 'string' ? item['name'].trim().slice(0, MAX_NAME_CHARS) : '';
-    const ref = item['ref'];
-    if (kind === 'source_url') {
+  if (Array.isArray(inputs)) {
+    for (const item of inputs) {
+      if (!isObject(item) || item['kind'] !== 'source_url') continue;
+      const name = typeof item['name'] === 'string' ? item['name'].trim().slice(0, MAX_NAME_CHARS) : '';
+      const ref = item['ref'];
       if (name === '' || typeof ref !== 'string') {
         skipped.push({ name: name || '(unnamed)', reason: 'invalid_source_input' });
       } else if (!isHttpUrlWithoutUserInfo(ref)) {
@@ -85,10 +86,25 @@ export function researchTargetsOf(taskSpec: JsonObject): ResearchTargets {
       } else {
         sources.push({ name, url: ref.trim() });
       }
-    } else if (kind === 'quote') {
-      const quote = typeof ref === 'string' ? ref.trim() : '';
-      if (name === '' || quote === '') skipped.push({ name: name || '(unnamed)', reason: 'invalid_quote_input' });
-      else quotes.push({ source: name, quote: quote.slice(0, MAX_QUOTE_CHARS) });
+    }
+  }
+  const expected = taskSpec['expected_quotes'];
+  if (Array.isArray(expected)) {
+    const perSource = new Map<string, number>();
+    for (const item of expected) {
+      const source = isObject(item) && typeof item['source'] === 'string' ? item['source'].trim().slice(0, MAX_NAME_CHARS) : '';
+      const text = isObject(item) && typeof item['text'] === 'string' ? item['text'].trim() : '';
+      if (source === '' || text === '') {
+        skipped.push({ name: source || '(unnamed)', reason: 'invalid_quote_input' });
+      } else if (text.length > MAX_QUOTE_CHARS) {
+        // 잘라서 확인하지 않는다: 앞부분만 맞는 문장이 "있다" 로 보고되는 일을 막는다
+        skipped.push({ name: source, reason: 'quote_too_long' });
+      } else if (quotes.length >= MAX_QUOTES_TOTAL || (perSource.get(source) ?? 0) >= MAX_QUOTES_PER_SOURCE) {
+        skipped.push({ name: source, reason: 'too_many_quotes' });
+      } else {
+        perSource.set(source, (perSource.get(source) ?? 0) + 1);
+        quotes.push({ source, quote: text });
+      }
     }
   }
   return { sources, quotes, skipped };
@@ -152,7 +168,7 @@ interface SourceReport extends JsonObject { name: string; url: string; fetched: 
 
 function quoteReports(text: string | null, quotes: readonly ResearchQuote[]): QuoteReport[] {
   const haystack = text === null ? null : collapse(text);
-  return quotes.slice(0, MAX_QUOTES_PER_SOURCE).map((entry): QuoteReport => {
+  return quotes.map((entry): QuoteReport => {
     const needle = collapse(entry.quote);
     const at = haystack === null || needle === '' ? -1 : haystack.indexOf(needle);
     return {
@@ -162,6 +178,9 @@ function quoteReports(text: string | null, quotes: readonly ResearchQuote[]): Qu
     };
   });
 }
+
+/** 페이지를 읽지 못했거나 출처가 없는 기대 인용문: 찾지 못한 것으로 보고한다 (조용히 빠지지 않는다) */
+const notFoundReports = (quotes: readonly ResearchQuote[]): QuoteReport[] => quotes.map((entry): QuoteReport => ({ quote: entry.quote, found: false, context: null }));
 
 const byteLength = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
 
@@ -193,7 +212,7 @@ export async function runResearch(deps: ResearchDeps): Promise<ResearchOutput> {
   const cache = new Map<string, Promise<ToolReply>>();
   const evidenced = new Set<string>();
   let fetchedCount = 0;
-  let quoteTotal = 0;
+  const quoteTotal = targets.quotes.length; // 기대 인용문 전부: 모두 found/not found 가 보고된다
   let quoteFound = 0;
 
   for (const [index, source] of targets.sources.entries()) {
@@ -207,13 +226,12 @@ export async function runResearch(deps: ResearchDeps): Promise<ResearchOutput> {
     const page = response.ok ? pageOf(response.result) : null;
     if (!response.ok || page === null) {
       const code = response.ok ? 'invalid_tool_result' : errorCodeOf(response.error);
-      sources.push({ name: source.name, url: source.url, fetched: false, fetch_error: code, trust_origin: 'external_untrusted' });
+      sources.push({ name: source.name, url: source.url, fetched: false, fetch_error: code, quotes: notFoundReports(quotes), trust_origin: 'external_untrusted' });
       note(`fetch_url #${index + 1} ${logUrl(source.url)}: failed (${code})`);
       continue;
     }
     fetchedCount += 1;
     const checks = quoteReports(page.text, quotes);
-    quoteTotal += checks.length;
     const found = checks.filter((check) => check.found).length;
     quoteFound += found;
     const text = page.text === null ? null : collapse(page.text);
@@ -236,7 +254,8 @@ export async function runResearch(deps: ResearchDeps): Promise<ResearchOutput> {
     });
     if (!evidenced.has(source.url)) {
       evidenced.add(source.url);
-      evidence.push({ kind: 'source_url', ref: source.url, captured_at: deps.now(), ...(page.sha256 === null ? {} : { content_hash: page.sha256 }) });
+      // 외부 페이지에서 읽은 근거다: 신뢰 출처는 항상 external_untrusted (evidence.trust_origin)
+      evidence.push({ kind: 'source_url', ref: source.url, trust_origin: 'external_untrusted', captured_at: deps.now(), ...(page.sha256 === null ? {} : { content_hash: page.sha256 }) });
     }
     // 인용문이 실제로 있었던 것만 "주장"으로 보고한다. 검증기(A4)가 같은 출처를 원본에서 다시 읽어 확인한다
     checks.forEach((check, qi) => {
@@ -245,7 +264,9 @@ export async function runResearch(deps: ResearchDeps): Promise<ResearchOutput> {
     note(`fetch_url #${index + 1} ${logUrl(source.url)}: status ${page.status}, ${page.bytes} bytes${page.truncated ? ' (truncated)' : ''}, quotes found ${found}/${checks.length}`);
   }
 
-  const unmatched = targets.quotes.filter((entry) => !targets.sources.some((source) => source.name === entry.source)).length;
+  // 이름이 맞는 출처가 없는 기대 인용문(검증된 명세에서는 생기지 않는다): 확인하지 못했으므로 found:false 로 남긴다
+  const unmatchedQuotes = targets.quotes.filter((entry) => !targets.sources.some((source) => source.name === entry.source));
+  const unmatched = unmatchedQuotes.length;
   const result: JsonObject = {
     summary: `${fetchedCount} of ${targets.sources.length} source(s) fetched; ${quoteFound} of ${quoteTotal} quotation(s) found`,
     trust_origin: 'external_untrusted',
@@ -254,6 +275,7 @@ export async function runResearch(deps: ResearchDeps): Promise<ResearchOutput> {
       quotes_checked: quoteTotal, quotes_found: quoteFound, quotes_without_source: unmatched, skipped_inputs: targets.skipped.length,
     },
     sources,
+    unmatched_quotes: notFoundReports(unmatchedQuotes).map((report, index) => ({ source: unmatchedQuotes[index]!.source, quote: report.quote, found: false })),
     claims,
     skipped_inputs: targets.skipped.map((item) => ({ name: item.name, reason: item.reason })),
   };

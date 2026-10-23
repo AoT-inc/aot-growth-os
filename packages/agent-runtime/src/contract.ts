@@ -5,7 +5,7 @@
 //    (정책 강제·재판정·호출별 비용 계량은 게이트웨이의 일이며 구현은 U2).
 //  - 입출력 객체는 JSON 으로 오가는 데이터(게이트웨이 프레임의 `result` 프레임 본문)라 필드 이름이 snake_case 다.
 //    프로세스 안에서만 쓰는 객체(`AdapterContext` 등)는 camelCase 다.
-import type { EvidenceKind, TaskSpec } from '@aot/domain';
+import type { EvidenceKind, TaskSpec, TrustOrigin } from '@aot/domain';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
@@ -56,6 +56,8 @@ export interface CostProgressEvent {
 export interface EvidenceItem {
   kind: EvidenceKind;
   ref: string;
+  /** 근거의 신뢰 출처 (필수, 기본값 없음). 외부 페이지·문서에서 읽은 근거는 `external_untrusted` (trust-boundaries §2-3) */
+  trust_origin: TrustOrigin;
   /** Clock.nowIso() 형식 (UTC ISO 8601, 밀리초, `Z`) */
   captured_at: string;
   content_hash?: string;

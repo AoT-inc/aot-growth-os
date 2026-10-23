@@ -1,6 +1,6 @@
 // 어댑터 출력·비용 진행 보고의 형태 검증. 어댑터가 낸 값은 신뢰하지 않는다 (trust-boundaries §1: 실행 에이전트 = 낮음).
 // 예외 대신 모든 문제를 모아 돌려준다 (domain 의 IssueCollector 와 같은 방식). 프레임 검증(frames.ts)도 이 함수를 쓴다.
-import { EVIDENCE_KINDS, IssueCollector, isNonBlankString, isPlainObject, type PlainObject, type ValidationResult } from '@aot/domain';
+import { EVIDENCE_KINDS, IssueCollector, isNonBlankString, isPlainObject, TRUST_ORIGINS, type PlainObject, type ValidationResult } from '@aot/domain';
 
 import { ADAPTER_STATUSES, COST_UNITS, type AdapterOutput, type CostProgressEvent, type JsonObject } from './contract.ts';
 
@@ -86,9 +86,11 @@ export function checkAdapterOutput(obj: PlainObject, path: string, out: IssueCol
     evidence.forEach((item: unknown, index) => {
       const base = `${at('evidence')}[${index}]`;
       if (!isPlainObject(item)) return void out.add(base, 'type', 'evidence item must be an object');
-      rejectUnknown(item, ['kind', 'ref', 'captured_at', 'content_hash'], base, out);
+      rejectUnknown(item, ['kind', 'ref', 'trust_origin', 'captured_at', 'content_hash'], base, out);
       if (!(EVIDENCE_KINDS as readonly unknown[]).includes(item['kind'])) out.add(`${base}.kind`, 'enum', `kind must be one of ${EVIDENCE_KINDS.join('|')}`);
       if (!isNonBlankString(item['ref'])) out.add(`${base}.ref`, 'required', 'ref must be a non-empty string');
+      // 기본값이 없다: 신뢰 출처를 밝히지 않은 근거는 거부한다 (빠진 값이 조용히 신뢰됨으로 읽히지 않게)
+      if (!(TRUST_ORIGINS as readonly unknown[]).includes(item['trust_origin'])) out.add(`${base}.trust_origin`, 'enum', `trust_origin is required and must be one of ${TRUST_ORIGINS.join('|')}`);
       if (!isClockIso(item['captured_at'])) out.add(`${base}.captured_at`, 'type', 'captured_at must be a UTC ISO 8601 timestamp with milliseconds');
       if ('content_hash' in item && !isNonBlankString(item['content_hash'])) out.add(`${base}.content_hash`, 'type', 'content_hash must be a non-empty string when given');
     });

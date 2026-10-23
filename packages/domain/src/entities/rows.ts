@@ -109,7 +109,8 @@ export type PolicyDecisionRow = {
 
 export type EvidenceRow = {
   id: string; task_id: string; task_run_id: string | null; kind: EvidenceKind; ref: string; content_hash: string | null;
-  captured_at: Iso; verified: number; verification_note: string | null;
+  /** 근거의 신뢰 출처. 외부 페이지·문서에서 읽은 근거는 external_untrusted (기본값 없음: 쓰는 쪽이 밝힌다) */
+  trust_origin: TrustOrigin; captured_at: Iso; verified: number; verification_note: string | null;
 }
 
 export type CostEntryRow = {

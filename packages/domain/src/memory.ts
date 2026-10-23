@@ -3,6 +3,8 @@
 //  - 반증/만료 항목은 현재 사실이 아니지만 삭제되지 않고 과거 관측으로 조회된다
 //  - 외부 입력 유래(external_untrusted)는 hypothesis/unverified 로만 저장한다
 //  - 에이전트는 kind != 'hypothesis' 를 쓸 수 없고, 스스로 검증됨(verified)으로 올릴 수도 없다
+//  - 규칙 9: `source_ref` 가 외부 입력 유래 근거(`evidence:<id>`, evidence.trust_origin = external_untrusted)를 가리키면 항목도 external_untrusted 다(생략하면 물려받고, internal 이라 적으면 거부).
+//    그러면 규칙 3 이 hypothesis/unverified 로만 저장하게 하므로, 외부 근거는 기억으로 편입되어도 현재 사실이 되지 않는다
 //  - 규칙 8: `inconclusive` 평가 결과(source_ref = `evaluation:<id>`)는 lesson/strategy_record 로 저장하지 않는다 (성공·실패 어느 쪽 사례도 아니다)
 // 시각은 주입된 Clock 이 SQL 파라미터로 넘긴다. 쓰기 함수는 Db.writeTx 안에서만 동작한다.
 import { randomUUID } from 'node:crypto';
@@ -24,6 +26,7 @@ export type MemoryRuleCode =
   | 'agent_kind_forbidden'
   | 'agent_cannot_verify'
   | 'inconclusive_not_learnable'
+  | 'untrusted_evidence_origin'
   | 'not_found'
   | 'already_superseded';
 
@@ -68,6 +71,8 @@ export interface MemoryContext {
 
 /** 평가 결과를 근거로 가리키는 `source_ref` 의 접두사 (규칙 8) */
 export const EVALUATION_SOURCE_PREFIX = 'evaluation:';
+/** 근거(evidence 행)를 가리키는 `source_ref` 의 접두사 (규칙 9) */
+export const EVIDENCE_SOURCE_PREFIX = 'evidence:';
 /** 학습(성공·실패 사례) 기록으로 쓰는 기억 종류 */
 const LEARNING_KINDS: readonly MemoryKind[] = ['lesson', 'strategy_record'];
 
@@ -80,10 +85,20 @@ function actorKind(db: Db, actorId: string): 'human' | 'agent' {
   return actor.kind as 'human' | 'agent';
 }
 
+function evidenceTrustOrigin(db: Db, evidenceId: string): TrustOrigin {
+  const evidence = db.get<{ trust_origin: TrustOrigin }>('SELECT trust_origin FROM evidence WHERE id = ?', [evidenceId]);
+  if (!evidence) throw new MemoryRuleError('invalid_field', `source_ref points at evidence '${evidenceId}', which does not exist`);
+  return evidence.trust_origin;
+}
+
 /** 규칙을 모두 확인한 뒤 저장한다. 위반하면 아무것도 쓰지 않고 MemoryRuleError. */
 export function createMemoryItem(tx: Db, input: NewMemoryItem, context: MemoryContext): MemoryItemRow {
   const kind = input.kind;
-  const trust: TrustOrigin = input.trust_origin ?? 'internal';
+  // 규칙 9: 근거를 가리키는 항목은 그 근거의 신뢰 출처를 물려받는다 (명시한 값이 더 느슨하면 아래에서 거부)
+  const evidenceTrust = typeof input.source_ref === 'string' && input.source_ref.startsWith(EVIDENCE_SOURCE_PREFIX)
+    ? evidenceTrustOrigin(tx, input.source_ref.slice(EVIDENCE_SOURCE_PREFIX.length))
+    : null;
+  const trust: TrustOrigin = input.trust_origin ?? evidenceTrust ?? 'internal';
   const verification: VerificationStatus = input.verification_status ?? 'unverified';
   const validity: MemoryValidity = input.validity ?? 'valid';
   const sensitivity: Sensitivity = input.sensitivity ?? 'internal';
@@ -115,6 +130,11 @@ export function createMemoryItem(tx: Db, input: NewMemoryItem, context: MemoryCo
     if (evaluation.outcome === 'inconclusive') {
       throw new MemoryRuleError('inconclusive_not_learnable', `evaluation '${evaluationId}' is inconclusive; it is not stored as a '${kind}' (neither a success nor a failure case)`);
     }
+  }
+
+  // 규칙 9: 외부 입력 유래 근거에서 온 항목을 internal 로 적어 신뢰된 것으로 만들 수 없다
+  if (evidenceTrust === 'external_untrusted' && trust !== 'external_untrusted') {
+    throw new MemoryRuleError('untrusted_evidence_origin', `source_ref points at evidence of external_untrusted origin; the item cannot be recorded with trust_origin '${trust}'`);
   }
 
   // 규칙 3: 외부 입력 유래는 hypothesis / unverified / external_untrusted 로만 시작한다. 승격은 검증 업무의 몫이다.

@@ -14,7 +14,7 @@ ADR-0008의 구체화. 기억은 대화 로그가 아니라 **출처, 신뢰 상
 | `valid_until` | 유효 기간/재검토 시점 | 경과하면 `validity='stale'`로 전환 |
 | `superseded_by` | 이 항목을 대체하는 항목 | 이전 항목은 삭제하지 않음. 대체 관계의 역방향(`supersedes`)은 조회로 도출 |
 | `sensitivity` | 공개 범위·민감도 | `public`, `internal`, `confidential`, `restricted` |
-| `trust_origin` | 출처의 신뢰 | `internal`, `external_untrusted` |
+| `trust_origin` | 출처의 신뢰 | `internal`, `external_untrusted`. 같은 어휘를 `evidence.trust_origin`(근거 행, 필수·기본값 없음)도 쓴다 |
 | `product_id`, `policy_version_id`, `strategy_version_id` | 관련 객체 | |
 
 `verification_status`(검증을 했는가)와 `validity`(지금도 유효한가)는 독립이다. 검증된 사실도 시간이 지나면 `stale`이 된다.
@@ -30,10 +30,13 @@ ADR-0008의 구체화. 기억은 대화 로그가 아니라 **출처, 신뢰 상
 7. `sensitivity`가 `confidential` 이상인 항목은 `publication`의 입력으로 사용할 때 정책 승인이 필요하다.
 8. `inconclusive` 평가 결과는 `lesson`/`strategy_record`의 성공 사례로 저장하지 않는다 ([evaluation](../operations/evaluation.md)). 구현(A4): `source_ref`가 `evaluation:<id>`이고 그 평가가 `inconclusive`이면 `createMemoryItem`이 `lesson`/`strategy_record` 저장을 거부한다(`inconclusive_not_learnable`). 성공·실패 어느 쪽 사례도 아니므로 "성공 사례만"이 아니라 두 종류 모두에서 막는다. 존재하지 않는 평가 참조도 거부한다.
 
+9. **외부 입력 유래 근거에서 온 항목은 신뢰된 것으로 편입되지 않는다.** `source_ref`가 `evidence:<id>`이면 그 근거의 `evidence.trust_origin`을 확인한다(존재하지 않는 근거 참조는 거부). 근거가 `external_untrusted`이면 항목도 `external_untrusted`다: `trust_origin`을 생략하면 근거의 값을 물려받고, `internal`로 적으면 거부한다(`untrusted_evidence_origin`). 그러면 규칙 3이 `hypothesis`/`unverified`로만 저장하게 하므로 외부 근거는 기억으로 들어와도 현재 사실이 되지 못한다. 근거의 신뢰 출처는 어댑터가 밝힌 값을 그대로 저장하며(조사 에이전트의 외부 페이지 근거는 항상 `external_untrusted`), 검증(`evidence.verified`)은 신뢰 출처를 바꾸지 않는다.
+
 ## 필수 테스트
 
 - 반증된/만료된 항목이 현재 사실 조회에서 제외된다.
 - 대체된 항목이 삭제되지 않고 과거 관측으로 조회된다.
 - 에이전트가 `fact`를 직접 생성할 수 없다.
 - 외부 입력 유래 항목이 `unverified`/`external_untrusted`로 저장된다.
+- `external_untrusted` 근거(`evidence:<id>`)에서 온 항목은 `internal`/`fact`/`verified`로 저장되지 않고 현재 사실 조회에 나오지 않는다. `evidence.trust_origin`은 NOT NULL·기본값 없음·어휘 CHECK다.
 - `inconclusive` 평가를 근거로 한 `lesson`/`strategy_record`가 저장되지 않는다.

@@ -30,8 +30,8 @@ function daemonFor(env: PolicyEnv, fetcher: FakeFetcher, script: (ctx: RunContex
 function honestRun(env: PolicyEnv, quote: string) {
   return (ctx: RunContext) => {
     env.db.writeTx((tx) => tx.run(
-      'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, captured_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [`ev-${ctx.lease.runId}`, ctx.taskId, ctx.lease.runId, 'source_url', EXAMPLE_URL, env.clock.nowIso()],
+      'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [`ev-${ctx.lease.runId}`, ctx.taskId, ctx.lease.runId, 'source_url', EXAMPLE_URL, 'external_untrusted', env.clock.nowIso()],
     ));
     reportCostProgress(env.db, env.clock, { taskRunId: ctx.lease.runId, cumulativeUsd: 0.1 * ctx.attempt });
     return researchReport([{ id: 'c1', statement: 'Prices are fixed.', source_url: EXAMPLE_URL, quote }]);

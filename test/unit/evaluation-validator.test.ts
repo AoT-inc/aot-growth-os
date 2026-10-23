@@ -13,9 +13,12 @@ import { seededDb } from '../support/seeded-db.ts';
 const QUOTE = 'The quarterly price is fixed';
 const PAGE = `Pricing notes.\n  The quarterly   price is fixed\nfor all plans.`;
 
-function setup(t: Parameters<typeof seededDb>[0], report: Record<string, unknown>, deterministic: string[], fetcher = new FakeFetcher({ [EXAMPLE_URL]: PAGE, [OTHER_URL]: 'another page' })) {
+function setup(
+  t: Parameters<typeof seededDb>[0], report: Record<string, unknown>, deterministic: string[], fetcher = new FakeFetcher({ [EXAMPLE_URL]: PAGE, [OTHER_URL]: 'another page' }),
+  extraSpec: Record<string, unknown> = {},
+) {
   const { db, clock } = seededDb(t);
-  const run = submittedRun(db, clock, { spec: validationSpec(deterministic), result: report });
+  const run = submittedRun(db, clock, { spec: { ...validationSpec(deterministic), ...extraSpec }, result: report });
   const context = (): CheckContext => {
     const task = db.get<TaskRow>('SELECT * FROM task WHERE id = ?', [run.taskId])!;
     const taskRun = db.get<TaskRunRow>('SELECT * FROM task_run WHERE id = ?', [run.runId])!;
@@ -70,6 +73,69 @@ test('quote_in_source: the quotation must be in the original text (whitespace di
   assert.doesNotMatch(report.checks[0]?.note ?? '', /c1/);
   assert.equal(report.evidence.get(ev1)?.verified, true);
   assert.equal(report.evidence.get(ev2)?.verified, false);
+});
+
+// ===== 명세의 기대 인용문 (task_spec.expected_quotes) =====
+
+const EXPECTED_SPEC = {
+  inputs: [{ name: 'pricing', ref: EXAMPLE_URL, kind: 'source_url' }, { name: 'other', ref: OTHER_URL, kind: 'source_url' }],
+  expected_quotes: [{ source: 'pricing', text: QUOTE }, { source: 'other', text: 'another page' }],
+};
+const claim = (id: string, url: string, quote: string) => ({ id, statement: `The source contains ${quote}`, source_url: url, quote });
+
+test('expected_quotes: every expected quotation must be in the source the verifier reads and be claimed by the report; all present -> pass', async (t) => {
+  const { db, clock, run, context } = setup(t, researchReport([claim('c1', EXAMPLE_URL, QUOTE), claim('c2', OTHER_URL, 'another page')]), ['quote_in_source'], undefined, EXPECTED_SPEC);
+  const ev1 = addEvidence(db, clock, run, { kind: 'source_url', ref: EXAMPLE_URL });
+  const ev2 = addEvidence(db, clock, run, { kind: 'source_url', ref: OTHER_URL });
+  const report = await runDeterministicChecks(context(), ['quote_in_source']);
+  assert.equal(report.checks[0]?.status, 'pass');
+  assert.match(report.checks[0]?.note ?? '', /2 expected and 2 reported quotation\(s\) found/);
+  assert.equal(report.evidence.get(ev1)?.verified, true);
+  assert.equal(report.evidence.get(ev2)?.verified, true);
+});
+
+test('expected_quotes: one of two expected quotations missing from its page fails even though the other one is fine (KNOWN GAP of A5 closed)', async (t) => {
+  // 에이전트는 찾은 인용만 주장으로 올린다: 두 번째 인용은 페이지에 없어서 보고에도 없다
+  const fetcher = new FakeFetcher({ [EXAMPLE_URL]: PAGE, [OTHER_URL]: 'a different page' });
+  const { db, clock, run, context } = setup(t, researchReport([claim('c1', EXAMPLE_URL, QUOTE)]), ['quote_in_source'], fetcher, EXPECTED_SPEC);
+  const ev1 = addEvidence(db, clock, run, { kind: 'source_url', ref: EXAMPLE_URL });
+  const ev2 = addEvidence(db, clock, run, { kind: 'source_url', ref: OTHER_URL });
+  const report = await runDeterministicChecks(context(), ['quote_in_source']);
+  assert.equal(report.checks[0]?.status, 'fail');
+  assert.match(report.checks[0]?.note ?? '', /expected quotation #2 of 'other': not found in /);
+  assert.equal(report.evidence.get(ev1)?.verified, true, 'the source whose quotation is present stays verified');
+  assert.equal(report.evidence.get(ev2)?.verified, false, 'the source that lacks its quotation is not verified');
+});
+
+test('expected_quotes: an incomplete report fails: the source has the quotation but the report does not claim it (a partial report cannot pass)', async (t) => {
+  const { db, clock, run, context } = setup(t, researchReport([claim('c1', EXAMPLE_URL, QUOTE)]), ['quote_in_source'], undefined, EXPECTED_SPEC);
+  addEvidence(db, clock, run, { kind: 'source_url', ref: EXAMPLE_URL });
+  addEvidence(db, clock, run, { kind: 'source_url', ref: OTHER_URL });
+  const report = await runDeterministicChecks(context(), ['quote_in_source']);
+  assert.equal(report.checks[0]?.status, 'fail');
+  assert.match(report.checks[0]?.note ?? '', /expected quotation #2 of 'other': the source has it but the agent report does not claim it/);
+  // 같은 출처라도 다른 문장을 주장한 것은 기대 인용문을 채우지 못한다
+  const other = setup(t, researchReport([claim('c1', EXAMPLE_URL, QUOTE), claim('c2', OTHER_URL, 'page')]), ['quote_in_source'], undefined, EXPECTED_SPEC);
+  assert.equal((await runDeterministicChecks(other.context(), ['quote_in_source'])).checks[0]?.status, 'fail');
+});
+
+test('expected_quotes: with expected quotations but an empty report the check fails (it is not "cannot be checked"); an unreachable source fails', async (t) => {
+  const empty = setup(t, researchReport([]), ['quote_in_source'], undefined, EXPECTED_SPEC);
+  const emptyReport = await runDeterministicChecks(empty.context(), ['quote_in_source']);
+  assert.equal(emptyReport.checks[0]?.status, 'fail');
+  assert.match(emptyReport.checks[0]?.note ?? '', /does not claim it/);
+  const unreachable = setup(t, researchReport([claim('c1', EXAMPLE_URL, QUOTE)]), ['quote_in_source'], new FakeFetcher({ [EXAMPLE_URL]: PAGE }), EXPECTED_SPEC);
+  const gone = await runDeterministicChecks(unreachable.context(), ['quote_in_source']);
+  assert.equal(gone.checks[0]?.status, 'fail');
+  assert.match(gone.checks[0]?.note ?? '', /expected quotation #2 of 'other': source unreachable/);
+});
+
+test('expected_quotes: whitespace differences are ignored on both sides, and no expected quotations plus no quoted claims is still "cannot be checked"', async (t) => {
+  const spaced = { inputs: EXPECTED_SPEC.inputs, expected_quotes: [{ source: 'pricing', text: 'The   quarterly price\nis fixed' }] };
+  const ok = setup(t, researchReport([claim('c1', EXAMPLE_URL, QUOTE)]), ['quote_in_source'], undefined, spaced);
+  assert.equal((await runDeterministicChecks(ok.context(), ['quote_in_source'])).checks[0]?.status, 'pass');
+  const none = setup(t, researchReport([{ statement: 's', source_url: EXAMPLE_URL }]), ['quote_in_source']);
+  assert.equal((await runDeterministicChecks(none.context(), ['quote_in_source'])).checks[0]?.status, 'unknown');
 });
 
 test('dedupe: repeated claims and repeated source evidence fail', async (t) => {

@@ -2,7 +2,7 @@
 // 어댑터 계약(contract.ts)을 구현하며 어댑터 계약 테스트(test/support/adapter-contract.ts)를 통과해야 한다.
 // 정책을 판단하지 않는다: 허용 목록 밖 도구도 일단 게이트웨이에 요청하고, 거부 응답을 받아 기록한 뒤 계속한다.
 // (A0 의 동기식 가짜 어댑터 test/support/fake-adapter.ts 는 A5 U4 에서 이 어댑터로 대체하고 지웠다.)
-import type { Clock, EvidenceKind } from '@aot/domain';
+import type { Clock, EvidenceKind, TrustOrigin } from '@aot/domain';
 
 import type {
   AdapterContext, AdapterInput, AdapterOutput, AdapterStatus, AgentAdapter, EvidenceItem, JsonObject, JsonValue, RunLogEntry, ToolGatewayResponse,
@@ -30,8 +30,8 @@ export interface FakeAdapterConfig {
   name?: string;
   /** 결과 본문. 기본 `{summary:'fake result'}` */
   result?: JsonObject;
-  /** 증거. 기본은 run_log 증거 한 건 */
-  evidence?: readonly { kind: EvidenceKind; ref: string }[];
+  /** 증거. 기본은 run_log 증거 한 건. `trust_origin` 을 주지 않으면 run_log 는 `internal`, 그 밖의 종류는 `external_untrusted`(외부에서 읽은 근거로 본다) */
+  evidence?: readonly { kind: EvidenceKind; ref: string; trust_origin?: TrustOrigin }[];
   /** tool_calls 시나리오에서 요청할 도구 */
   toolCalls?: readonly FakeToolCall[];
   /** denied_tool 시나리오에서 요청할 (허용되지 않은) 도구. 기본 'example_forbidden_tool' */
@@ -61,7 +61,7 @@ export function createFakeAgentAdapter(config: FakeAdapterConfig): AgentAdapter 
         if (toolResults.length > 0) base['tool_results'] = toolResults;
         if (toolErrors.length > 0) base['tool_errors'] = toolErrors;
         const evidence: EvidenceItem[] = (config.evidence ?? [{ kind: 'run_log', ref: `run-log:${input.run_id}` }])
-          .map((item) => ({ kind: item.kind, ref: item.ref, captured_at: clock.nowIso() }));
+          .map((item) => ({ kind: item.kind, ref: item.ref, trust_origin: item.trust_origin ?? (item.kind === 'run_log' ? 'internal' : 'external_untrusted'), captured_at: clock.nowIso() }));
         note(`finished: ${status}`);
         return {
           status,

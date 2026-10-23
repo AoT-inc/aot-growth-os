@@ -22,7 +22,7 @@ const LIMITS = { memoryMiB: 128, cpus: 0.5, pidsLimit: 32, tmpfsMiB: 16 };
 const AT = '2026-10-22T00:00:00.000Z';
 const NAME = 'aot-run-run-contract-1';
 const RESULT_FRAME = {
-  type: 'result', status: 'submitted', result: { summary: 'done' }, evidence: [{ kind: 'source_url', ref: 'https://example.com/', captured_at: AT }],
+  type: 'result', status: 'submitted', result: { summary: 'done' }, evidence: [{ kind: 'source_url', ref: 'https://example.com/', trust_origin: 'external_untrusted', captured_at: AT }],
   run_log: [{ at: AT, message: 'agent finished' }], cost: { usd: 0.03 },
 };
 

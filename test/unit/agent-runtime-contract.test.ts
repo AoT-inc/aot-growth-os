@@ -154,7 +154,10 @@ describe('the contract suite catches non-conforming adapters (validator level)',
     assert.equal(validateAdapterOutput({ ...base, error: { code: 'x', message: 'y' } }).ok, false, 'error only with status error');
     assert.equal(validateAdapterOutput({ ...base, status: 'error' }).ok, false, 'status error needs error');
     assert.equal(validateAdapterOutput({ ...base, result: { n: Number.NaN } }).ok, false, 'result must be JSON');
-    assert.equal(validateAdapterOutput({ ...base, evidence: [{ kind: 'note', ref: 'x', captured_at: START }] }).ok, false, 'unknown evidence kind');
+    assert.equal(validateAdapterOutput({ ...base, evidence: [{ kind: 'note', ref: 'x', trust_origin: 'internal', captured_at: START }] }).ok, false, 'unknown evidence kind');
+    assert.equal(validateAdapterOutput({ ...base, evidence: [{ kind: 'run_log', ref: 'x', trust_origin: 'internal', captured_at: START }] }).ok, true);
+    assert.equal(validateAdapterOutput({ ...base, evidence: [{ kind: 'run_log', ref: 'x', captured_at: START }] }).ok, false, 'evidence without trust_origin (no default)');
+    assert.equal(validateAdapterOutput({ ...base, evidence: [{ kind: 'run_log', ref: 'x', trust_origin: 'trusted', captured_at: START }] }).ok, false, 'trust_origin outside the vocabulary');
     assert.equal(validateAdapterOutput({ ...base, run_log: [{ at: 'yesterday', message: 'x' }] }).ok, false, 'timestamp format');
   });
 

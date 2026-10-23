@@ -56,14 +56,22 @@ test('the verifier receives the original evidence and isolated context only: no 
   // 들어간 것: 완료 조건, 주장 문장, 원본 출처 본문과 내용 해시
   assert.deepEqual(input.criteria, ['각 주장에 출처 URL이 1개 이상 있다']);
   assert.deepEqual(input.claims, [{ id: 'c1', statement: 'Prices are fixed for all plans.', sourceRef: EXAMPLE_URL }]);
-  assert.deepEqual(input.sources, [{ ref: EXAMPLE_URL, kind: 'source_url', text: PAGE, contentHash: 'hash-a' }]);
+  assert.deepEqual(input.sources, [{ ref: EXAMPLE_URL, kind: 'source_url', text: PAGE, contentHash: 'hash-a', trustOrigin: 'external_untrusted' }]);
   assert.equal(input.check, 'claim_supported_by_source');
   assert.ok(Object.isFrozen(input) && Object.isFrozen(input.claims), 'the verifier cannot alter what it was given');
 });
 
+test('source text handed to the verifier is marked external_untrusted, whatever the agent wrote in the evidence row', async (t) => {
+  const { db, clock, run, fetcher } = setup(t);
+  db.writeTx((tx) => tx.run("UPDATE evidence SET trust_origin = 'internal' WHERE task_id = ?", [run.taskId]));
+  const llm = new FakeLlm();
+  await evaluateRun({ db, clock, fetcher, llm }, { taskId: run.taskId, taskRunId: run.runId });
+  assert.deepEqual(llm.inputs[0]!.sources.map((s) => s.trustOrigin), ['external_untrusted'], 'the text was read from outside by the verifier itself');
+});
+
 test('type level: the input has no place for a prompt, a session or the report (tsc fails if one is added)', () => {
   const claims: ClaimStatement[] = [{ id: 'c1', statement: 's', sourceRef: 'u' }];
-  const sources = [{ ref: 'u', kind: 'source_url' as const, text: 't', contentHash: null }];
+  const sources = [{ ref: 'u', kind: 'source_url' as const, text: 't', contentHash: null, trustOrigin: 'external_untrusted' as const }];
   // @ts-expect-error a report cannot be passed to the builder
   buildIsolatedInput({ check: 'c', criteria: [], claims, sources, report: '{}' });
   // @ts-expect-error a prompt cannot be passed to the builder
@@ -84,10 +92,10 @@ test('type level: the input has no place for a prompt, a session or the report (
 
 test('runtime guard: properties smuggled into claims or sources by a cast are not copied; oversized statements and unknown sources are refused', () => {
   const smuggled = { id: 'c1', statement: 's', sourceRef: 'u', report: MARKERS.prose, prompt: MARKERS.prompt } as ClaimStatement;
-  const source = { ref: 'u', kind: 'source_url' as const, text: 't', contentHash: null, session: MARKERS.session };
+  const source = { ref: 'u', kind: 'source_url' as const, text: 't', contentHash: null, trustOrigin: 'external_untrusted' as const, session: MARKERS.session };
   const input = buildIsolatedInput({ check: 'c', criteria: ['x'], claims: [smuggled], sources: [source] });
   assert.deepEqual(Object.keys(input.claims[0]!).sort(), ['id', 'sourceRef', 'statement']);
-  assert.deepEqual(Object.keys(input.sources[0]!).sort(), ['contentHash', 'kind', 'ref', 'text']);
+  assert.deepEqual(Object.keys(input.sources[0]!).sort(), ['contentHash', 'kind', 'ref', 'text', 'trustOrigin']);
   assert.ok(!JSON.stringify(input).includes(MARKERS.session));
 
   const whole = { id: 'c1', statement: 'x'.repeat(MAX_STATEMENT_CHARS + 1), sourceRef: 'u' };

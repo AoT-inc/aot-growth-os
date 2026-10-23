@@ -17,6 +17,10 @@ function firstJsonBlock(relativePath: string, afterHeading?: string): unknown {
 export const marketResearchExample = (): Record<string, unknown> =>
   firstJsonBlock('docs/schema/task-spec.md', '## 예시: 주간 시장 조사') as Record<string, unknown>;
 
+/** docs/schema/task-spec.md 의 "출처 인용문 확인" 예시 (expected_quotes 를 쓰는 조사 업무) */
+export const sourceQuoteExample = (): Record<string, unknown> =>
+  firstJsonBlock('docs/schema/task-spec.md', '## 예시: 출처 인용문 확인') as Record<string, unknown>;
+
 /** workflows/product-registration.md §3 의 업무 명세 템플릿 */
 export const productRegistrationTemplate = (): Record<string, unknown> =>
   firstJsonBlock('workflows/product-registration.md', '## 3. 업무 명세 템플릿') as Record<string, unknown>;

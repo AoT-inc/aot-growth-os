@@ -31,7 +31,7 @@ function researchInput(withSource: boolean): AdapterInput {
   const base = contractInput();
   const inputs = [
     { name: 'keywords', ref: 'strategy:active#research_keywords', kind: 'strategy' },
-    ...(withSource ? [{ name: 'release-notes', ref: SOURCE_URL, kind: 'source_url' }, { name: 'release-notes', ref: QUOTE, kind: 'quote' }] : []),
+    ...(withSource ? [{ name: 'release-notes', ref: SOURCE_URL, kind: 'source_url' }] : []),
   ];
   return {
     ...base,
@@ -39,6 +39,7 @@ function researchInput(withSource: boolean): AdapterInput {
     task_spec: {
       ...base.task_spec,
       inputs,
+      ...(withSource ? { expected_quotes: [{ source: 'release-notes', text: QUOTE }], validation: { deterministic: ['url_reachable', 'quote_in_source'], llm: null, human: false } } : {}),
       allowed_tools: [{ tool: 'fetch_url', operations: ['fetch'], scope: 'internal', impact: 'read' }],
       constraints: { time_limit: '30m', network_allowlist: ['docs.example.com'], publish_scope: 'internal' },
     },
@@ -125,7 +126,7 @@ if (!prepared.ok) {
       assert.equal(output.status, 'submitted');
       assert.deepEqual(calls, [{ tool: 'fetch_url', args: { url: SOURCE_URL } }]);
       assert.deepEqual(progress, [0]);
-      assert.deepEqual(output.evidence.map((item) => [item.kind, item.ref, item.content_hash]), [['source_url', SOURCE_URL, 'd'.repeat(64)]]);
+      assert.deepEqual(output.evidence.map((item) => [item.kind, item.ref, item.content_hash, item.trust_origin]), [['source_url', SOURCE_URL, 'd'.repeat(64), 'external_untrusted']]);
       const result = output.result!;
       assert.equal(result['trust_origin'], 'external_untrusted');
       assert.deepEqual((result['claims'] as JsonObject[]).map((claim) => [claim['source_url'], claim['quote']]), [[SOURCE_URL, QUOTE]]);

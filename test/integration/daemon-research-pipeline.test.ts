@@ -148,7 +148,7 @@ if (!prepared.ok) {
     path: string[];
     lastTransition: { caused_by: string; reason: string };
     evaluation: { outcome: string; safety: string; evaluator: string; primary_evidence_refs: string } | undefined;
-    evidence: { kind: string; ref: string; content_hash: string | null; verified: number; verification_note: string | null }[];
+    evidence: { kind: string; ref: string; content_hash: string | null; trust_origin: string; verified: number; verification_note: string | null }[];
     ledger: { category: string; amount_usd: number; task_run_id: string }[];
     decisions: { action: string; decision: string }[];
     /** 업무 전체(생성·실행 시작 재판정 포함)의 판정 */
@@ -168,7 +168,7 @@ if (!prepared.ok) {
   let counter = 0;
   /** 업무 하나를 만들어 두 tick(실행, 검증)을 돌린다. `validationPage` 가 있으면 첫 tick 뒤(검증 전)에 페이지를 그것으로 바꾼다 */
   async function runPipeline(t: TestContext, page: PageHandler, options: {
-    validationPage?: PageHandler; inputs?: JsonObject[]; extra?: Partial<AgentRuntimeConfig>; deterministic?: string[];
+    validationPage?: PageHandler; inputs?: JsonObject[]; quotes?: JsonObject[]; extra?: Partial<AgentRuntimeConfig>; deterministic?: string[];
   } = {}): Promise<Pipeline> {
     counter += 1;
     const env = policyEnv(t);
@@ -181,10 +181,8 @@ if (!prepared.ok) {
 
     const taskId = createWithGate(env, readOnlyDraft({
       objective: `check the cited sources (${counter})`,
-      inputs: options.inputs ?? [
-        { name: 'primary', ref: PAGE_URL, kind: 'source_url' }, { name: 'primary', ref: QUOTE_A, kind: 'quote' },
-        { name: 'secondary', ref: OTHER_URL, kind: 'source_url' }, { name: 'secondary', ref: QUOTE_B, kind: 'quote' },
-      ],
+      inputs: options.inputs ?? [{ name: 'primary', ref: PAGE_URL, kind: 'source_url' }, { name: 'secondary', ref: OTHER_URL, kind: 'source_url' }],
+      expected_quotes: options.quotes ?? [{ source: 'primary', text: QUOTE_A }, { source: 'secondary', text: QUOTE_B }],
       allowed_tools: [{ tool: 'fetch_url', operations: ['fetch'], scope: 'internal', impact: 'read' }],
       constraints: { time_limit: '2m', network_allowlist: [HOST], publish_scope: 'internal' },
       validation: { deterministic: options.deterministic ?? ['url_reachable', 'quote_in_source', 'dedupe', 'budget'], llm: null, human: false },
@@ -210,7 +208,7 @@ if (!prepared.ok) {
       path: transitionsOf(env.db, taskId).map((tr) => tr.to_status),
       lastTransition: { caused_by: last.caused_by, reason: last.reason },
       evaluation: env.db.get('SELECT outcome, safety, evaluator, primary_evidence_refs FROM evaluation WHERE task_id = ?', [taskId]) as Pipeline['evaluation'],
-      evidence: env.db.all<Pipeline['evidence'][number]>('SELECT kind, ref, content_hash, verified, verification_note FROM evidence WHERE task_id = ? ORDER BY rowid', [taskId]).map((r) => ({ ...r })),
+      evidence: env.db.all<Pipeline['evidence'][number]>('SELECT kind, ref, content_hash, trust_origin, verified, verification_note FROM evidence WHERE task_id = ? ORDER BY rowid', [taskId]).map((r) => ({ ...r })),
       ledger: env.db.all<Pipeline['ledger'][number]>('SELECT category, amount_usd, task_run_id FROM cost_entry WHERE task_id = ? ORDER BY at, rowid', [taskId]).map((r) => ({ ...r })),
       decisions: decisionsOf(env.db, taskId).filter((d) => d.task_run_id === run!.id).map((d) => ({ action: d.action, decision: d.decision })),
       allDecisions: decisionsOf(env.db, taskId).map((d) => ({ action: d.action, decision: d.decision, run: d.task_run_id !== null })),
@@ -244,8 +242,9 @@ if (!prepared.ok) {
       assert.equal(control.evaluation?.evaluator, 'task-evaluator@v1');
 
       // 증거: 컨테이너가 읽은 두 출처(원본 바이트 해시)가 evidence 에 남고, 검증기가 직접 다시 읽어 verified=1 로 만들었다
-      assert.deepEqual(control.evidence.map((e) => [e.kind, e.ref, e.content_hash, e.verified]), [
-        ['source_url', PAGE_URL, sha(CONTROL_HTML), 1], ['source_url', OTHER_URL, sha(OTHER_HTML), 1],
+      // 외부 페이지에서 읽은 근거이므로 신뢰 출처는 external_untrusted 다 (evidence.trust_origin, 검증되어도 바뀌지 않는다)
+      assert.deepEqual(control.evidence.map((e) => [e.kind, e.ref, e.content_hash, e.trust_origin, e.verified]), [
+        ['source_url', PAGE_URL, sha(CONTROL_HTML), 'external_untrusted', 1], ['source_url', OTHER_URL, sha(OTHER_HTML), 'external_untrusted', 1],
       ]);
       assert.equal(control.agentRequests, 2, 'the agent fetched each source once');
       assert.equal(control.validatorRequests, 2, 'the validator read each source once itself (url_reachable and quote_in_source share the read)');
@@ -315,27 +314,48 @@ if (!prepared.ok) {
       }
     });
 
-    it('the only quotation is not on the page: no claim is reported, the validator has nothing to check, the evaluation is inconclusive and the task waits for a person (needs_review)', async (t) => {
+    it('the only expected quotation is not on the page: the agent reports found:false (no claim), the validator fails quote_in_source against the specification, retry_wait with one attempt used', async (t) => {
       const run = await runPipeline(t, html('<html><body><p>Nothing relevant here.</p></body></html>'), {
-        inputs: [{ name: 'primary', ref: PAGE_URL, kind: 'source_url' }, { name: 'primary', ref: QUOTE_A, kind: 'quote' }],
+        inputs: [{ name: 'primary', ref: PAGE_URL, kind: 'source_url' }], quotes: [{ source: 'primary', text: QUOTE_A }],
       });
       assert.deepEqual(run.first.executed?.end, { outcome: 'submitted', taskStatus: 'validating' });
+      assert.equal(run.second.validated[0]?.taskStatus, 'retry_wait');
+      assert.equal(run.status, 'retry_wait');
+      assert.equal(run.evaluation?.outcome, 'fail');
+      assert.equal(run.lastTransition.caused_by, 'system:validator');
+      assert.equal(run.attempts, 1);
+      assert.equal((run.result['counts'] as JsonObject)['quotes_found'], 0);
+      assert.equal((run.result['counts'] as JsonObject)['quotes_checked'], 1);
+      assert.deepEqual(run.result['claims'], []);
+      const [source] = run.result['sources'] as JsonObject[];
+      assert.deepEqual((source!['quotes'] as JsonObject[]).map((q) => [q['quote'], q['found']]), [[QUOTE_A, false]], 'every expected quotation is answered, also the one that is not there');
+      assert.deepEqual(run.evidence.map((e) => [e.ref, e.verified]), [[PAGE_URL, 0]]);
+    });
+
+    it('no expected quotations and no reported claims: quote_in_source has nothing to check, the evaluation is inconclusive and the task waits for a person (needs_review, no attempt used)', async (t) => {
+      const run = await runPipeline(t, html('<html><body><p>Nothing relevant here.</p></body></html>'), {
+        inputs: [{ name: 'primary', ref: PAGE_URL, kind: 'source_url' }], quotes: [],
+      });
       assert.equal(run.second.validated[0]?.taskStatus, 'needs_review');
       assert.equal(run.status, 'needs_review');
       assert.equal(run.evaluation?.outcome, 'inconclusive');
-      assert.equal(run.lastTransition.caused_by, 'system:validator');
       assert.match(run.lastTransition.reason, /inconclusive/);
       assert.equal(run.attempts, 0, 'an inconclusive verdict does not use up an attempt');
-      assert.equal((run.result['counts'] as JsonObject)['quotes_found'], 0);
     });
 
-    // 알려진 공백 (A5 완료 기록의 U7 이월): 임시 `{kind:'quote'}` 관례에는 "기대한 인용" 이 명세에 구조로 없다. 에이전트는 찾은 인용만 claims 로 보고하므로,
-    // 한 출처의 인용이 없어도 나머지 출처의 인용이 확인되면 검증기는 pass 를 낸다. 인용문 필드가 task_spec 에 생기면(U7) 검증기가 기대 인용과 대조하도록 이 시험을 뒤집는다.
-    it('KNOWN GAP (U7): one of two expected quotations missing from its page is silently dropped from the claims, so the other verified quotation still gives pass -> completed', async (t) => {
+    // A5 의 알려진 공백(U7 이월)은 닫혔다: 기대 인용문이 task_spec.expected_quotes 에 구조로 있어서, 에이전트가 못 찾은 인용이 보고에서 조용히 빠져도 검증기가 명세와 대조해 잡는다.
+    it('one of two expected quotations is missing from its page: the other verified quotation no longer gives pass; quote_in_source fails against the specification -> fail -> retry_wait', async (t) => {
       const run = await runPipeline(t, html('<html><body><p>Nothing relevant here.</p></body></html>'));
-      assert.equal(run.status, 'completed');
+      assert.deepEqual(run.first.executed?.end, { outcome: 'submitted', taskStatus: 'validating' });
+      assert.equal(run.second.validated[0]?.taskStatus, 'retry_wait');
+      assert.equal(run.status, 'retry_wait');
+      assert.equal(run.evaluation?.outcome, 'fail');
+      assert.equal(run.attempts, 1);
       assert.equal((run.result['counts'] as JsonObject)['quotes_checked'], 2);
       assert.equal((run.result['counts'] as JsonObject)['quotes_found'], 1);
+      assert.equal((run.result['claims'] as JsonObject[]).length, 1, 'the agent reports only the quotation it found');
+      assert.deepEqual(run.evidence.map((e) => [e.ref, e.verified]), [[PAGE_URL, 0], [OTHER_URL, 1]], 'the source lacking its quotation is unverified, the other one is verified');
+      assert.match(run.evidence[0]?.verification_note ?? '', /quote_in_source: a quotation is not in the source/);
     });
 
     it('a page that no longer holds the quotation when the validator reads it: quote_in_source fails, the source stays unverified, retry_wait with one attempt used', async (t) => {
@@ -363,7 +383,8 @@ if (!prepared.ok) {
       const rig = makeRig(env, { research_agent: { image: sandbox.imageId, allowed_hosts: [], fetch_unit_cost_usd: UNIT_COST } });
       await rig.daemon.prepareAgentRuntime();
       const taskId = createWithGate(env, readOnlyDraft({
-        inputs: [{ name: 'primary', ref: PAGE_URL, kind: 'source_url' }, { name: 'primary', ref: QUOTE_A, kind: 'quote' }],
+        inputs: [{ name: 'primary', ref: PAGE_URL, kind: 'source_url' }],
+        expected_quotes: [{ source: 'primary', text: QUOTE_A }],
         allowed_tools: [{ tool: 'fetch_url', operations: ['fetch'], scope: 'internal', impact: 'read' }],
         constraints: { time_limit: '2m', network_allowlist: [HOST], publish_scope: 'internal' },
         validation: { deterministic: ['url_reachable', 'quote_in_source'], llm: null, human: false },
@@ -375,7 +396,7 @@ if (!prepared.ok) {
       const second = await rig.daemon.worker.tick();
       assert.equal(second.validated.length, 1);
       assert.notEqual(taskStatus(env.db, taskId), 'completed');
-      assert.equal(evaluationsOf(env.db, taskId)[0]?.outcome, 'inconclusive', 'no evidence and no claims: nothing to verify');
+      assert.equal(evaluationsOf(env.db, taskId)[0]?.outcome, 'fail', 'the expected quotation cannot be confirmed: no evidence, no claim, and the validator cannot read the source either');
       assert.equal(web.requests.length, before, 'no request reached the page server at all');
       // 검증기 쪽도 같은 목록이다: 목록 밖/빈 목록은 거부
       assert.deepEqual(await rig.built.evaluation!.fetcher.fetch(PAGE_URL), { reachable: false, reason: 'host_not_allowed' });

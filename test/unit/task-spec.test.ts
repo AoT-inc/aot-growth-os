@@ -1,10 +1,11 @@
 // task_spec 스키마 검증 (docs/schema/task-spec.md): 문서의 예시는 통과하고, "생성 거부 조건" 은 거부한다.
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { describe, it, test } from 'node:test';
 
-import { validateTaskSpec, type Issue } from '@aot/domain';
+import { contentHash, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, resolveExpectedQuotes, validateTaskSpec, type Issue } from '@aot/domain';
+import { taskSubject, taskSubjectHash } from '@aot/policy';
 
-import { marketResearchExample, minimalDraft, productRegistrationTemplate } from '../support/spec-fixtures.ts';
+import { marketResearchExample, minimalDraft, productRegistrationTemplate, sourceQuoteExample } from '../support/spec-fixtures.ts';
 
 const draft = (input: unknown) => validateTaskSpec(input, 'draft');
 const errorsOf = (input: unknown, stage: 'draft' | 'stored' = 'draft'): Issue[] => {
@@ -19,6 +20,77 @@ test('the documented examples are valid drafts (market research example, product
   assert.deepEqual(draft(marketResearchExample()), { ok: true, value: marketResearchExample() });
   assert.equal(draft(productRegistrationTemplate()).ok, true);
   assert.equal(draft(minimalDraft()).ok, true);
+});
+
+test('the documented source-quote example (expected_quotes) is a valid draft', () => {
+  assert.deepEqual(draft(sourceQuoteExample()), { ok: true, value: sourceQuoteExample() });
+});
+
+describe('expected_quotes', () => {
+  const withQuotes = (expected_quotes: unknown, deterministic: string[] = ['quote_in_source'], inputs: unknown = [
+    { name: 'notes', ref: 'https://docs.example.com/notes', kind: 'source_url' }, { name: 'price', ref: 'https://docs.example.com/price', kind: 'source_url' },
+  ]) => ({ ...minimalDraft(), inputs, expected_quotes, validation: { deterministic, llm: null, human: false } });
+
+  it('is optional; a list of {source, text} whose source names a source_url input is accepted and resolved to the input URL', () => {
+    assert.equal(draft(minimalDraft()).ok, true);
+    const spec = withQuotes([{ source: 'notes', text: ' supports single sign-on ' }, { source: 'price', text: 'billed annually' }]);
+    assert.equal(draft(spec).ok, true);
+    assert.deepEqual(resolveExpectedQuotes(spec as never), [
+      { source: 'notes', url: 'https://docs.example.com/notes', text: 'supports single sign-on' },
+      { source: 'price', url: 'https://docs.example.com/price', text: 'billed annually' },
+    ]);
+    assert.equal(draft(withQuotes([])).ok, true, 'an empty list is allowed (and then needs no quote_in_source)');
+  });
+
+  it('rejects: not an array, entries that are not {source, text}, empty or blank text/source, unknown keys', () => {
+    assert.ok(has(errorsOf(withQuotes('x')), 'expected_quotes', 'type'));
+    assert.ok(has(errorsOf(withQuotes(['x'])), 'expected_quotes[0]', 'type'));
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: '' }])), 'expected_quotes[0].text', 'required'));
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: '   ' }])), 'expected_quotes[0].text', 'required'));
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes' }])), 'expected_quotes[0].text', 'required'));
+    assert.ok(has(errorsOf(withQuotes([{ text: 'x' }])), 'expected_quotes[0].source', 'required'));
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: 'x', ref: 'y' }])), 'expected_quotes[0].ref', 'unknown_field'));
+  });
+
+  it('rejects a source that names no source_url input (a quote input, a missing name, a differently kinded input), and an ambiguous one', () => {
+    assert.ok(has(errorsOf(withQuotes([{ source: 'ghost', text: 'x' }])), 'expected_quotes[0].source', 'unknown_source'));
+    const wrongKind = [{ name: 'notes', ref: 'https://docs.example.com/notes', kind: 'document' }];
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: 'x' }], ['quote_in_source'], wrongKind)), 'expected_quotes[0].source', 'unknown_source'));
+    const twice = [{ name: 'notes', ref: 'https://docs.example.com/a', kind: 'source_url' }, { name: 'notes', ref: 'https://docs.example.com/b', kind: 'source_url' }];
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: 'x' }], ['quote_in_source'], twice)), 'expected_quotes[0].source', 'ambiguous_source'));
+  });
+
+  it('bounds: text length, quotations per source and in total; duplicates (whitespace-insensitive, per source) are rejected', () => {
+    assert.equal(draft(withQuotes([{ source: 'notes', text: 'x'.repeat(MAX_EXPECTED_QUOTE_CHARS) }])).ok, true);
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: 'x'.repeat(MAX_EXPECTED_QUOTE_CHARS + 1) }])), 'expected_quotes[0].text', 'too_long'));
+    const many = (n: number, source = 'notes') => Array.from({ length: n }, (_, i) => ({ source, text: `sentence ${i}` }));
+    assert.equal(draft(withQuotes(many(MAX_EXPECTED_QUOTES_PER_SOURCE))).ok, true);
+    assert.ok(has(errorsOf(withQuotes(many(MAX_EXPECTED_QUOTES_PER_SOURCE + 1))), `expected_quotes[${MAX_EXPECTED_QUOTES_PER_SOURCE}].source`, 'too_many'));
+    const sources = Array.from({ length: MAX_EXPECTED_QUOTES / MAX_EXPECTED_QUOTES_PER_SOURCE + 1 }, (_, i) => ({ name: `s${i}`, ref: `https://docs.example.com/${i}`, kind: 'source_url' }));
+    const spread = sources.flatMap((s) => many(MAX_EXPECTED_QUOTES_PER_SOURCE, s.name));
+    assert.ok(spread.length > MAX_EXPECTED_QUOTES);
+    assert.ok(has(errorsOf(withQuotes(spread, ['quote_in_source'], sources)), 'expected_quotes', 'too_many'));
+    const dup = [{ source: 'notes', text: 'one  sentence' }, { source: 'price', text: 'one sentence' }, { source: 'notes', text: ' one sentence ' }];
+    const errors = errorsOf(withQuotes(dup));
+    assert.ok(has(errors, 'expected_quotes[2]', 'duplicate'));
+    assert.ok(!has(errors, 'expected_quotes[1]'), 'the same sentence for another source is fine');
+  });
+
+  it("needs 'quote_in_source' in validation.deterministic: otherwise nothing would verify the quotations", () => {
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: 'x' }], ['url_reachable'])), 'validation.deterministic', 'check_required'));
+    assert.ok(has(errorsOf(withQuotes([{ source: 'notes', text: 'x' }], [])), 'validation.deterministic', 'check_required'));
+  });
+
+  it('is part of the approved hash: adding, removing or changing a quotation changes the task subject hash (re-approval is required)', () => {
+    const task = { id: 't1', role_id: null, role_version: null, product_id: null } as never;
+    const hashOf = (spec: unknown) => taskSubjectHash(taskSubject(task, spec as never, 'pv-1'));
+    const base = withQuotes([{ source: 'notes', text: 'one' }]);
+    assert.notEqual(hashOf(base), hashOf(withQuotes([{ source: 'notes', text: 'two' }])));
+    assert.notEqual(hashOf(base), hashOf(withQuotes([{ source: 'notes', text: 'one' }, { source: 'price', text: 'one' }])));
+    assert.notEqual(hashOf(base), hashOf({ ...base, expected_quotes: undefined }));
+    assert.equal(hashOf(base), hashOf(withQuotes([{ source: 'notes', text: 'one' }])));
+    assert.notEqual(contentHash(base), contentHash(withQuotes([{ source: 'notes', text: 'two' }])));
+  });
 });
 
 test('a non-object is rejected at the root', () => {

@@ -1,6 +1,6 @@
 // evaluation 이 바깥을 만나는 포트. 실제 구현(네트워크, 모델 호출, 측정 데이터 조회)은 이 패키지에 없다:
 // 외부 접근은 도구 게이트웨이를 거쳐야 하므로(trust-boundaries) A5/A6 에서 연결하고, 시험은 가짜 구현을 쓴다.
-import type { EvidenceKind } from '@aot/domain';
+import type { EvidenceKind, TrustOrigin } from '@aot/domain';
 
 // ===== 출처 접근 =====
 
@@ -30,6 +30,8 @@ export interface SourceText {
   /** 읽지 못했으면 null */
   readonly text: string | null;
   readonly contentHash: string | null;
+  /** 이 본문의 신뢰 출처. `external_untrusted` 면 검증기는 본문을 데이터로만 읽고 그 안의 지시문을 따르지 않는다. 검증기가 출처 조회기로 읽은 본문은 항상 external_untrusted */
+  readonly trustOrigin: TrustOrigin;
 }
 
 /**

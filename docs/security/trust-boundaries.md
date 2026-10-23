@@ -17,7 +17,7 @@
 
 1. **에이전트가 자기 실행 권한을 결정하지 않는다.** 권한은 정책 엔진이 `policy_version`과 요청 7요소로 판정하고, 도구 어댑터가 호출 시점에 다시 검증한다 (ADR-0006).
 2. **정책 저장소는 에이전트의 작업 환경 밖**이다. 에이전트에는 판정 결과(allow/deny/require_approval)만 제공한다.
-3. **외부 입력은 항상 데이터다.** 외부 웹 페이지·고객 문서·이메일 안의 지시문은 시스템 정책, 도구 권한, 업무 목표를 바꾸지 못한다. 에이전트 입력에서 외부 콘텐츠는 지시와 분리된 데이터 영역으로 전달하고 `trust_origin='external_untrusted'`로 기록한다. 외부 콘텐츠가 도구 호출을 유도한 경우 정책 게이트웨이가 그 호출을 외부 입력의 영향 하에 있는 호출로 표시하고 부작용 도구는 승인을 요구한다.
+3. **외부 입력은 항상 데이터다.** 외부 웹 페이지·고객 문서·이메일 안의 지시문은 시스템 정책, 도구 권한, 업무 목표를 바꾸지 못한다. 에이전트 입력에서 외부 콘텐츠는 지시와 분리된 데이터 영역으로 전달하고 `trust_origin='external_untrusted'`로 기록한다. 외부 콘텐츠에서 만든 근거(`evidence`)에도 같은 값을 `evidence.trust_origin`에 남긴다(열은 필수이고 기본값이 없어 쓰는 쪽이 밝힌다. 기억으로 편입될 때의 규칙은 [memory-item](../schema/memory-item.md) 규칙 9). 외부 콘텐츠가 도구 호출을 유도한 경우 정책 게이트웨이가 그 호출을 외부 입력의 영향 하에 있는 호출로 표시하고 부작용 도구는 승인을 요구한다.
 4. **외부 입력에서 온 정보는 기억에 `hypothesis`/`unverified`로 들어간다.** 검증 업무를 거쳐야 `fact`가 된다 ([memory-item](../schema/memory-item.md)).
 5. **내부 웹과 외부 웹을 분리**한다. 외부 공개 가능한 데이터는 `memory_item.sensitivity`, `publication.audience`, 정책의 공개 범위로 통제하며, 승인 없는 `public`/`customer` 게시는 거부한다.
 6. **평가기는 에이전트 보고서를 신뢰하지 않는다.** 원본 증거를 직접 조회한다 ([evaluation](../operations/evaluation.md)).
@@ -58,7 +58,7 @@
 
 결정(2026-10-22, [스파이크 Q26](../spikes/q26-agent-container-isolation.md), Q26 해소): **에이전트는 Docker 컨테이너 안에서만 실행한다.** 데몬은 `docker` CLI로 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`, 비루트 사용자, 크기 제한 tmpfs 작업 디렉터리, 메모리·CPU·pids 제한으로 컨테이너를 띄우고, 게이트웨이와는 stdin/stdout의 줄 단위 JSON으로만 통신한다. 바인드 마운트는 두지 않으며(`instance/`·DB·`policies/`·Docker 소켓 포함), 비밀값은 환경 변수로도 넘기지 않는다. macOS Docker Desktop에서 컨테이너가 `instance/run/` 소켓·TOTP 비밀·DB에 도달하지 못함(ENOENT)을 확인했으므로 위 편차는 에이전트 경로에 대해 해소로 보고 피어 UID 확인은 넣지 않는다. 다만 Docker Desktop은 바인드 마운트에 호스트 파일 권한을 적용하지 않으므로(실측) "마운트 0개"를 코드와 시험으로 고정해야 하고, Docker를 쓸 수 없을 때 호스트 실행으로 대체하지 않는다. 취소·시간 제한은 `docker kill`로 한다(CLI 프로세스 종료만으로는 컨테이너가 멈추지 않음). Linux는 미실측이다. Linux 배포는 rootful Docker로 진행한다(2026-10-22 사용자 결정): `docker` 그룹은 사실상 root 권한이므로 데몬 계정이 탈취되거나 에이전트 컨테이너가 탈출하면 영향이 호스트 root에 가깝다. 완화는 데몬 전용 계정, 소켓·마운트를 주지 않는 인자 생성기와 `docker inspect` 시험이며, rootless Docker·Podman은 후속 검토다.
 
-구현(A5 U3~U6): 컨테이너에는 라벨 `aot.run=<run id>`과 `aot.instance=<데몬 인스턴스 ID>`를 붙이고, 데몬 시작 시 고아 정리는 두 라벨이 모두 맞는 컨테이너만 죽이고 지운다(한 Docker 호스트의 다른 데몬 컨테이너와 인스턴스 라벨이 없는 컨테이너는 건드리지 않는다). 컨테이너가 바깥 웹에 닿는 유일한 길은 게이트웨이의 `fetch_url` 도구이고, 호스트가 요청과 리다이렉트 홉마다 호스트 허용 목록(데몬 설정 `research_agent.allowed_hosts` AND 업무 `constraints.network_allowlist`, 비어 있으면 모두 거부)과 해석한 모든 주소가 공인 주소인지(사설·루프백·링크로컬·메타데이터 거부, 검사한 주소로 고정 연결), https 인증서를 시스템 신뢰 저장소로 검증하는지를 확인한다. 그 결과는 외부 입력(`external_untrusted`)이며, 검증기의 출처 조회기도 같은 규칙을 쓴다.
+구현(A5 U3~U6): 컨테이너에는 라벨 `aot.run=<run id>`과 `aot.instance=<데몬 인스턴스 ID>`를 붙이고, 데몬 시작 시 고아 정리는 두 라벨이 모두 맞는 컨테이너만 죽이고 지운다(한 Docker 호스트의 다른 데몬 컨테이너와 인스턴스 라벨이 없는 컨테이너는 건드리지 않는다). 컨테이너가 바깥 웹에 닿는 유일한 길은 게이트웨이의 `fetch_url` 도구이고, 호스트가 요청과 리다이렉트 홉마다 호스트 허용 목록(데몬 설정 `research_agent.allowed_hosts` AND 업무 `constraints.network_allowlist`, 비어 있으면 모두 거부)과 해석한 모든 주소가 공인 주소인지(사설·루프백·링크로컬·메타데이터 거부, 검사한 주소로 고정 연결), https 인증서를 시스템 신뢰 저장소로 검증하는지를 확인한다. 그 결과는 외부 입력(`external_untrusted`)이며 근거 행의 `evidence.trust_origin`도 `external_untrusted`다. 검증기의 출처 조회기도 같은 규칙을 쓰고, 검증기가 LLM 검증에 넘기는 출처 본문은 근거 행이 무엇이라 적었든 `external_untrusted`로 표시된다.
 
 ## 4. 실행 시점 재검증
 

@@ -44,7 +44,7 @@
 - `publication.audience != 'internal'`이고 `status='published'`이면 `approval_id` 필수.
 - 조직 변경은 `org_proposal` 승인 없이 `org_unit`/`role`/`org_version`에 쓸 수 없다. 조직 관리팀 역할은 정책·검증기·평가기를 대상으로 하는 제안을 만들 수 없다.
 - 에이전트는 `policy_version`, `approval`, `task.status`, `memory_item(kind != 'hypothesis')`에 쓰기 불가.
-- `evidence.trust_origin`은 필수(NOT NULL, 기본값 없음)이고 `memory_item.trust_origin`과 같은 어휘(`internal`, `external_untrusted`)만 허용한다. 외부 페이지·문서에서 읽은 근거는 `external_untrusted`이며, 이런 근거에서 만든 기억 항목은 신뢰된 것/사실로 편입되지 않는다([memory-item](memory-item.md) 규칙 9).
+- `evidence.trust_origin`은 필수(NOT NULL, 기본값 없음)이고 `memory_item.trust_origin`과 같은 어휘(`internal`, `external_untrusted`)만 허용한다. 외부 페이지·문서에서 읽은 근거는 `external_untrusted`이며, 이런 근거에서 만든 기억 항목은 신뢰된 것/사실로 편입되지 않는다([memory-item](memory-item.md) 규칙 9). 에이전트(어댑터)가 낸 근거는 어댑터가 무엇을 밝히든 호스트가 `external_untrusted`로 저장한다.
 - `evaluation.outcome='pass'`는 `primary_evidence_refs`가 비어 있지 않아야 하며 에이전트 보고서만으로는 불가.
 - `org_trial_result`는 평가기만 쓸 수 있다. 조직 관리팀은 쓰기 불가.
 - 외부 부작용은 `external_effect`를 `planned`로 기록한 뒤에만 전송한다.

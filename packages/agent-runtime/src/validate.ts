@@ -89,7 +89,7 @@ export function checkAdapterOutput(obj: PlainObject, path: string, out: IssueCol
       rejectUnknown(item, ['kind', 'ref', 'trust_origin', 'captured_at', 'content_hash'], base, out);
       if (!(EVIDENCE_KINDS as readonly unknown[]).includes(item['kind'])) out.add(`${base}.kind`, 'enum', `kind must be one of ${EVIDENCE_KINDS.join('|')}`);
       if (!isNonBlankString(item['ref'])) out.add(`${base}.ref`, 'required', 'ref must be a non-empty string');
-      // 기본값이 없다: 신뢰 출처를 밝히지 않은 근거는 거부한다 (빠진 값이 조용히 신뢰됨으로 읽히지 않게)
+      // 자기 신고의 어휘 검증: 신뢰 출처를 밝히지 않았거나 어휘 밖인 근거는 거부한다. 통과한 값도 저장되지 않는다 (호스트가 external_untrusted 로 쓴다, A5-U8)
       if (!(TRUST_ORIGINS as readonly unknown[]).includes(item['trust_origin'])) out.add(`${base}.trust_origin`, 'enum', `trust_origin is required and must be one of ${TRUST_ORIGINS.join('|')}`);
       if (!isClockIso(item['captured_at'])) out.add(`${base}.captured_at`, 'type', 'captured_at must be a UTC ISO 8601 timestamp with milliseconds');
       if ('content_hash' in item && !isNonBlankString(item['content_hash'])) out.add(`${base}.content_hash`, 'type', 'content_hash must be a non-empty string when given');

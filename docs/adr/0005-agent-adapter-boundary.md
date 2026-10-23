@@ -17,3 +17,6 @@
 
 ## Amendment (2026-10-19): 비용 진행 보고
 예산 초과 중단은 실행 중에 비용을 알아야 가능하다. 어댑터 계약은 종료 시 `cost`뿐 아니라 실행 중 `cost_progress` 이벤트(누적 비용, 단위)를 주기적으로 보고해야 하며, 데몬은 이를 `cost_entry`에 기록하고 예산 초과 시 취소 신호를 보낸다. 보고하지 못하는 어댑터는 도구 게이트웨이가 호출별 비용을 계량한다.
+
+## Amendment (2026-10-23): 근거의 신뢰 출처는 호스트가 정한다
+어댑터 계약의 `EvidenceItem.trust_origin`은 필수이고 어휘만 검증하지만 *자기 신고*라서 저장 값으로 믿지 않는다. 호스트는 에이전트 출력을 `evidence` 행으로 저장할 때 어댑터가 밝힌 값과 무관하게 항상 `external_untrusted`로 쓴다(`AgentRunHost` 포트와 task-engine `recordRunOutput`이 신뢰 출처를 받지 않는다). 어댑터 출력은 신뢰 경계 밖이므로 자기 신고에 기대지 않는다: 거부 방식은 정상 어댑터의 작업을 잃게 하고, 강등은 판단 지점을 늘리며, 항상 덮어쓰기는 fail-closed이면서 가장 단순해서 택했다. 에이전트 출력이 아닌 경로가 쓰는 `internal` 근거는 영향이 없다. [trust-boundaries §2-3](../security/trust-boundaries.md), [memory-item](../schema/memory-item.md) 규칙 9.

@@ -30,7 +30,7 @@ export interface FakeAdapterConfig {
   name?: string;
   /** 결과 본문. 기본 `{summary:'fake result'}` */
   result?: JsonObject;
-  /** 증거. 기본은 run_log 증거 한 건. `trust_origin` 을 주지 않으면 run_log 는 `internal`, 그 밖의 종류는 `external_untrusted`(외부에서 읽은 근거로 본다) */
+  /** 증거. 기본은 run_log 증거 한 건. `trust_origin` 은 어댑터의 자기 신고이고 주지 않으면 run_log 는 `internal`, 그 밖의 종류는 `external_untrusted`. 어느 쪽이든 호스트는 `external_untrusted` 로 저장한다(A5-U8). 악의적 어댑터 시험은 `internal` 을 주면 된다 */
   evidence?: readonly { kind: EvidenceKind; ref: string; trust_origin?: TrustOrigin }[];
   /** tool_calls 시나리오에서 요청할 도구 */
   toolCalls?: readonly FakeToolCall[];

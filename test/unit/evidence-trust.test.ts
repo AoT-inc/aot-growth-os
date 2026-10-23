@@ -78,6 +78,16 @@ test('current-fact lookup never returns an item that came from external_untruste
   assert.ok(currentFacts(db, { clock }).every((m) => m.trust_origin === 'internal'));
 });
 
+test('evidence that does not come from agent output (seed/internal writers) keeps the origin its writer gave; only the agent-output path is forced (A5-U8)', (t) => {
+  const { db, external, internal, add } = setup(t);
+  const origin = (id: string) => db.get('SELECT trust_origin FROM evidence WHERE id = ?', [id])?.['trust_origin'];
+  assert.equal(origin(internal), 'internal', 'a run_log the daemon itself wrote stays internal');
+  assert.equal(origin(external), 'external_untrusted');
+  // 내부 근거에서 온 사람의 사실은 여전히 신뢰된 기억이 될 수 있다 (강제는 에이전트 출력 경로에만 있다)
+  const fact = add(internal, { kind: 'fact', verification_status: 'verified', trust_origin: 'internal' });
+  assert.deepEqual([fact.kind, fact.trust_origin], ['fact', 'internal']);
+});
+
 test('an agent cannot launder external evidence into a fact either, and its external hypothesis stays untrusted', (t) => {
   const { agent, external, add } = setup(t);
   assert.throws(() => add(external, { created_by: agent, kind: 'fact', trust_origin: 'external_untrusted' }), rejects('external_must_be_hypothesis'));

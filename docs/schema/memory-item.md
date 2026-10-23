@@ -30,7 +30,7 @@ ADR-0008의 구체화. 기억은 대화 로그가 아니라 **출처, 신뢰 상
 7. `sensitivity`가 `confidential` 이상인 항목은 `publication`의 입력으로 사용할 때 정책 승인이 필요하다.
 8. `inconclusive` 평가 결과는 `lesson`/`strategy_record`의 성공 사례로 저장하지 않는다 ([evaluation](../operations/evaluation.md)). 구현(A4): `source_ref`가 `evaluation:<id>`이고 그 평가가 `inconclusive`이면 `createMemoryItem`이 `lesson`/`strategy_record` 저장을 거부한다(`inconclusive_not_learnable`). 성공·실패 어느 쪽 사례도 아니므로 "성공 사례만"이 아니라 두 종류 모두에서 막는다. 존재하지 않는 평가 참조도 거부한다.
 
-9. **외부 입력 유래 근거에서 온 항목은 신뢰된 것으로 편입되지 않는다.** `source_ref`가 `evidence:<id>`이면 그 근거의 `evidence.trust_origin`을 확인한다(존재하지 않는 근거 참조는 거부). 근거가 `external_untrusted`이면 항목도 `external_untrusted`다: `trust_origin`을 생략하면 근거의 값을 물려받고, `internal`로 적으면 거부한다(`untrusted_evidence_origin`). 그러면 규칙 3이 `hypothesis`/`unverified`로만 저장하게 하므로 외부 근거는 기억으로 들어와도 현재 사실이 되지 못한다. 근거의 신뢰 출처는 어댑터가 밝힌 값을 그대로 저장하며(조사 에이전트의 외부 페이지 근거는 항상 `external_untrusted`), 검증(`evidence.verified`)은 신뢰 출처를 바꾸지 않는다.
+9. **외부 입력 유래 근거에서 온 항목은 신뢰된 것으로 편입되지 않는다.** `source_ref`가 `evidence:<id>`이면 그 근거의 `evidence.trust_origin`을 확인한다(존재하지 않는 근거 참조는 거부). 근거가 `external_untrusted`이면 항목도 `external_untrusted`다: `trust_origin`을 생략하면 근거의 값을 물려받고, `internal`로 적으면 거부한다(`untrusted_evidence_origin`). 그러면 규칙 3이 `hypothesis`/`unverified`로만 저장하게 하므로 외부 근거는 기억으로 들어와도 현재 사실이 되지 못한다. **에이전트가 낸 근거는 항상 `external_untrusted`다**: 어댑터 계약의 `EvidenceItem.trust_origin`은 참고용 자기 신고(어휘만 검증)이고, 호스트가 에이전트 출력을 `evidence` 행으로 저장할 때 어댑터가 `internal`이라 밝혀도 `external_untrusted`로 쓴다(A5-U8). 그래서 에이전트 경로의 근거로는 규칙 9의 `internal` 편입 길이 열리지 않는다. `internal` 근거는 에이전트 출력이 아닌 경로(시드, 사람·데몬 내부가 쓰는 행)에서만 생긴다. 검증(`evidence.verified`)은 신뢰 출처를 바꾸지 않는다.
 
 ## 필수 테스트
 
@@ -38,5 +38,5 @@ ADR-0008의 구체화. 기억은 대화 로그가 아니라 **출처, 신뢰 상
 - 대체된 항목이 삭제되지 않고 과거 관측으로 조회된다.
 - 에이전트가 `fact`를 직접 생성할 수 없다.
 - 외부 입력 유래 항목이 `unverified`/`external_untrusted`로 저장된다.
-- `external_untrusted` 근거(`evidence:<id>`)에서 온 항목은 `internal`/`fact`/`verified`로 저장되지 않고 현재 사실 조회에 나오지 않는다. `evidence.trust_origin`은 NOT NULL·기본값 없음·어휘 CHECK다.
+- `external_untrusted` 근거(`evidence:<id>`)에서 온 항목은 `internal`/`fact`/`verified`로 저장되지 않고 현재 사실 조회에 나오지 않는다. `evidence.trust_origin`은 NOT NULL·기본값 없음·어휘 CHECK다. 어댑터가 근거를 `internal`로 밝혀도 저장 값은 `external_untrusted`이고 그 근거로 `internal` 기억을 만들 수 없다.
 - `inconclusive` 평가를 근거로 한 `lesson`/`strategy_record`가 저장되지 않는다.

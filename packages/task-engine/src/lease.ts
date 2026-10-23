@@ -254,12 +254,13 @@ export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOpti
   });
 }
 
-/** 증거 한 줄. 어댑터가 낸 출력을 `evidence` 행으로 옮길 때 쓴다 (verified 는 0, 검증기가 올린다) */
+/**
+ * 증거 한 줄. 어댑터가 낸 출력을 `evidence` 행으로 옮길 때 쓴다 (verified 는 0, 검증기가 올린다).
+ * 신뢰 출처(`trust_origin`) 필드가 없다: 어댑터 출력은 신뢰 경계 밖이라 자기 신고를 받지 않고, `recordRunOutput` 이 항상 `external_untrusted` 로 쓴다.
+ */
 export interface RunEvidence {
   kind: EvidenceRow['kind'];
   ref: string;
-  /** 근거의 신뢰 출처. 기본값 없이 호출자가 밝힌다 */
-  trustOrigin: EvidenceRow['trust_origin'];
   capturedAt: string;
   contentHash?: string;
 }
@@ -272,14 +273,18 @@ export interface RunOutputRecord {
 /**
  * 실행 출력(증거 행과 `task_run.run_log_ref`)을 기록한다. 펜싱을 확인한 같은 쓰기 트랜잭션에서만 쓰므로
  * lease 를 잃은 run 은 아무것도 남기지 못한다(LeaseLostError).
+ *
+ * 호스트 강제 (A5-U8): 이 함수가 에이전트 출력 → `evidence` 행의 유일한 저장 경로이고, `trust_origin` 을 인자로 받지 않는다.
+ * 어댑터가 근거의 신뢰 출처를 무엇이라 밝혔든(계약의 `EvidenceItem.trust_origin` 은 어휘 검증만 받는 참고용 자기 신고다) 항상
+ * `external_untrusted` 로 쓴다 — 어댑터 출력은 신뢰 경계 밖이므로 자기 신고에 기대지 않는다. 호출자가 객체에 `trustOrigin` 을 몰래 실어도 SQL 에 닿지 않는다.
  */
 export function recordRunOutput(db: Db, clock: Clock, lease: Lease, record: RunOutputRecord, newId: () => string = () => `ev-${randomUUID()}`): void {
   db.writeTx((tx) => {
     assertLeaseHeld(tx, lease, clock.nowIso(), 'record output');
     for (const item of record.evidence) {
       tx.run(
-        'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [newId(), lease.taskId, lease.runId, item.kind, item.ref, item.contentHash ?? null, item.trustOrigin, item.capturedAt],
+        "INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, 'external_untrusted', ?)",
+        [newId(), lease.taskId, lease.runId, item.kind, item.ref, item.contentHash ?? null, item.capturedAt],
       );
     }
     if (record.runLogRef !== null) tx.run('UPDATE task_run SET run_log_ref = ? WHERE id = ?', [record.runLogRef, lease.runId]);

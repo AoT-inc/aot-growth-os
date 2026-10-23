@@ -56,7 +56,11 @@ export interface CostProgressEvent {
 export interface EvidenceItem {
   kind: EvidenceKind;
   ref: string;
-  /** 근거의 신뢰 출처 (필수, 기본값 없음). 외부 페이지·문서에서 읽은 근거는 `external_untrusted` (trust-boundaries §2-3) */
+  /**
+   * 근거의 신뢰 출처에 대한 어댑터의 자기 신고 (필수, 기본값 없음, 어휘만 검증한다). 참고용이다: 저장되는 값은 호스트가 정하며
+   * 에이전트가 낸 근거는 이 값과 상관없이 항상 `external_untrusted` 로 기록된다 (trust-boundaries §2-3, A5-U8).
+   * 외부 페이지·문서에서 읽은 근거는 정직하게 `external_untrusted` 라고 적는 것이 맞다
+   */
   trust_origin: TrustOrigin;
   /** Clock.nowIso() 형식 (UTC ISO 8601, 밀리초, `Z`) */
   captured_at: string;

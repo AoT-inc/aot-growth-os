@@ -370,6 +370,15 @@ describe('ending without a kill', () => {
     }
   });
 
+  it('the origin an adapter claims for its evidence never reaches the host port (the host decides the stored trust origin, A5-U8)', async () => {
+    const e = env();
+    const report = await e.start(createFakeAgentAdapter({ clock: e.clock, evidence: [{ kind: 'run_log', ref: 'run-log:x', trust_origin: 'internal' }, { kind: 'source_url', ref: 'https://docs.example.com/a', trust_origin: 'external_untrusted' }] }));
+    assert.equal(report.end.kind, 'submitted');
+    const items = e.host.outputs[0]!.evidence;
+    assert.equal(items.length, 2);
+    assert.ok(items.every((item) => !('trustOrigin' in item) && !('trust_origin' in item)), 'the port carries no trust origin');
+  });
+
   it('a successful run records the adapter evidence and the merged, time-ordered run log; the run log reference comes from the store', async () => {
     const e = env();
     const saved: { runId: string; entries: readonly RunLogEntry[] }[] = [];

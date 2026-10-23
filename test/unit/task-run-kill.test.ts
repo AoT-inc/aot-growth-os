@@ -75,20 +75,21 @@ test('killRun is fenced: a run that lost its lease cannot be killed (nor can any
   assert.equal(db.get('SELECT run_log_ref FROM task_run WHERE id = ?', [lease.runId])?.['run_log_ref'], null);
 });
 
-test('recordRunOutput stores evidence rows (unverified) and run_log_ref on the run, in one transaction', (t) => {
+test('recordRunOutput stores evidence rows (unverified) and run_log_ref on the run, in one transaction; the trust origin is always external_untrusted (host-enforced, A5-U8)', (t) => {
   const { db, clock, claim } = setup(t);
   const taskId = queuedTask(db, clock, {}, 'task-output');
   const lease = claim(taskId);
   let n = 0;
   recordRunOutput(db, clock, lease, {
     evidence: [
-      { kind: 'source_url', ref: 'https://docs.example.com/a', trustOrigin: 'external_untrusted', capturedAt: clock.nowIso(), contentHash: 'sha256:abc' },
-      { kind: 'run_log', ref: `run-log:${lease.runId}`, trustOrigin: 'internal', capturedAt: clock.nowIso() },
+      { kind: 'source_url', ref: 'https://docs.example.com/a', capturedAt: clock.nowIso(), contentHash: 'sha256:abc' },
+      // 호출자가 (형식을 어기고) trustOrigin 을 실어 보내도 저장에 닿지 않는다: 이 함수는 신뢰 출처를 인자로 받지 않는다
+      { kind: 'run_log', ref: `run-log:${lease.runId}`, capturedAt: clock.nowIso(), ...{ trustOrigin: 'internal' } },
     ],
     runLogRef: `run-log:${lease.runId}`,
   }, () => `ev-test-${(n += 1)}`);
   const rows = db.all<{ id: string; kind: string; ref: string; content_hash: string | null; trust_origin: string; verified: number; task_run_id: string }>('SELECT * FROM evidence WHERE task_id = ? ORDER BY id', [taskId]);
-  assert.deepEqual(rows.map((r) => [r.id, r.kind, r.content_hash, r.trust_origin, Number(r.verified), r.task_run_id]), [['ev-test-1', 'source_url', 'sha256:abc', 'external_untrusted', 0, lease.runId], ['ev-test-2', 'run_log', null, 'internal', 0, lease.runId]]);
+  assert.deepEqual(rows.map((r) => [r.id, r.kind, r.content_hash, r.trust_origin, Number(r.verified), r.task_run_id]), [['ev-test-1', 'source_url', 'sha256:abc', 'external_untrusted', 0, lease.runId], ['ev-test-2', 'run_log', null, 'external_untrusted', 0, lease.runId]]);
   assert.equal(db.get('SELECT run_log_ref FROM task_run WHERE id = ?', [lease.runId])?.['run_log_ref'], `run-log:${lease.runId}`);
 });
 

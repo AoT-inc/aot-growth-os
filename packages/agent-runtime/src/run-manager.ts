@@ -270,7 +270,7 @@ export async function runAgentTask(options: RunAgentTaskOptions): Promise<AgentT
   }
   if (end.kind !== 'cancelled') {
     const evidence: AgentEvidenceInput[] = keep && output !== null
-      ? output.evidence.map((item) => ({ kind: item.kind, ref: item.ref, trustOrigin: item.trust_origin, capturedAt: item.captured_at, ...(item.content_hash === undefined ? {} : { contentHash: item.content_hash }) }))
+      ? output.evidence.map((item) => ({ kind: item.kind, ref: item.ref, capturedAt: item.captured_at, ...(item.content_hash === undefined ? {} : { contentHash: item.content_hash }) }))
       : [];
     try {
       host.recordOutput({ evidence, runLogRef });

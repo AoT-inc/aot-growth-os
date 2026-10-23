@@ -296,7 +296,7 @@ CREATE TABLE evidence (
   kind         TEXT NOT NULL CHECK (kind IN ('source_url','document','test_result','run_log','measurement','approval','other')),
   ref          TEXT NOT NULL,                 -- URL / 파일 해시 / 로그 위치
   content_hash TEXT,
-  trust_origin TEXT NOT NULL CHECK (trust_origin IN ('internal','external_untrusted')),  -- 근거의 신뢰 출처 (기본값 없음: 쓰는 쪽이 밝힌다). 외부 페이지·문서에서 온 근거는 external_untrusted
+  trust_origin TEXT NOT NULL CHECK (trust_origin IN ('internal','external_untrusted')),  -- 근거의 신뢰 출처 (기본값 없음: 쓰는 쪽이 밝힌다). 외부 페이지·문서에서 온 근거는 external_untrusted. 에이전트 출력 경로는 호스트가 항상 external_untrusted 로 쓴다
   captured_at  TEXT NOT NULL,
   verified     INTEGER NOT NULL DEFAULT 0,    -- 결정론적 검사 통과 여부
   verification_note TEXT

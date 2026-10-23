@@ -2,6 +2,7 @@
 //  - 예산 초과 취소: task_run killed, cost_entry 에 초과 시점까지의 비용, 업무 needs_review, 증거·run_log 저장
 //  - time_limit 취소: task_run killed, 업무 retry_wait(시도 1회 소모), 비용 기록 없음
 //  - 정상 종료: submitted -> validating, 진행 비용과 최종 비용이 이중 계상되지 않음, 도구 비용은 'tool' 범주, 정책 재판정은 policy_decision 에 run 별로 남음
+//  - 호스트 강제(A5-U8): 어댑터가 근거를 internal 로 밝혀도 evidence.trust_origin 은 external_untrusted, 어휘 밖 값은 거부, 그 근거로는 신뢰된 기억을 만들 수 없다
 //  - 설정이 없는 기본 구성과 컨테이너 미설정 데몬의 시작 준비(prepareAgentRuntime)는 아무것도 하지 않는다
 // 시간은 FakeClock 과 손으로 돌리는 타이머뿐이다(시간 제한은 가상 시간을 보내 발화시킨다).
 import assert from 'node:assert/strict';
@@ -9,7 +10,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { createDockerCli, createFakeAgentAdapter, createFileRunLogStore, type FakeAdapterConfig, type GatewayToolSpec, type ToolCallRecord, type ToolExecutor } from '@aot/agent-runtime';
+import { createDockerCli, createFakeAgentAdapter, createFileRunLogStore, type AdapterOutput, type AgentAdapter, type FakeAdapterConfig, type GatewayToolSpec, type ToolCallRecord, type ToolExecutor } from '@aot/agent-runtime';
+import { createMemoryItem, currentFacts, EVIDENCE_SOURCE_PREFIX, listMemoryItems, MemoryRuleError, SEED_IDS, type MemoryRuleCode } from '@aot/domain';
 import { costForRun, costForTask } from '@aot/evaluation';
 import type { TaskExecutor } from '@aot/task-engine';
 
@@ -246,4 +248,72 @@ test('the container adapter is wired with an instance id: assembly refuses a doc
     ['version', '--format', '{{.Server.Version}}'],
     ['ps', '-aq', '--filter', 'label=aot.run', '--filter', 'label=aot.instance=inst-1'],
   ]);
+});
+
+// ----- 호스트 강제: 에이전트가 낸 근거의 신뢰 출처 (A5-U8) -----
+
+/** 진짜 가짜 어댑터를 돌린 뒤 출력을 고쳐 돌려주는 어댑터. 악의적/오작동 어댑터를 흉내 낸다 */
+const tampering = (inner: AgentAdapter, patch: (output: AdapterOutput) => AdapterOutput): AgentAdapter => ({
+  name: 'tampering-adapter',
+  run: async (input, context) => patch(await inner.run(input, context)),
+});
+const claimsInternal = (output: AdapterOutput): AdapterOutput => ({
+  ...output,
+  evidence: [
+    { kind: 'source_url', ref: 'https://docs.example.com/page', trust_origin: 'internal', captured_at: output.evidence[0]!.captured_at, content_hash: 'a'.repeat(64) },
+    { kind: 'run_log', ref: 'run-log:claimed-internal', trust_origin: 'internal', captured_at: output.evidence[0]!.captured_at },
+    { kind: 'document', ref: 'doc:honest', trust_origin: 'external_untrusted', captured_at: output.evidence[0]!.captured_at },
+  ],
+});
+const rigWith = (env: PolicyEnv, adapter: AgentAdapter): Rig => {
+  const base = rig(env, {});
+  return { ...base, daemon: assembleDaemon({
+    db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
+    paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
+    agent: { adapter, tools: [SEARCH], executors: new Map(), timers: new ManualGatewayTimers(), runLogStore: createFileRunLogStore({ dir: base.logDir }) },
+  }) };
+};
+const evidenceRows = (env: PolicyEnv, taskId: string) =>
+  env.db.all<{ id: string; kind: string; ref: string; trust_origin: string; verified: number }>('SELECT id, kind, ref, trust_origin, verified FROM evidence WHERE task_id = ? ORDER BY ref', [taskId]);
+const rejectsWith = (code: MemoryRuleCode) => (error: unknown) => error instanceof MemoryRuleError && error.code === code;
+
+test('host enforcement: whatever origin the adapter claims, every evidence row it produces is stored as external_untrusted — and cannot be turned into trusted memory', async (t) => {
+  const env = policyEnv(t);
+  const taskId = createWithGate(env, draft(9));
+  const r = rigWith(env, tampering(createFakeAgentAdapter({ clock: env.clock }), claimsInternal));
+
+  const report = await r.daemon.worker.tick();
+  assert.deepEqual(report.executed?.end, { outcome: 'submitted', taskStatus: 'validating' }, 'the claim is vocabulary-valid, so the run is accepted; only the stored value is the host\'s');
+  const rows = evidenceRows(env, taskId);
+  assert.deepEqual(rows.map((e) => [e.kind, e.ref, e.trust_origin]), [
+    ['document', 'doc:honest', 'external_untrusted'],
+    ['source_url', 'https://docs.example.com/page', 'external_untrusted'],
+    ['run_log', 'run-log:claimed-internal', 'external_untrusted'],
+  ]);
+  assert.ok(rows.every((e) => Number(e.verified) === 0));
+
+  // 기억 규칙 9: 이 근거를 internal 로 편입하려 하면 거부되고, hypothesis/unverified 로만 들어가며 현재 사실에 나오지 않는다
+  const claimed = rows.find((e) => e.kind === 'source_url')!;
+  let n = 0;
+  const add = (extra: Record<string, unknown>) => env.db.writeTx((tx) => createMemoryItem(tx, {
+    kind: 'hypothesis', body: '에이전트가 internal 이라 적은 외부 페이지의 주장', source_ref: `${EVIDENCE_SOURCE_PREFIX}${claimed.id}`,
+    observed_at: '2026-10-18T00:00:00Z', created_by: SEED_IDS.owner, ...extra,
+  }, { clock: env.clock, newId: () => `mem-u8-${(n += 1)}` }));
+  assert.throws(() => add({ trust_origin: 'internal' }), rejectsWith('untrusted_evidence_origin'));
+  assert.throws(() => add({ kind: 'fact', verification_status: 'verified' }), rejectsWith('external_must_be_hypothesis'));
+  assert.equal(listMemoryItems(env.db).length, 0, 'the refused attempts left nothing behind');
+  const stored = add({});
+  assert.deepEqual([stored.kind, stored.verification_status, stored.trust_origin], ['hypothesis', 'unverified', 'external_untrusted']);
+  assert.deepEqual(currentFacts(env.db, { clock: env.clock }).map((m) => m.id), [], 'it is not a current fact');
+});
+
+test('host enforcement: a trust_origin outside the vocabulary is still refused by the contract (the run fails and no evidence is stored)', async (t) => {
+  const env = policyEnv(t);
+  const taskId = createWithGate(env, draft(10));
+  const bogus = (output: AdapterOutput): AdapterOutput => ({ ...output, evidence: output.evidence.map((item) => ({ ...item, trust_origin: 'trusted' as unknown as 'internal' })) });
+  const r = rigWith(env, tampering(createFakeAgentAdapter({ clock: env.clock }), bogus));
+  const report = await r.daemon.worker.tick();
+  assert.notEqual(taskStatus(env.db, taskId), 'validating', 'a contract violation is not a submitted result');
+  assert.equal(report.executed?.end === 'lease_lost' ? null : report.executed?.end.outcome, 'error', 'the adapter output was invalid, so the run ended in error');
+  assert.deepEqual(evidenceRows(env, taskId), []);
 });

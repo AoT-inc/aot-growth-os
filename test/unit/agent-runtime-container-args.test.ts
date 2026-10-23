@@ -10,7 +10,7 @@ const IMAGE = `sha256:${'ab12'.repeat(16)}`;
 
 function config(overrides: Record<string, unknown> = {}): ContainerConfig {
   return {
-    image: IMAGE, name: 'aot-run-run-1', runId: 'run-1',
+    image: IMAGE, name: 'aot-run-run-1', runId: 'run-1', instance: 'inst-1',
     limits: { memoryMiB: 128, cpus: 0.5, pidsLimit: 32, tmpfsMiB: 16 },
     ...overrides,
   } as ContainerConfig;
@@ -44,6 +44,8 @@ describe('buildContainerArgs: the fixed template', () => {
     assert.equal(valueOf(args, '--log-driver'), 'none');
     assert.equal(valueOf(args, '--user'), `${DEFAULT_CONTAINER_USER.uid}:${DEFAULT_CONTAINER_USER.gid}`);
     assert.equal(valueOf(args, '--label'), 'aot.run=run-1');
+    const labels = args.flatMap((arg, at) => (arg === '--label' ? [args[at + 1]] : []));
+    assert.deepEqual(labels, ['aot.run=run-1', 'aot.instance=inst-1'], 'both the run label and the instance label are set (orphan cleanup selects by both)');
     assert.equal(valueOf(args, '--name'), 'aot-run-run-1');
     assert.equal(valueOf(args, '--pull'), 'never', 'never reaches for a registry');
   });
@@ -110,6 +112,12 @@ describe('buildContainerArgs: forbidden configuration', () => {
     for (const name of ['', 'a b', 'a/b', 'a:b', 'a=b', '-leading-dash', '.dot', 'name;rm', 'name\n', 'ü', 'a,b', 'x'.repeat(101)]) rejects({ name }, 'invalid_name');
     for (const runId of ['', 'a b', 'run=1', 'run,2', 'a/b', 'run\n1', '-x']) rejects({ runId }, 'invalid_label');
     assert.ok(buildContainerArgs(config({ name: 'A.b_c-1', runId: 'Run_1.a-b' })).length > 0);
+  });
+
+  it('requires a safe instance id (it becomes the aot.instance label that orphan cleanup filters on)', () => {
+    for (const instance of ['', 'a b', 'i=1', 'i,2', 'a/b', 'i\n', '-x', '.x', 'x'.repeat(64), 'ü', undefined, null, 5]) rejects({ instance }, 'invalid_instance');
+    assert.ok(buildContainerArgs(config({ instance: 'I.n_s-1' })).includes('aot.instance=I.n_s-1'));
+    assert.ok(buildContainerArgs(config({ instance: 'x'.repeat(63) })).length > 0);
   });
 
   it('rejects limits outside the allowed range, including ones that would turn limits off', () => {

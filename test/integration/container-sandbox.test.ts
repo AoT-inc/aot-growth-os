@@ -20,7 +20,7 @@ import {
 
 import { contractInput } from '../support/adapter-contract.ts';
 import {
-  dockerOut, inspectContainer, labeledContainers, makeFakeInstance, prepareSandbox, uniqueRunId, waitUntilNoContainers, type SandboxEnvironment,
+  dockerOut, inspectContainer, labeledContainers, makeFakeInstance, prepareSandbox, TEST_INSTANCE, uniqueRunId, waitUntilNoContainers, type SandboxEnvironment,
 } from '../support/container-sandbox.ts';
 
 const prepared = await prepareSandbox();
@@ -40,7 +40,7 @@ function newRunId(): string {
 
 function makeRunner(agentArgs: readonly string[], overrides: { maxOutputBytes?: number } = {}) {
   return createContainerRunner({
-    docker: sandbox.docker, image: sandbox.imageId, limits: LIMITS, namePrefix: 'aot-test', clock: systemClock, agentArgs, ...overrides,
+    docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, limits: LIMITS, namePrefix: 'aot-test', clock: systemClock, agentArgs, ...overrides,
   });
 }
 
@@ -102,7 +102,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
   // 시험이 끝날 때마다 이 시험이 만든 컨테이너를 라벨로 정리한다(통과해도 실패해도)
   afterEach(async () => {
     for (const id of usedRunIds.splice(0)) {
-      await cleanupOrphanContainers({ docker: sandbox.docker, label: `aot.run=${id}` });
+      await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE, runId: id });
     }
   });
   after(async () => {
@@ -253,13 +253,59 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
       const state = (await inspectContainer(sandbox.docker, survivors[0]!))['State'] as { Running: boolean };
       assert.equal(state.Running, true);
 
-      const cleaned = await cleanupOrphanContainers({ docker: sandbox.docker, label: `aot.run=${runId}` });
+      const cleaned = await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE, runId });
       assert.equal(cleaned.found.length, 1);
       assert.deepEqual(cleaned.failures, []);
       assert.deepEqual(await waitUntilNoContainers(sandbox.docker, `aot.run=${runId}`), []);
     } finally {
       if (worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL');
     }
+  });
+
+  it('(i) orphan cleanup is scoped to one daemon instance: another instance\'s running container and a container without an instance label survive; only this instance\'s container is removed', async () => {
+    const [instanceA, instanceB] = ['aot-test-a', 'aot-test-b'];
+    const [runA, runB, runLegacy] = [newRunId(), newRunId(), newRunId()];
+    const runnerFor = (instance: string) => createContainerRunner({ docker: sandbox.docker, image: sandbox.imageId, instance, limits: LIMITS, namePrefix: 'aot-test', clock: systemClock, agentArgs: ['hostile'] });
+    const controllers = { a: new AbortController(), b: new AbortController() };
+    const hang = (controller: AbortController): AdapterContext => ({ gateway: { call: () => new Promise(() => undefined) }, signal: controller.signal, onCostProgress: () => undefined });
+    const runningA = runnerFor(instanceA).run(sandboxInput(runA), hang(controllers.a));
+    const runningB = runnerFor(instanceB).run(sandboxInput(runB), hang(controllers.b));
+    // 라벨만 같은 "옛" 컨테이너: 인스턴스 라벨이 없다(이 변경 전에 만들어졌거나 다른 도구가 만든 것). aot.run 하나로 고르면 이것까지 지워진다
+    await dockerOut(sandbox.docker, ['create', '--name', `aot-test-legacy-${runLegacy}`, '--label', `aot.run=${runLegacy}`, sandbox.imageId]);
+    try {
+      for (const id of [runA, runB]) {
+        const deadline = Date.now() + 20_000;
+        while ((await labeledContainers(sandbox.docker, `aot.run=${id}`)).length === 0) {
+          if (Date.now() > deadline) assert.fail(`the container of ${id} never appeared`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      // 두 컨테이너의 라벨 확인
+      const labelsOf = async (id: string) => ((await inspectContainer(sandbox.docker, (await labeledContainers(sandbox.docker, `aot.run=${id}`))[0]!))['Config'] as { Labels: Record<string, string> }).Labels;
+      assert.equal((await labelsOf(runA))['aot.instance'], instanceA);
+      assert.equal((await labelsOf(runB))['aot.instance'], instanceB);
+
+      // 아무 컨테이너도 없는 인스턴스의 정리는 아무것도 지우지 않는다
+      assert.deepEqual(await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE }), { found: [], removed: 0, failures: [] });
+      assert.equal((await labeledContainers(sandbox.docker, 'aot.run')).length, 3, 'all three are still there');
+
+      const cleaned = await cleanupOrphanContainers({ docker: sandbox.docker, instance: instanceA });
+      assert.equal(cleaned.found.length, 1);
+      assert.deepEqual(cleaned.failures, []);
+      assert.deepEqual(await waitUntilNoContainers(sandbox.docker, `aot.run=${runA}`), [], 'this instance\'s container is gone');
+      const survivorB = await labeledContainers(sandbox.docker, `aot.run=${runB}`);
+      assert.equal(survivorB.length, 1, 'the other instance\'s container survives');
+      assert.equal(((await inspectContainer(sandbox.docker, survivorB[0]!))['State'] as { Running: boolean }).Running, true, 'and it is still running');
+      assert.equal((await labeledContainers(sandbox.docker, `aot.run=${runLegacy}`)).length, 1, 'a container without an instance label is not touched either');
+    } finally {
+      controllers.a.abort(new Error('test over'));
+      controllers.b.abort(new Error('test over'));
+      await Promise.allSettled([runningA, runningB]);
+      await cleanupOrphanContainers({ docker: sandbox.docker, instance: instanceA });
+      await cleanupOrphanContainers({ docker: sandbox.docker, instance: instanceB });
+      await dockerOut(sandbox.docker, ['rm', '-f', `aot-test-legacy-${runLegacy}`]).catch(() => undefined);
+    }
+    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
   });
 
   it('(h) output that is not a frame, or a flood without newlines, makes the runner kill the container at once', async () => {
@@ -280,7 +326,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
   it('refuses an image given by tag even though the test image has one', async () => {
     const tagged = await dockerOut(sandbox.docker, ['images', '--format', '{{.Repository}}:{{.Tag}}']);
     assert.ok(tagged.includes('aot-test-container-agent:'), 'the test image has a tag, which the runner still refuses to use');
-    assert.throws(() => createContainerRunner({ docker: sandbox.docker, image: 'aot-test-container-agent:latest', limits: LIMITS, clock: systemClock }), /image_not_id/);
+    assert.throws(() => createContainerRunner({ docker: sandbox.docker, image: 'aot-test-container-agent:latest', instance: TEST_INSTANCE, limits: LIMITS, clock: systemClock }), /image_not_id/);
   });
 });
 
@@ -289,7 +335,7 @@ describe('container sandbox without docker (real process port)', () => {
   it('a missing docker executable is an explicit error for the availability check and for a run, with nothing executed', async () => {
     const missing = createDockerCli({ path: join(tmpdir(), 'aot-no-such-dir', 'docker') });
     await assert.rejects(checkDockerAvailable(missing), (e: unknown) => e instanceof DockerUnavailableError && e.code === 'docker_not_found');
-    const runner = createContainerRunner({ docker: missing, image: `sha256:${'a'.repeat(64)}`, limits: LIMITS, clock: systemClock, agentArgs: ['roundtrip'] });
+    const runner = createContainerRunner({ docker: missing, image: `sha256:${'a'.repeat(64)}`, instance: TEST_INSTANCE, limits: LIMITS, clock: systemClock, agentArgs: ['roundtrip'] });
     const input = sandboxInput('no-docker-1');
     const gw = makeGateway(input);
     const report = await runner.run(input, gw.context);

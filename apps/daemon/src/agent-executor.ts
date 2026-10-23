@@ -7,7 +7,7 @@ import type { AgentCostSource, AgentCostTotals, AgentRunHost, Clock, Db, ToolCal
 import { reportCostProgress } from '@aot/evaluation';
 import {
   createToolGateway, toolCallConstraintsOf, runAgentTask,
-  type AdapterInput, type AgentAdapter, type GatewayTimers, type GatewayToolSpec, type RunLogStore, type ToolExecutor,
+  type AdapterInput, type AgentAdapter, type GatewayTimers, type GatewayToolSpec, type RunLogStore, type ToolCallRecorder, type ToolExecutor,
 } from '@aot/agent-runtime';
 import { subjectOf } from '@aot/policy';
 import { RunKilledError, type RunContext, type TaskExecutor } from '@aot/task-engine';
@@ -26,6 +26,11 @@ export interface AgentOptions {
   /** 도구 호출·시간 제한·종료 유예에 쓰는 타이머. 시험은 손으로 돌리는 타이머를 넣는다 */
   timers?: GatewayTimers;
   runLogStore?: RunLogStore;
+  /**
+   * 게이트웨이 호출 기록(`ToolCallRecord`)을 구조화된 채로 받는 훅. 모든 run 의 모든 호출(허용·거부·타임아웃·오류)에 대해 호출 직후, 응답 전에 불린다(기록에 `run_id`).
+   * run_log 파일(문자열 메시지)과 별개이며, 던져도 에이전트 응답에는 영향이 없다. 시험과 감사 연결이 메시지 문자열을 파싱하지 않고 호출 기록을 읽는 길이다.
+   */
+  recorder?: ToolCallRecorder;
   /** 명세에 `time_limit` 이 없을 때의 시간 제한(ms). 기본 30분 */
   defaultTimeLimitMs?: number;
   terminationGraceMs?: number;
@@ -76,6 +81,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
           runId: ctx.lease.runId, taskId: ctx.taskId, subject: subjectOf(spec), tools: offered, executors: agent.executors ?? new Map(),
           policy: deps.toolCallPolicy, clock: deps.clock, constraints: toolCallConstraintsOf(input), toolTimeoutMs: agent.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
           signal: hooks.signal, onCostProgress: hooks.onCostProgress, ...(agent.timers === undefined ? {} : { timers: agent.timers }),
+          ...(agent.recorder === undefined ? {} : { recorder: agent.recorder }),
         }),
         host: createRunHost(deps, ctx),
         clock: deps.clock,

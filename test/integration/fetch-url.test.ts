@@ -3,6 +3,7 @@
 //  - 리다이렉트 매 홉 재검사, 해석한 주소로 고정된 연결, 크기 상한에서 연결 끊기, 허용 content-type, 타임아웃·취소 때 소켓 닫기, 요청 헤더.
 //  - 실제 게이트웨이(createToolGateway) 안에서: 정책 거부 시 서버에 닿지 않음, 외부 입력 영향 표시, 비용 계량, 타임아웃·취소, 비밀값 가리기, 큰 결과 자르기.
 //  - 검증기 포트(SourceFetcher)로 쓸 때의 규칙.
+//  - https: 시험 중에 만든 자체서명 인증서(test/support/test-cert.ts, 저장소에 키 파일 없음)를 신뢰 CA 로 주입해 정상 경로를 보고, 만료·호스트 이름 불일치·미신뢰 인증서는 거부되고 서버에 요청이 닿지 않는지 본다.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -19,6 +20,7 @@ import {
 import { createFetchUrlToolWithHooks, createSourceFetcherWithHooks, type FetchUrlHooks } from '../../packages/agent-runtime/src/fetch-url.ts';
 import { FAKE_API_KEY, ManualGatewayTimers, tick } from '../support/gateway-contract.ts';
 import { html, redirect, startPageServer, text, type PageServer } from '../support/page-server.ts';
+import { EXPIRED_UNTIL, makeTestCertificate } from '../support/test-cert.ts';
 
 const LOCAL: FetchUrlHooks = { exemptAddresses: ['127.0.0.1'] };
 /** 규칙을 어긴 구현이 연결을 시도하더라도 시험이 오래 걸리지 않게, 호출마다 새 시간 제한 신호를 기본으로 쓴다 (정상 호출은 수 밀리초에 끝난다) */
@@ -491,5 +493,75 @@ describe('createSourceFetcher (the A4 SourceFetcher port)', () => {
     assert.deepEqual(await pending, { reachable: false, reason: 'aborted' });
     await waitFor(() => server.openConnections() === 0, 'the connection to close');
     assert.equal(timers.pending, 0);
+  });
+});
+
+// ===== https =====
+
+describe('fetch_url over https (certificates made during the test, trusted only through the test hook)', () => {
+  const NAME = 'secure.example.test';
+  const resolveToLocal = (host: string): Promise<{ address: string; family: number }[]> => (host === NAME ? Promise.resolve([{ address: '127.0.0.1', family: 4 }]) : Promise.reject(new Error('ENOTFOUND')));
+
+  async function httpsServer(t: TestContext, cert: { certPem: string; keyPem: string }): Promise<PageServer> {
+    return startPageServer(t, { '/page': html('<p>The product supports single sign-on.</p>') }, { tls: { cert: cert.certPem, key: cert.keyPem } });
+  }
+  const tool = (hooks: FetchUrlHooks) => createFetchUrlToolWithHooks({ allowedHosts: [NAME] }, { exemptAddresses: ['127.0.0.1'], lookup: resolveToLocal, ...hooks });
+  const call = (hooks: FetchUrlHooks, port: number) => tool(hooks).executor(request({ url: `https://${NAME}:${port}/page` }, [NAME], AbortSignal.timeout(8000)));
+  async function refusal(promise: Promise<unknown>): Promise<string> {
+    try {
+      await promise;
+    } catch (error) {
+      assert.ok(error instanceof FetchUrlError, `expected a FetchUrlError, got ${String(error)}`);
+      assert.equal(error.code, 'network_error');
+      return error.message;
+    }
+    return assert.fail('the https fetch should have been refused');
+  }
+
+  it('normal path: a certificate for the host name, trusted through the test hook, gives the page over TLS', async (t) => {
+    const cert = makeTestCertificate({ dnsNames: [NAME] });
+    const server = await httpsServer(t, cert);
+    const done = await call({ ca: cert.certPem }, server.port);
+    const page = done.result as FetchedPage;
+    assert.equal(page.status, 200);
+    assert.equal(page.final_url, `https://${NAME}:${server.port}/page`);
+    assert.equal(page.text, 'The product supports single sign-on.');
+    assert.equal(server.requests.length, 1);
+  });
+
+  it('an expired certificate is refused (network_error CERT_HAS_EXPIRED) and the request never reaches the server', async (t) => {
+    const cert = makeTestCertificate({ dnsNames: [NAME], notAfter: EXPIRED_UNTIL });
+    const server = await httpsServer(t, cert);
+    assert.match(await refusal(call({ ca: cert.certPem }, server.port)), /CERT_HAS_EXPIRED/);
+    assert.equal(server.requests.length, 0);
+  });
+
+  it('a certificate for another host name is refused (ERR_TLS_CERT_ALTNAME_INVALID) even though the CA is trusted', async (t) => {
+    const cert = makeTestCertificate({ dnsNames: ['other.example.test'] });
+    const server = await httpsServer(t, cert);
+    assert.match(await refusal(call({ ca: cert.certPem }, server.port)), /ERR_TLS_CERT_ALTNAME_INVALID/);
+    assert.equal(server.requests.length, 0);
+  });
+
+  it('without the test hook the system trust store applies: a self-signed certificate is refused, and so is one from a different CA', async (t) => {
+    const cert = makeTestCertificate({ dnsNames: [NAME] });
+    const server = await httpsServer(t, cert);
+    assert.match(await refusal(call({}, server.port)), /DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT|UNABLE_TO_VERIFY/);
+    const stranger = makeTestCertificate({ dnsNames: [NAME] });
+    assert.match(await refusal(call({ ca: stranger.certPem }, server.port)), /DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT|UNABLE_TO_VERIFY/);
+    assert.equal(server.requests.length, 0);
+  });
+
+  it('the source fetcher (validator port) reads over https with a good certificate and reports unreachable (network_error) for a bad one', async (t) => {
+    const good = makeTestCertificate({ dnsNames: [NAME] });
+    const goodServer = await httpsServer(t, good);
+    const reach = createSourceFetcherWithHooks({ allowedHosts: [NAME] }, { exemptAddresses: ['127.0.0.1'], lookup: resolveToLocal, ca: good.certPem });
+    assert.deepEqual(await reach.fetch(`https://${NAME}:${goodServer.port}/page`), { reachable: true, status: 200, text: 'The product supports single sign-on.' });
+
+    const expired = makeTestCertificate({ dnsNames: [NAME], notAfter: EXPIRED_UNTIL });
+    const badServer = await httpsServer(t, expired);
+    const refuse = createSourceFetcherWithHooks({ allowedHosts: [NAME] }, { exemptAddresses: ['127.0.0.1'], lookup: resolveToLocal, ca: expired.certPem });
+    assert.deepEqual(await refuse.fetch(`https://${NAME}:${badServer.port}/page`), { reachable: false, reason: 'network_error' });
+    assert.equal(badServer.requests.length, 0);
   });
 });

@@ -9,12 +9,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { createFakeAgentAdapter, createFileRunLogStore, type FakeAdapterConfig, type GatewayToolSpec, type ToolExecutor } from '@aot/agent-runtime';
+import { createDockerCli, createFakeAgentAdapter, createFileRunLogStore, type FakeAdapterConfig, type GatewayToolSpec, type ToolCallRecord, type ToolExecutor } from '@aot/agent-runtime';
 import { costForRun, costForTask } from '@aot/evaluation';
 import type { TaskExecutor } from '@aot/task-engine';
 
 import { assembleDaemon, type AssembleOptions } from '../../apps/daemon/src/assemble.ts';
 import { manualTimers, runsOf, taskStatus } from '../support/engine.ts';
+import { FakeDocker } from '../support/fake-docker.ts';
 import { ManualGatewayTimers, tick } from '../support/gateway-contract.ts';
 import { AGENT, createWithGate, decisionsOf, policyEnv, readOnlyDraft, type PolicyEnv } from '../support/policy.ts';
 
@@ -181,4 +182,68 @@ test('a tool request outside the offered list: the agent gets tool_not_allowed f
   assert.deepEqual(report.executed?.end, { outcome: 'submitted', taskStatus: 'validating' });
   assert.deepEqual(r.executed, []);
   assert.equal(taskStatus(env.db, taskId), 'validating');
+});
+
+test('the recorder hook hands over the gateway\'s ToolCallRecords as structured objects (allowed, refused, per run); the run_log file format is unchanged', async (t) => {
+  const env = policyEnv(t);
+  const taskId = createWithGate(env, draft(7));
+  const records: ToolCallRecord[] = [];
+  const logDir = join(env.dir, 'run-logs');
+  const executors = new Map<string, ToolExecutor>([[SEARCH.tool, () => Promise.resolve({ result: { hits: 2 } })]]);
+  const daemon = assembleDaemon({
+    db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
+    paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
+    agent: {
+      adapter: createFakeAgentAdapter({ clock: env.clock, scenario: 'tool_calls', toolCalls: [{ tool: 'web_search', args: { q: 'one' } }, { tool: 'send_email', args: { to: 'someone@example.com' } }], result: { claims: [] } }),
+      tools: [SEARCH], executors, timers: new ManualGatewayTimers(), runLogStore: createFileRunLogStore({ dir: logDir }),
+      recorder: { record: (record) => void records.push(record) },
+    },
+  });
+  const report = await daemon.worker.tick();
+  assert.deepEqual(report.executed?.end, { outcome: 'submitted', taskStatus: 'validating' });
+  const [run] = runsOf(env.db, taskId);
+  assert.deepEqual(records.map((r) => [r.run_id, r.seq, r.tool, r.operation, r.outcome, r.decision, r.cost]), [
+    [run!.id, 1, 'web_search', 'search', 'ok', 'allow', { usd: 0.25 }],
+    [run!.id, 2, 'send_email', null, 'tool_not_allowed', null, {}],
+  ]);
+  assert.ok(records.every((r) => Object.isFrozen(r)), 'records are frozen: the hook cannot change what the gateway keeps');
+  // 파일 형식은 그대로다: 한 줄에 {at, message}. 구조화된 기록은 별도 훅으로만 온다
+  const lines = readFileSync(join(logDir, `${run!.id}.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(lines.length >= 2 && lines.every((line) => Object.keys(line).sort().join() === 'at,message'));
+  assert.ok(lines.some((line) => /^tool_call #1 web_search\.search: ok/.test(String(line['message']))));
+});
+
+test('a recorder that throws does not change the answer the agent gets or the run', async (t) => {
+  const env = policyEnv(t);
+  createWithGate(env, draft(8));
+  const executors = new Map<string, ToolExecutor>([[SEARCH.tool, () => Promise.resolve({ result: { hits: 2 } })]]);
+  const daemon = assembleDaemon({
+    db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(),
+    paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
+    agent: {
+      adapter: createFakeAgentAdapter({ clock: env.clock, scenario: 'tool_calls', toolCalls: [{ tool: 'web_search', args: { q: 'one' } }], result: { claims: [] } }),
+      tools: [SEARCH], executors, timers: new ManualGatewayTimers(),
+      recorder: { record: () => { throw new Error('the hook is broken'); } },
+    },
+  });
+  assert.deepEqual((await daemon.worker.tick()).executed?.end, { outcome: 'submitted', taskStatus: 'validating' });
+});
+
+test('the container adapter is wired with an instance id: assembly refuses a docker without one, and daemon start lists orphans by the run label AND this instance\'s label', async (t) => {
+  const env = policyEnv(t);
+  const fake = new FakeDocker();
+  fake.script = (record) => ({ code: 0, stdout: record.args[0] === 'version' ? '29.0.0\n' : '' });
+  const docker = createDockerCli({ path: '/opt/example/bin/docker', process: fake });
+  const agent = { adapter: createFakeAgentAdapter({ clock: env.clock }), docker };
+  const paths = { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') };
+  const base = { db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, paths };
+  for (const instanceId of [undefined, '', 'bad id', 'x=y']) {
+    assert.throws(() => assembleDaemon({ ...base, agent: { ...agent, ...(instanceId === undefined ? {} : { instanceId }) } }), /instanceId/);
+  }
+  const daemon = assembleDaemon({ ...base, agent: { ...agent, instanceId: 'inst-1' } });
+  await daemon.prepareAgentRuntime();
+  assert.deepEqual(fake.execs.map((e) => [...e.args]), [
+    ['version', '--format', '{{.Server.Version}}'],
+    ['ps', '-aq', '--filter', 'label=aot.run', '--filter', 'label=aot.instance=inst-1'],
+  ]);
 });

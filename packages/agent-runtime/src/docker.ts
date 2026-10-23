@@ -2,9 +2,12 @@
 //  - 실행 파일은 설정값의 절대 경로로 고정한다(PATH 탐색 금지). 환경 변수는 화이트리스트 이름만 넘긴다(`pickDockerEnv`).
 //  - 프로세스 실행은 `ProcessPort` 로 주입한다: 시험은 가짜 포트를 넣고, 운영은 `nodeProcessPort` 를 쓴다.
 //  - Docker 를 쓸 수 없으면 `DockerUnavailableError` 로 명시적으로 실패한다. 호스트 직접 실행으로 대체하는 경로는 없다 (스파이크 "남은 위험 2").
-//  - 고아 정리: 컨테이너에 run 라벨을 붙이고(container-args.ts), 데몬 시작 시 라벨로 남은 컨테이너를 죽이고 지운다 (`cleanupOrphanContainers`).
+//  - 고아 정리: 컨테이너에 run 라벨과 인스턴스 라벨을 붙이고(container-args.ts), 데몬 시작 시 `aot.run` AND `aot.instance=<내 인스턴스>` 인 컨테이너만 죽이고 지운다
+//    (`cleanupOrphanContainers`). 인스턴스 ID 없이 라벨 하나로 지우는 경로는 없다: 한 Docker 호스트의 다른 데몬 컨테이너를 지우지 않기 위해서다.
 import { spawn } from 'node:child_process';
 import { isAbsolute } from 'node:path';
+
+import { CONTAINER_LABEL_KEY, INSTANCE_LABEL_KEY, isValidInstanceId } from './container-args.ts';
 
 /** 실행 중인 프로세스(장기 실행: `docker run -i`). Node 의 ChildProcess 를 감싼 최소 인터페이스라 시험에서 가짜로 바꾼다 */
 export interface SpawnedProcess {
@@ -155,7 +158,7 @@ export async function checkDockerAvailable(docker: DockerCli): Promise<string> {
 
 // ===== 고아 정리 =====
 
-const LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*(=[A-Za-z0-9_.-]+)?$/;
+const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 const CONTAINER_ID_PATTERN = /^[0-9a-f]{12,64}$/;
 
 export interface OrphanCleanupResult {
@@ -168,15 +171,19 @@ export interface OrphanCleanupResult {
 }
 
 /**
- * 라벨(`aot.run` 또는 `aot.run=<id>`)이 붙은 컨테이너를 모두 죽이고 지운다. 데몬 시작 시 부른다:
- * 데몬이 비정상 종료돼도 `docker run` CLI 가 죽을 뿐 컨테이너는 계속 돈다 (스파이크 §3). 데몬 조립(assemble.ts) 연결은 뒤 단위의 일이다.
+ * 이 인스턴스가 띄운 컨테이너(라벨 `aot.run` AND `aot.instance=<instance>`)를 모두 죽이고 지운다. 데몬 시작 시 부른다:
+ * 데몬이 비정상 종료돼도 `docker run` CLI 가 죽을 뿐 컨테이너는 계속 돈다 (스파이크 §3).
+ * `instance` 는 필수다 — 같은 Docker 호스트의 다른 데몬 인스턴스 컨테이너(다른 `aot.instance` 값, 또는 라벨 없음)는 건드리지 않는다.
+ * `runId` 를 주면 그 run 의 컨테이너로 더 좁힌다(`aot.run=<runId>`).
  */
-export async function cleanupOrphanContainers(options: { docker: DockerCli; label: string }): Promise<OrphanCleanupResult> {
-  const { docker, label } = options;
-  if (typeof label !== 'string' || !LABEL_PATTERN.test(label)) throw new Error('label must look like key or key=value (letters, digits, _ . -)');
+export async function cleanupOrphanContainers(options: { docker: DockerCli; instance: string; runId?: string }): Promise<OrphanCleanupResult> {
+  const { docker, instance, runId } = options;
+  if (!isValidInstanceId(instance)) throw new Error('instance must be a safe instance id (letters, digits, _ . -; max 63 chars)');
+  if (runId !== undefined && !RUN_ID_PATTERN.test(runId)) throw new Error('runId must look like a run label value (letters, digits, _ . -)');
+  const filters = ['--filter', runId === undefined ? `label=${CONTAINER_LABEL_KEY}` : `label=${CONTAINER_LABEL_KEY}=${runId}`, '--filter', `label=${INSTANCE_LABEL_KEY}=${instance}`];
   const run = (args: readonly string[]): Promise<ExecResult> => docker.process.exec(docker.path, args, { env: docker.env, timeoutMs: docker.execTimeoutMs });
 
-  const listed = await run(['ps', '-aq', '--filter', `label=${label}`]);
+  const listed = await run(['ps', '-aq', ...filters]);
   if (listed.spawnError !== undefined) throw new DockerUnavailableError('docker_not_found', listed.spawnError.slice(0, 200));
   if (listed.code !== 0) throw new DockerUnavailableError('docker_daemon_unreachable', (listed.stderr.trim() || `exit code ${String(listed.code)}`).slice(0, 200));
   const found = listed.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');

@@ -1,7 +1,7 @@
 // A5 U4 Docker 통합: 데몬 조립 + 컨테이너 러너(실제 docker, 가짜 에이전트 이미지)로 실행 관리를 끝까지 돈다.
 //  (a) 멈춘 컨테이너가 constraints.time_limit 으로 killed 가 되고(task_run killed, 업무 retry_wait) 컨테이너가 하나도 남지 않는다
 //  (b) 컨테이너 에이전트의 cost_progress 가 예산을 넘으면 killed(budget_exceeded)·needs_review, 초과 시점까지의 비용이 cost_entry 에 남고 컨테이너가 남지 않는다
-//  (c) 시작 준비(prepareAgentRuntime)가 docker 를 확인하고 라벨 `aot.run` 으로 남은 컨테이너(이전 데몬의 고아)를 지운다
+//  (c) 시작 준비(prepareAgentRuntime)가 docker 를 확인하고 라벨 `aot.run` AND `aot.instance=<이 인스턴스>` 로 남은 컨테이너(이전 데몬의 고아)를 지운다
 // docker 가 없거나 이미지를 빌드할 수 없으면(오프라인) 전체를 skip 하고 이유를 출력한다. 시험이 만든 컨테이너는 라벨로 반드시 정리한다.
 // 시간 제한은 실제 타이머(3초)다 — 가상 시간 시험은 test/integration/agent-run-management.test.ts.
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import { systemClock } from '@aot/domain';
 import { costForTask } from '@aot/evaluation';
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
-import { dockerOut, labeledContainers, prepareSandbox, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
+import { dockerOut, labeledContainers, prepareSandbox, TEST_INSTANCE, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
 import { manualTimers, runsOf, taskStatus } from '../support/engine.ts';
 import { AGENT, createWithGate, policyEnv, readOnlyDraft, type PolicyEnv } from '../support/policy.ts';
 
@@ -25,11 +25,11 @@ const sandbox = (prepared.ok ? prepared.env : null) as SandboxEnvironment;
 const LIMITS = { memoryMiB: 128, cpus: 0.5, pidsLimit: 32, tmpfsMiB: 16 };
 
 function daemonWith(env: PolicyEnv, agentArgs: string[]) {
-  const runner = createContainerRunner({ docker: sandbox.docker, image: sandbox.imageId, limits: LIMITS, namePrefix: 'aot-test', clock: systemClock, agentArgs });
+  const runner = createContainerRunner({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, limits: LIMITS, namePrefix: 'aot-test', clock: systemClock, agentArgs });
   return assembleDaemon({
     db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
     paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
-    agent: { adapter: containerAgentAdapter(runner), docker: sandbox.docker, runLogStore: createFileRunLogStore({ dir: join(env.dir, 'run-logs') }) },
+    agent: { adapter: containerAgentAdapter(runner), docker: sandbox.docker, instanceId: TEST_INSTANCE, runLogStore: createFileRunLogStore({ dir: join(env.dir, 'run-logs') }) },
   });
 }
 
@@ -37,7 +37,7 @@ const draft = (n: number, extra: Record<string, unknown> = {}) => readOnlyDraft(
 
 describe('agent run management with the container sandbox (real docker)', { skip }, () => {
   afterEach(async () => {
-    await cleanupOrphanContainers({ docker: sandbox.docker, label: 'aot.run' });
+    await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE });
   });
   after(async () => {
     assert.deepEqual(await labeledContainers(sandbox.docker, 'aot.run'), [], 'no aot.run container is left behind by this file');
@@ -80,16 +80,21 @@ describe('agent run management with the container sandbox (real docker)', { skip
     assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
   });
 
-  it('(c) starting up removes containers left behind by an earlier daemon (label aot.run)', async (t) => {
+  it('(c) starting up removes containers left behind by an earlier daemon of this instance (labels aot.run and aot.instance)', async (t) => {
     const env = policyEnv(t);
     const orphan = (await dockerOut(sandbox.docker, [
-      'run', '-d', '--rm', '--network', 'none', '--label', 'aot.run=orphan-test', '--entrypoint', '/nodejs/bin/node', sandbox.imageId, '-e', 'setInterval(() => {}, 1 << 30)',
+      'run', '-d', '--rm', '--network', 'none', '--label', 'aot.run=orphan-test', '--label', `aot.instance=${TEST_INSTANCE}`,
+      '--entrypoint', '/nodejs/bin/node', sandbox.imageId, '-e', 'setInterval(() => {}, 1 << 30)',
     ])).trim();
-    assert.ok(orphan !== '');
-    assert.deepEqual((await labeledContainers(sandbox.docker, 'aot.run')).length, 1);
-    const readiness = await daemonWith(env, ['hang']).prepareAgentRuntime();
-    assert.equal(readiness?.orphans.found.length, 1);
-    assert.deepEqual(readiness?.orphans.failures, []);
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+    try {
+      assert.ok(orphan !== '');
+      assert.deepEqual((await labeledContainers(sandbox.docker, 'aot.run')).length, 1);
+      const readiness = await daemonWith(env, ['hang']).prepareAgentRuntime();
+      assert.equal(readiness?.orphans.found.length, 1);
+      assert.deepEqual(readiness?.orphans.failures, []);
+      assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+    } finally {
+      await dockerOut(sandbox.docker, ['rm', '-f', orphan]).catch(() => undefined); // 실패해도 컨테이너를 남기지 않는다
+    }
   });
 });

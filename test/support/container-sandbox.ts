@@ -30,6 +30,9 @@ export function locateDocker(): string | null {
   return null;
 }
 
+/** 시험이 띄우는 컨테이너의 `aot.instance` 라벨 값. 시험의 정리는 이 인스턴스 것만 지운다 */
+export const TEST_INSTANCE = 'aot-test';
+
 export interface SandboxEnvironment {
   docker: DockerCli;
   dockerVersion: string;

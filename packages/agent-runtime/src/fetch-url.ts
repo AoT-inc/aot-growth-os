@@ -14,7 +14,8 @@
 //      읽지 않은 응답도 상태 코드는 돌려준다(`body_skipped` 에 사유). HTML 은 태그를 걷어 낸 텍스트로 돌려준다(해시는 받은 원본 바이트의 sha256).
 // 던지는 오류는 `FetchUrlError`(code 로 구분)다. 게이트웨이가 에이전트에는 `tool_error` 만 알리고 사유는 호출 기록에만 남긴다.
 // `node:http`·`node:https`·`node:dns` 만 쓴다(의존성 없음). 시험이 사설 주소 규칙을 풀 수 있는 길은 `createFetchUrlToolWithHooks` 의 `exemptAddresses` 뿐이며
-// 이 함수는 index.ts 로 내보내지 않는다(운영 설정으로 노출하지 않는다).
+// 이 함수는 index.ts 로 내보내지 않는다(운영 설정으로 노출하지 않는다). https 정상 경로 시험을 위한 `ca`(시험이 만든 인증서만 신뢰) 주입점도 같은 훅에 있다:
+// 운영 코드는 항상 시스템 기본 신뢰 저장소로 인증서를 검증하며(만료·호스트 이름 불일치·미신뢰 발급자는 `network_error` 로 거부), 이를 끄거나 바꾸는 설정은 없다.
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
@@ -80,6 +81,8 @@ export interface FetchUrlHooks {
   lookup?: (hostname: string) => Promise<readonly { address: string; family: number }[]>;
   /** 공인 주소 규칙에서 제외할 정확한 주소 문자열들 (예: 시험 서버의 '127.0.0.1'). 목록에 없는 비공인 주소는 그대로 거부된다 */
   exemptAddresses?: readonly string[];
+  /** https 에서 신뢰할 CA(PEM). 주면 시스템 기본 신뢰 저장소 *대신* 이것만 쓴다(검증은 그대로 켜져 있다). 시험이 만든 자체서명 인증서용 */
+  ca?: string | Buffer | readonly (string | Buffer)[];
 }
 
 interface FetchConfig {
@@ -227,9 +230,8 @@ function pinnedLookup(addresses: readonly ResolvedAddress[]): LookupFunction {
   };
 }
 
-function requestOnce(target: Target, addresses: readonly ResolvedAddress[], signal: AbortSignal, config: FetchConfig): Promise<RawResponse> {
+function requestOnce(target: Target, addresses: readonly ResolvedAddress[], signal: AbortSignal, config: FetchConfig, hooks: FetchUrlHooks): Promise<RawResponse> {
   const { url, host } = target;
-  const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
   return new Promise<RawResponse>((resolve, reject) => {
     let settled = false;
     const done = (action: () => void): void => {
@@ -238,7 +240,7 @@ function requestOnce(target: Target, addresses: readonly ResolvedAddress[], sign
       action();
     };
     const fail = (error: unknown): void => done(() => reject(mapNetworkError(error, signal)));
-    const req = send({
+    const options = {
       hostname: host,
       ...(url.port === '' ? {} : { port: Number(url.port) }),
       path: `${url.pathname}${url.search}`,
@@ -252,7 +254,11 @@ function requestOnce(target: Target, addresses: readonly ResolvedAddress[], sign
       },
       lookup: pinnedLookup(addresses),
       signal,
-    });
+    } as const;
+    // https 는 인증서 검증을 Node 기본값(켜짐)으로 둔다. `ca` 훅이 있을 때만 신뢰 목록을 바꾼다(시험 전용)
+    const req = url.protocol === 'https:'
+      ? httpsRequest({ ...options, ...(hooks.ca === undefined ? {} : { ca: hooks.ca as string | Buffer | (string | Buffer)[] }) })
+      : httpRequest(options);
     req.on('error', fail);
     req.on('response', (res: IncomingMessage) => {
       res.on('error', fail);
@@ -418,7 +424,7 @@ async function fetchPage(job: FetchJob, config: FetchConfig, hooks: FetchUrlHook
     const target = parseTarget(next, where); // 매 홉이 스킴·사용자 정보·호스트 허용·주소 검사를 처음부터 다시 통과한다
     if (!job.isHostAllowed(target.host)) throw new FetchUrlError('host_not_allowed', `${where}: host ${target.host} is not on the allow list`);
     const addresses = await resolveAddresses(target.host, hooks, job.signal, where);
-    const response = await requestOnce(target, addresses, job.signal, config);
+    const response = await requestOnce(target, addresses, job.signal, config, hooks);
     if (response.kind === 'redirect') {
       if (hop >= config.maxRedirects) throw new FetchUrlError('too_many_redirects', `more than ${config.maxRedirects} redirects`);
       let location: URL;

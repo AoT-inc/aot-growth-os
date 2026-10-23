@@ -58,6 +58,8 @@
 
 결정(2026-10-22, [스파이크 Q26](../spikes/q26-agent-container-isolation.md), Q26 해소): **에이전트는 Docker 컨테이너 안에서만 실행한다.** 데몬은 `docker` CLI로 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`, 비루트 사용자, 크기 제한 tmpfs 작업 디렉터리, 메모리·CPU·pids 제한으로 컨테이너를 띄우고, 게이트웨이와는 stdin/stdout의 줄 단위 JSON으로만 통신한다. 바인드 마운트는 두지 않으며(`instance/`·DB·`policies/`·Docker 소켓 포함), 비밀값은 환경 변수로도 넘기지 않는다. macOS Docker Desktop에서 컨테이너가 `instance/run/` 소켓·TOTP 비밀·DB에 도달하지 못함(ENOENT)을 확인했으므로 위 편차는 에이전트 경로에 대해 해소로 보고 피어 UID 확인은 넣지 않는다. 다만 Docker Desktop은 바인드 마운트에 호스트 파일 권한을 적용하지 않으므로(실측) "마운트 0개"를 코드와 시험으로 고정해야 하고, Docker를 쓸 수 없을 때 호스트 실행으로 대체하지 않는다. 취소·시간 제한은 `docker kill`로 한다(CLI 프로세스 종료만으로는 컨테이너가 멈추지 않음). Linux는 미실측이다. Linux 배포는 rootful Docker로 진행한다(2026-10-22 사용자 결정): `docker` 그룹은 사실상 root 권한이므로 데몬 계정이 탈취되거나 에이전트 컨테이너가 탈출하면 영향이 호스트 root에 가깝다. 완화는 데몬 전용 계정, 소켓·마운트를 주지 않는 인자 생성기와 `docker inspect` 시험이며, rootless Docker·Podman은 후속 검토다.
 
+구현(A5 U3~U6): 컨테이너에는 라벨 `aot.run=<run id>`과 `aot.instance=<데몬 인스턴스 ID>`를 붙이고, 데몬 시작 시 고아 정리는 두 라벨이 모두 맞는 컨테이너만 죽이고 지운다(한 Docker 호스트의 다른 데몬 컨테이너와 인스턴스 라벨이 없는 컨테이너는 건드리지 않는다). 컨테이너가 바깥 웹에 닿는 유일한 길은 게이트웨이의 `fetch_url` 도구이고, 호스트가 요청과 리다이렉트 홉마다 호스트 허용 목록(데몬 설정 `research_agent.allowed_hosts` AND 업무 `constraints.network_allowlist`, 비어 있으면 모두 거부)과 해석한 모든 주소가 공인 주소인지(사설·루프백·링크로컬·메타데이터 거부, 검사한 주소로 고정 연결), https 인증서를 시스템 신뢰 저장소로 검증하는지를 확인한다. 그 결과는 외부 입력(`external_untrusted`)이며, 검증기의 출처 조회기도 같은 규칙을 쓴다.
+
 ## 4. 실행 시점 재검증
 
 승인된 업무라도 실행 직전과 부작용 직전에 재검증한다 ([task-spec §버전과 스냅샷](../schema/task-spec.md)).

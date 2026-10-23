@@ -25,7 +25,7 @@ export {
 } from './gateway.ts';
 export { isSecretKey, maskSecrets, maskString, previewJson, REDACTED } from './mask.ts';
 export {
-  buildContainerArgs, CONTAINER_LABEL_KEY, CONTAINER_WORKDIR, ContainerArgsError, DEFAULT_CONTAINER_USER, forbiddenFlagIn,
+  buildContainerArgs, CONTAINER_LABEL_KEY, CONTAINER_WORKDIR, ContainerArgsError, DEFAULT_CONTAINER_USER, forbiddenFlagIn, INSTANCE_LABEL_KEY, isValidInstanceId,
   type ContainerArgsErrorCode, type ContainerConfig, type ContainerLimits,
 } from './container-args.ts';
 export {

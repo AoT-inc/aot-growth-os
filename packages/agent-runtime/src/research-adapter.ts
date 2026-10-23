@@ -19,6 +19,8 @@ export interface ResearchAgentAdapterOptions {
   docker: DockerCli;
   /** 조사 에이전트 이미지 ID `sha256:…` (container/research-agent/Dockerfile 의 빌드 결과) */
   image: string;
+  /** `aot.instance` 라벨 값(데몬 인스턴스 ID) */
+  instance: string;
   clock: Clock;
   limits?: ContainerLimits;
   /** 컨테이너 이름 접두사. 기본 'aot-research' */
@@ -30,6 +32,7 @@ export function createResearchAgentAdapter(options: ResearchAgentAdapterOptions)
   return containerAgentAdapter(createContainerRunner({
     docker: options.docker,
     image: options.image,
+    instance: options.instance,
     limits: options.limits ?? { ...RESEARCH_AGENT_LIMITS },
     clock: options.clock,
     name: RESEARCH_AGENT_NAME,

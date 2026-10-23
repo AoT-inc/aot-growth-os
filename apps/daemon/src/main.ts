@@ -4,22 +4,22 @@
 //
 // 정책: 가장 최근 policy_version 의 내용(instance/policies/<hash>.yaml 또는 저장소 템플릿)으로 판정한다. 내용을 찾지 못하면 거부.
 // 승인: 사람용 승인 CLI(apps/daemon/src/approve.ts)가 approval_socket 으로 접속한다 (trust-boundaries §3.1).
-// 실행기(A5 U4): `container_agent` 설정이 있으면 컨테이너 샌드박스 어댑터를 실행 관리(time_limit·예산 초과 취소, 비용 기록)에 연결하고, 시작 때 Docker 가용성 확인과
-// `aot.run` 라벨 고아 정리를 한다. 설정이 없으면 실행기가 없어 실행 요청이 오류로 끝난다(기존 동작). 실제 에이전트 이미지와 도구는 아직 없다(U5).
-// 아직 연결되지 않은 것: 검증기의 외부 포트(출처 조회·LLM 검증기·측정 값)는 A5/A6 — 연결 전까지 validating 업무는 검증되지 않는다.
+// 실행기(A5 U4·U6): `container_agent` 설정이 있으면 컨테이너 샌드박스 어댑터를 실행 관리(time_limit·예산 초과 취소, 비용 기록)에 연결하고, 시작 때 Docker 가용성 확인과
+// 이 인스턴스의 고아 컨테이너 정리(`aot.run` AND `aot.instance`)를 한다. `research_agent` 설정이 더해지면 조사 에이전트 이미지·`fetch_url` 도구·검증기용 출처 조회기(같은 허용 호스트)도 연결한다.
+// 설정이 없으면 실행기가 없어 실행 요청이 오류로 끝난다(기존 동작). 설정 → 조립은 runtime-config.ts.
+// 아직 연결되지 않은 것: LLM 검증기와 측정 값 조회기(A6/Q22). 출처 조회기도 `research_agent` 가 없으면 연결되지 않아 그 경우 validating 업무는 검증되지 않고 남는다(자동 완료 없음).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  containerAgentAdapter, createContainerRunner, createDockerCli, createFileRunLogStore, pickDockerEnv,
-} from '@aot/agent-runtime';
-import { applyMigrations, openDb, parseTimeLimit, systemClock } from '@aot/domain';
+import { applyMigrations, openDb, systemClock } from '@aot/domain';
 import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolling } from '@aot/task-engine';
 
-import { assembleDaemon, defaultInstancePaths, type AssembleOptions } from './assemble.ts';
+import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
+import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts';
 
-interface DaemonConfig {
+/** 에이전트 쪽 키(container_agent·research_agent·instance_id·run_log_dir·default_time_limit)는 AgentRuntimeConfig 에 있다 */
+interface DaemonConfig extends AgentRuntimeConfig {
   db_path: string;
   busy_timeout_ms?: number;
   worker_id: string;
@@ -34,24 +34,6 @@ interface DaemonConfig {
   policy_store_dir?: string;
   totp_dir?: string;
   approval_socket?: string;
-  /**
-   * 컨테이너 샌드박스 에이전트 (A5). 없거나 null 이면 에이전트 실행기를 연결하지 않는다.
-   * 이미지는 ID(`sha256:…`)로 고정하고, docker 는 절대 경로로 지정한다(PATH 를 찾지 않는다).
-   */
-  container_agent?: {
-    docker_path: string;
-    image: string;
-    memory_mib: number;
-    cpus: number;
-    pids_limit: number;
-    tmpfs_mib: number;
-    /** 이미지 뒤에 붙는 에이전트 인자 */
-    agent_args?: string[];
-  } | null;
-  /** run_log 파일 디렉터리. 기본 `<instance_dir>/run-logs` (0700, 파일 0600) */
-  run_log_dir?: string;
-  /** 명세에 `constraints.time_limit` 이 없을 때의 시간 제한 ("30m" 형식). 기본 30m */
-  default_time_limit?: string;
 }
 
 const MIGRATIONS = fileURLToPath(new URL('../../../migrations', import.meta.url));
@@ -65,32 +47,13 @@ function loadConfig(): DaemonConfig {
   return config;
 }
 
-function buildAgent(config: DaemonConfig, instanceDir: string): AssembleOptions['agent'] {
-  const container = config.container_agent;
-  if (container === undefined || container === null) return undefined;
-  const defaultTimeLimitMs = config.default_time_limit === undefined ? undefined : parseTimeLimit(config.default_time_limit);
-  if (defaultTimeLimitMs === null) throw new Error(`default_time_limit '${String(config.default_time_limit)}' is not a valid time limit (for example "30m")`);
-  const docker = createDockerCli({ path: container.docker_path, env: pickDockerEnv(process.env) });
-  const runner = createContainerRunner({
-    docker, image: container.image, clock: systemClock,
-    limits: { memoryMiB: container.memory_mib, cpus: container.cpus, pidsLimit: container.pids_limit, tmpfsMiB: container.tmpfs_mib },
-    ...(container.agent_args === undefined ? {} : { agentArgs: container.agent_args }),
-  });
-  return {
-    adapter: containerAgentAdapter(runner),
-    docker,
-    runLogStore: createFileRunLogStore({ dir: config.run_log_dir ?? join(instanceDir, 'run-logs') }),
-    ...(defaultTimeLimitMs === undefined ? {} : { defaultTimeLimitMs }),
-  };
-}
-
 async function main(): Promise<void> {
   const config = loadConfig();
   const db = openDb({ path: config.db_path, ...(config.busy_timeout_ms === undefined ? {} : { busyTimeoutMs: config.busy_timeout_ms }) });
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
-  const agent = buildAgent(config, instanceDir);
+  const { agent, evaluation } = buildAgentRuntime(config, instanceDir);
   const daemon = assembleDaemon({
     db,
     clock: systemClock,
@@ -104,6 +67,7 @@ async function main(): Promise<void> {
     ...(agent === undefined
       ? { adapter: 'unconfigured', executor: { execute: () => Promise.reject(new Error('no executor configured (set container_agent)')) } }
       : { agent }),
+    ...(evaluation === undefined ? {} : { evaluation }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
   });

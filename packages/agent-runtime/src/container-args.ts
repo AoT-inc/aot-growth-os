@@ -1,20 +1,24 @@
 // 컨테이너 인자 생성기 (단계 A5 U3, 스파이크 Q26 §3·§4·§5·"남은 위험 1"). `docker run` 인자는 이 파일의 고정 템플릿으로만 만든다.
-//  - 입력은 데몬 설정에서 온 값뿐이다: 이미지 ID(`sha256:…`, 태그 거부), 컨테이너 이름, run 라벨, 자원 상한, 비루트 사용자, 선택적 에이전트 인자.
+//  - 입력은 데몬 설정에서 온 값뿐이다: 이미지 ID(`sha256:…`, 태그 거부), 컨테이너 이름, run 라벨, 인스턴스 라벨, 자원 상한, 비루트 사용자, 선택적 에이전트 인자.
 //    업무 명세(task_spec)의 값은 이 함수에 들어오지 않는다. 업무 입력은 stdin 의 `start` 프레임으로만 간다(frames.ts).
 //  - 항상 들어가는 강화 플래그: --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges, 크기 제한 tmpfs 작업 디렉터리,
-//    메모리·CPU·pids 제한, --ipc none, --log-driver none, --user <비루트>, --label aot.run=<id>, --pull never.
+//    메모리·CPU·pids 제한, --ipc none, --log-driver none, --user <비루트>, --label aot.run=<id>, --label aot.instance=<인스턴스 ID>, --pull never.
+//    인스턴스 라벨은 한 Docker 호스트에서 데몬이 둘 이상 돌 때 고아 정리가 다른 데몬의 컨테이너를 지우지 않게 한다(정리는 `aot.run` AND `aot.instance` 로만 고른다).
 //  - 바인드 마운트·볼륨·환경 변수는 템플릿에 없다. 설정이나 에이전트 인자에 위험 플래그(-v/--mount/--privileged/--cap-add/--device/--network 변경/
 //    --pid/--userns/--security-opt/--env/--user/--entrypoint 등)가 섞이면 던진다. "마운트 0개"가 격리의 조건이다(Docker Desktop 은 호스트 파일 권한을 적용하지 않는다).
 //  - 에이전트 인자는 이미지 뒤에 놓인다(docker 는 이미지 뒤의 인자를 해석하지 않는다). 위험 플래그 거부는 그 위치 보장에 더한 이중 방어다.
 // 던지는 오류는 `ContainerArgsError`(code 로 구분)다. 설정 오류는 데몬 개발 오류라 기본 거부(실행하지 않음)다.
 
 export const CONTAINER_LABEL_KEY = 'aot.run';
+/** 컨테이너를 띄운 데몬 인스턴스의 라벨 키. 값은 데몬 설정에서 도출한 안전한 문자열이다 */
+export const INSTANCE_LABEL_KEY = 'aot.instance';
 /** 이미지 사용자(distroless nonroot = 65532)와 같은 값. 데몬 사용자의 UID 와 다르게 둔다 (스파이크 §6) */
 export const DEFAULT_CONTAINER_USER: Readonly<{ uid: number; gid: number }> = { uid: 65532, gid: 65532 };
 export const CONTAINER_WORKDIR = '/work';
 
 export type ContainerArgsErrorCode =
-  | 'forbidden_flag' | 'forbidden_config_field' | 'image_not_id' | 'invalid_name' | 'invalid_label' | 'invalid_limit' | 'invalid_user' | 'invalid_agent_arg';
+  | 'forbidden_flag' | 'forbidden_config_field' | 'image_not_id' | 'invalid_name' | 'invalid_label' | 'invalid_limit' | 'invalid_user' | 'invalid_agent_arg'
+  | 'invalid_instance';
 
 export class ContainerArgsError extends Error {
   readonly code: ContainerArgsErrorCode;
@@ -41,6 +45,8 @@ export interface ContainerConfig {
   name: string;
   /** `aot.run` 라벨 값. 이름과 같은 문자 규칙 */
   runId: string;
+  /** `aot.instance` 라벨 값(데몬 인스턴스 ID). 영숫자와 `_.-` 만(첫 글자는 영숫자), 63자 이하. 필수다: 없으면 고아 정리가 인스턴스를 구분하지 못한다 */
+  instance: string;
   limits: ContainerLimits;
   /** 비루트 사용자. 생략하면 DEFAULT_CONTAINER_USER. uid·gid 가 0 이면 거부 */
   user?: { uid: number; gid: number };
@@ -52,7 +58,7 @@ export interface ContainerConfig {
   securityOpt?: readonly ['no-new-privileges'];
 }
 
-const CONFIG_KEYS: readonly string[] = ['image', 'name', 'runId', 'limits', 'user', 'agentArgs', 'network', 'securityOpt'];
+const CONFIG_KEYS: readonly string[] = ['image', 'name', 'runId', 'instance', 'limits', 'user', 'agentArgs', 'network', 'securityOpt'];
 const LIMIT_KEYS: readonly string[] = ['memoryMiB', 'cpus', 'pidsLimit', 'tmpfsMiB'];
 const USER_KEYS: readonly string[] = ['uid', 'gid'];
 
@@ -71,6 +77,7 @@ const FORBIDDEN_FLAGS: ReadonlySet<string> = new Set([
 const FORBIDDEN_SHORT: ReadonlySet<string> = new Set(['v', 'e', 'u', 'p', 'P', 'l', 'w', 'h', 'm', 'c', 'a', 'd']);
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+const INSTANCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const AGENT_ARG_PATTERN = /^[\x21-\x7e]{1,512}$/; // 공백·제어 문자·비ASCII 없음
 const MAX_AGENT_ARGS = 32;
@@ -96,6 +103,11 @@ function checkName(value: unknown, what: string, code: ContainerArgsErrorCode): 
     throw new ContainerArgsError(code, `${what} must start with a letter or digit and contain only letters, digits, '_', '.', '-' (max 100 chars)`);
   }
   return value;
+}
+
+/** `aot.instance` 라벨 값으로 쓸 수 있는 문자열인가 (docker 필터에도 그대로 들어가므로 같은 규칙을 정리 쪽도 쓴다) */
+export function isValidInstanceId(value: unknown): value is string {
+  return typeof value === 'string' && INSTANCE_PATTERN.test(value);
 }
 
 function checkInt(value: unknown, what: string, min: number, max: number): number {
@@ -133,6 +145,10 @@ export function buildContainerArgs(config: ContainerConfig): string[] {
   }
   const name = checkName(config.name, 'container name', 'invalid_name');
   const runId = checkName(config.runId, 'run label value', 'invalid_label');
+  if (!isValidInstanceId(config.instance)) {
+    throw new ContainerArgsError('invalid_instance', "instance must start with a letter or digit and contain only letters, digits, '_', '.', '-' (max 63 chars)");
+  }
+  const instance = config.instance;
 
   const limits = config.limits;
   if (typeof limits !== 'object' || limits === null) throw new ContainerArgsError('invalid_limit', 'limits are required');
@@ -174,6 +190,7 @@ export function buildContainerArgs(config: ContainerConfig): string[] {
     'run', '--rm', '-i', '--pull', 'never',
     '--name', name,
     '--label', `${CONTAINER_LABEL_KEY}=${runId}`,
+    '--label', `${INSTANCE_LABEL_KEY}=${instance}`,
     '--network', 'none',
     '--read-only',
     '--cap-drop', 'ALL',

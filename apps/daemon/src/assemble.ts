@@ -2,13 +2,14 @@
 // 검증기(@aot/evaluation) → 업무 엔진의 TaskValidator 포트, 도구 호출별 정책 판정(@aot/policy) → 도구 게이트웨이(@aot/agent-runtime)의
 // ToolCallPolicy 포트. 게이트웨이는 run 마다 만들므로(허용 도구·실행기·예산이 run 별) 정책 쪽 포트를 내놓고, run 별 조립은 agent-executor.ts 가 한다.
 // A5 U4: `agent` 옵션이 있으면 에이전트 실행 관리(@aot/agent-runtime 의 runAgentTask)를 업무 엔진의 TaskExecutor 포트에 연결한다(time_limit·예산 초과 취소,
-// cost_progress → cost_entry). 컨테이너 어댑터(`agent.docker`)가 설정된 경우에만 시작 때 Docker 가용성 확인과 라벨 고아 정리를 한다(`prepareAgentRuntime`).
+// cost_progress → cost_entry). 컨테이너 어댑터(`agent.docker`)가 설정된 경우에만 시작 때 Docker 가용성 확인과 이 인스턴스의 고아 컨테이너 정리(`aot.run` AND
+// `aot.instance=<instanceId>`)를 한다(`prepareAgentRuntime`). 설정 → 조립(조사 에이전트 도구·출처 조회기 포함)은 runtime-config.ts, 엔트리포인트는 main.ts.
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { checkDockerAvailable, cleanupOrphanContainers, CONTAINER_LABEL_KEY, type DockerCli, type OrphanCleanupResult } from '@aot/agent-runtime';
+import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type DockerCli, type OrphanCleanupResult } from '@aot/agent-runtime';
 import type { Clock, Db, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import { ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
@@ -48,8 +49,13 @@ export interface AssembleOptions {
   executor?: TaskExecutor;
   /** 에이전트 실행 관리 (A5 U4). 어댑터·도구·타이머·run_log 저장소 */
   agent?: AgentOptions & {
-    /** 컨테이너 어댑터일 때만 준다. 주면 시작 시 Docker 가용성 확인과 `aot.run` 라벨 고아 정리를 한다 */
+    /** 컨테이너 어댑터일 때만 준다. 주면 시작 시 Docker 가용성 확인과 고아 컨테이너 정리를 한다. 이때 `instanceId` 도 필요하다 */
     docker?: DockerCli;
+    /**
+     * 이 데몬 인스턴스의 ID (컨테이너 라벨 `aot.instance` 의 값, 컨테이너 러너의 `instance` 옵션과 같아야 한다). 고아 정리는 `aot.run` AND `aot.instance=<이 값>` 인
+     * 컨테이너만 지운다 — 같은 Docker 호스트의 다른 데몬 컨테이너를 지우지 않는다.
+     */
+    instanceId?: string;
   };
   tools?: Readonly<Record<string, EffectTool>>;
   lease?: Partial<LeaseParams>;
@@ -57,7 +63,8 @@ export interface AssembleOptions {
   timers?: Timers;
   /**
    * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
-   * 생략하면 validating 업무는 검증되지 않고 그대로 남는다 (실제 포트는 A5/A6 에서 게이트웨이를 거쳐 연결).
+   * 생략하면 validating 업무는 검증되지 않고 그대로 남는다. 데몬 설정에 `research_agent` 가 있으면 출처 조회기(`createSourceFetcher`, `fetch_url` 과 같은 허용 호스트·SSRF 규칙)가
+   * 여기에 연결된다(runtime-config.ts). LLM 검증기와 효과 측정 값 조회기는 A6/Q22 이후에 연결한다.
    */
   evaluation?: Omit<EvaluatorDeps, 'db' | 'clock'>;
 }
@@ -76,13 +83,16 @@ export interface Daemon {
   worker: TaskWorker;
   /**
    * 첫 tick 전에 부른다. 컨테이너 어댑터가 설정된 경우에만 Docker 가용성을 확인하고(없으면 DockerUnavailableError, 호스트 실행으로 대체하지 않는다)
-   * 라벨 `aot.run` 컨테이너(이전 데몬이 남긴 고아)를 죽이고 지운다. 설정되지 않았으면 아무것도 하지 않고 null.
+   * 라벨 `aot.run` AND `aot.instance=<이 인스턴스>` 컨테이너(이전 데몬이 남긴 고아)만 죽이고 지운다. 설정되지 않았으면 아무것도 하지 않고 null.
    */
   prepareAgentRuntime(): Promise<AgentRuntimeReadiness | null>;
   startApprovalChannel(onError?: (error: unknown) => void): Promise<ApprovalServer>;
 }
 
 export function assembleDaemon(options: AssembleOptions): Daemon {
+  if (options.agent?.docker !== undefined && !isValidInstanceId(options.agent.instanceId)) {
+    throw new Error('agent.docker needs a valid agent.instanceId (it scopes the orphan container cleanup to this daemon instance)');
+  }
   const store = new PolicyStore({ dir: options.paths.policyStoreDir, templates: [DEFAULT_POLICY_TEMPLATE] });
   const gate = createPolicyGate({ store });
   const engine = new ApprovalEngine({ db: options.db, clock: options.clock, store, totp: new TotpSecretStore(options.paths.totpDir) });
@@ -115,7 +125,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
       const docker = options.agent?.docker;
       if (docker === undefined) return null;
       const dockerVersion = await checkDockerAvailable(docker);
-      const orphans = await cleanupOrphanContainers({ docker, label: CONTAINER_LABEL_KEY });
+      const orphans = await cleanupOrphanContainers({ docker, instance: options.agent!.instanceId! });
       return { dockerVersion, orphans };
     },
     startApprovalChannel: (onError) => startApprovalServer({

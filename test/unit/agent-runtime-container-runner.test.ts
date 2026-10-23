@@ -17,6 +17,7 @@ import { ManualGatewayTimers } from '../support/gateway-contract.ts';
 
 const IMAGE = `sha256:${'cd34'.repeat(16)}`;
 const DOCKER_PATH = '/opt/example/bin/docker';
+const INSTANCE = 'inst-1';
 const LIMITS = { memoryMiB: 128, cpus: 0.5, pidsLimit: 32, tmpfsMiB: 16 };
 const AT = '2026-10-22T00:00:00.000Z';
 const NAME = 'aot-run-run-contract-1';
@@ -44,7 +45,7 @@ function harness(overrides: Partial<ContainerRunnerOptions> = {}, dockerEnv: Rec
   const timers = new ManualGatewayTimers();
   const runner = createContainerRunner({
     docker: createDockerCli({ path: DOCKER_PATH, env: dockerEnv, process: docker }),
-    image: IMAGE, limits: LIMITS, clock: new FakeClock(AT), timers, ...overrides,
+    image: IMAGE, instance: INSTANCE, limits: LIMITS, clock: new FakeClock(AT), timers, ...overrides,
   });
   const calls: { tool: string; args: JsonObject }[] = [];
   const gateway: Harness['gateway'] = { respond: (tool): Promise<ToolGatewayResponse> => Promise.resolve(tool === 'example_search' ? { ok: true, result: { echo: tool } } : { ok: false, error: 'tool_not_allowed' }) };
@@ -83,7 +84,7 @@ describe('container runner: frames and the gateway', () => {
     const [spawned] = h.docker.spawned;
     assert.equal(spawned!.file, DOCKER_PATH);
     assert.deepEqual(spawned!.env, { HOME: '/home/example' });
-    assert.deepEqual(spawned!.args, buildContainerArgs({ image: IMAGE, name: NAME, runId: 'run-contract-1', limits: LIMITS }));
+    assert.deepEqual(spawned!.args, buildContainerArgs({ image: IMAGE, name: NAME, runId: 'run-contract-1', instance: INSTANCE, limits: LIMITS }));
     assert.ok(!spawned!.args.some((arg) => arg === '-v' || arg === '--mount' || arg === '--volume' || arg === '--env' || arg === '-e'));
     const [first] = proc.frames();
     assert.equal(first!['type'], 'start');
@@ -513,10 +514,12 @@ describe('docker environment whitelist', () => {
 
   it('a runner built with a bad configuration fails at creation, not at the first run', () => {
     const docker = createDockerCli({ path: DOCKER_PATH, process: new FakeDocker() });
-    const base = { docker, limits: LIMITS, clock: new FakeClock(AT) };
+    const base = { docker, instance: INSTANCE, limits: LIMITS, clock: new FakeClock(AT) };
     assert.throws(() => createContainerRunner({ ...base, image: 'node:24' }), /image/);
     assert.throws(() => createContainerRunner({ ...base, image: IMAGE, agentArgs: ['--privileged'] }), /forbidden_flag/);
     assert.throws(() => createContainerRunner({ ...base, image: IMAGE, namePrefix: 'bad prefix' }), /invalid_name/);
+    assert.throws(() => createContainerRunner({ ...base, image: IMAGE, instance: 'bad instance' }), /invalid_instance/);
+    assert.throws(() => createContainerRunner({ ...base, image: IMAGE, instance: undefined as unknown as string }), /invalid_instance/);
   });
 
   it('refuses a run_id that cannot name a container, without starting anything', async () => {
@@ -534,19 +537,35 @@ describe('cleanupOrphanContainers', () => {
     return { fake, cli: createDockerCli({ path: DOCKER_PATH, env: { HOME: '/home/example' }, process: fake }) };
   };
 
-  it('lists by label, then kills and removes exactly those containers', async () => {
+  it('lists by the run label AND the instance label, then kills and removes exactly those containers', async () => {
     const { fake, cli } = dockerWith((record) => (record.args[0] === 'ps' ? { code: 0, stdout: 'a1b2c3d4e5f6\n0123456789ab\n' } : { code: 0 }));
-    const result = await cleanupOrphanContainers({ docker: cli, label: 'aot.run' });
+    const result = await cleanupOrphanContainers({ docker: cli, instance: INSTANCE });
     assert.deepEqual(fake.execs.map((e) => [...e.args]), [
-      ['ps', '-aq', '--filter', 'label=aot.run'], ['kill', 'a1b2c3d4e5f6', '0123456789ab'], ['rm', '-f', 'a1b2c3d4e5f6', '0123456789ab'],
+      ['ps', '-aq', '--filter', 'label=aot.run', '--filter', 'label=aot.instance=inst-1'], ['kill', 'a1b2c3d4e5f6', '0123456789ab'], ['rm', '-f', 'a1b2c3d4e5f6', '0123456789ab'],
     ]);
     assert.deepEqual(result, { found: ['a1b2c3d4e5f6', '0123456789ab'], removed: 2, failures: [] });
     assert.ok(fake.execs.every((e) => e.file === DOCKER_PATH));
   });
 
+  it('never selects by the run label alone: every listing carries the instance filter, and a run id only narrows it further', async () => {
+    const { fake, cli } = dockerWith(() => ({ code: 0, stdout: '' }));
+    await cleanupOrphanContainers({ docker: cli, instance: 'other.inst_2' });
+    await cleanupOrphanContainers({ docker: cli, instance: INSTANCE, runId: 'run-9' });
+    assert.deepEqual(fake.execs.map((e) => [...e.args]), [
+      ['ps', '-aq', '--filter', 'label=aot.run', '--filter', 'label=aot.instance=other.inst_2'],
+      ['ps', '-aq', '--filter', 'label=aot.run=run-9', '--filter', 'label=aot.instance=inst-1'],
+    ]);
+    // 인스턴스 ID 없이는 부를 수 없다(타입에서도 필수이고, 런타임에서도 거부한다)
+    for (const instance of [undefined, '', 'a b', 'i=1', '--all', 'x'.repeat(64), 5]) {
+      await assert.rejects(cleanupOrphanContainers({ docker: cli, instance: instance as unknown as string }), /instance/);
+    }
+    for (const runId of ['', 'a b', 'run=1', '--all', 'x;rm']) await assert.rejects(cleanupOrphanContainers({ docker: cli, instance: INSTANCE, runId }), /runId/);
+    assert.equal(fake.execs.length, 2, 'the refused calls did not reach docker');
+  });
+
   it('does nothing more when there is nothing left, and ignores "not running" / "no such container" noise', async () => {
     const none = dockerWith(() => ({ code: 0, stdout: '' }));
-    assert.deepEqual(await cleanupOrphanContainers({ docker: none.cli, label: 'aot.run' }), { found: [], removed: 0, failures: [] });
+    assert.deepEqual(await cleanupOrphanContainers({ docker: none.cli, instance: INSTANCE }), { found: [], removed: 0, failures: [] });
     assert.equal(none.fake.execs.length, 1);
 
     const noisy = dockerWith((record) => {
@@ -554,23 +573,21 @@ describe('cleanupOrphanContainers', () => {
       if (record.args[0] === 'kill') return { code: 1, stderr: 'Error response from daemon: cannot kill container: a1b2c3d4e5f6: container is not running' };
       return { code: 1, stderr: 'Error response from daemon: No such container: a1b2c3d4e5f6' };
     });
-    assert.deepEqual((await cleanupOrphanContainers({ docker: noisy.cli, label: 'aot.run=run-1' })).failures, []);
+    assert.deepEqual((await cleanupOrphanContainers({ docker: noisy.cli, instance: INSTANCE, runId: 'run-1' })).failures, []);
   });
 
-  it('reports real failures, refuses odd labels and odd docker output, and raises DockerUnavailableError when docker is gone', async () => {
+  it('reports real failures, refuses odd docker output, and raises DockerUnavailableError when docker is gone', async () => {
     const failing = dockerWith((record) => (record.args[0] === 'ps' ? { code: 0, stdout: 'a1b2c3d4e5f6\n' } : { code: 1, stderr: 'permission denied' }));
-    const result = await cleanupOrphanContainers({ docker: failing.cli, label: 'aot.run' });
+    const result = await cleanupOrphanContainers({ docker: failing.cli, instance: INSTANCE });
     assert.equal(result.removed, 0);
     assert.equal(result.failures.length, 2);
 
-    const ok = dockerWith(() => ({ code: 0, stdout: '' }));
-    for (const label of ['', 'a b', 'x;rm', '--all', 'a=b=c', 'k=v w']) await assert.rejects(cleanupOrphanContainers({ docker: ok.cli, label }), /label/);
     const odd = dockerWith(() => ({ code: 0, stdout: '--force\n' }));
-    await assert.rejects(cleanupOrphanContainers({ docker: odd.cli, label: 'aot.run' }), /container id/);
+    await assert.rejects(cleanupOrphanContainers({ docker: odd.cli, instance: INSTANCE }), /container id/);
     const gone = dockerWith(() => ({ code: null, spawnError: 'ENOENT' }));
-    await assert.rejects(cleanupOrphanContainers({ docker: gone.cli, label: 'aot.run' }), DockerUnavailableError);
+    await assert.rejects(cleanupOrphanContainers({ docker: gone.cli, instance: INSTANCE }), DockerUnavailableError);
     const down = dockerWith(() => ({ code: 1, stderr: 'Cannot connect' }));
-    await assert.rejects(cleanupOrphanContainers({ docker: down.cli, label: 'aot.run' }), DockerUnavailableError);
+    await assert.rejects(cleanupOrphanContainers({ docker: down.cli, instance: INSTANCE }), DockerUnavailableError);
   });
 });
 

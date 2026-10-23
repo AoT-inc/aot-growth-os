@@ -11,7 +11,7 @@ import { contractInput } from '../../support/adapter-contract.ts';
 const [dockerPath, image, runId] = process.argv.slice(2);
 const docker = createDockerCli({ path: dockerPath!, env: pickDockerEnv(process.env) });
 const runner = createContainerRunner({
-  docker, image: image!, namePrefix: 'aot-test', clock: systemClock, agentArgs: ['hostile'],
+  docker, image: image!, instance: 'aot-test', namePrefix: 'aot-test', clock: systemClock, agentArgs: ['hostile'],
   limits: { memoryMiB: 128, cpus: 0.5, pidsLimit: 32, tmpfsMiB: 16 },
 });
 const controller = new AbortController();

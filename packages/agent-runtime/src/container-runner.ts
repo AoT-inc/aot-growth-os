@@ -23,6 +23,8 @@ export interface ContainerRunnerOptions {
   docker: DockerCli;
   /** 이미지 ID `sha256:…` */
   image: string;
+  /** 컨테이너에 붙는 `aot.instance` 라벨 값(데몬 인스턴스 ID). 고아 정리가 이 값으로만 컨테이너를 고른다 */
+  instance: string;
   limits: ContainerLimits;
   user?: { uid: number; gid: number };
   /** 이미지 뒤에 붙는 에이전트 인자(데몬 설정) */
@@ -119,7 +121,7 @@ export function createContainerRunner(options: ContainerRunnerOptions): Containe
 
   const containerNameFor = (runId: string): string => `${namePrefix}-${runId}`;
   const argsFor = (runId: string, name: string): string[] => buildContainerArgs({
-    image: options.image, name, runId, limits: options.limits,
+    image: options.image, name, runId, instance: options.instance, limits: options.limits,
     ...(options.user === undefined ? {} : { user: options.user }),
     ...(options.agentArgs === undefined ? {} : { agentArgs: options.agentArgs }),
   });

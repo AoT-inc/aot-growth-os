@@ -33,3 +33,8 @@
 - 검증기·평가기는 `@aot/evaluation`이 구현하고 업무 상태 전이는 하지 않는다. 판정은 domain 의 `TaskValidator` 포트로 `task-engine`에 전달되고, 전이는 `task-engine`이 허용표대로 한다(경계 lint 유지, 조립은 `apps/daemon`).
 - LLM 검증은 인터페이스(`LlmVerifier`)만 정의한다. 입력은 원본 출처와 검증 대상 주장 문장, 명세의 완료 조건뿐이며 프롬프트·세션·보고서 전문은 타입에 자리가 없다. 실제 모델 선택은 [Q22](../open-questions.md).
 - 평가기 고정 코어: 평가기 로직은 코드이며 `evaluation.evaluator`에 `id@version`을 남긴다. 버전 변경을 정책 변경 절차에 연결하는 방법(정책 형식에 고정 키를 둘지)은 [Q27](../open-questions.md)로 남긴다.
+
+## Amendment (2026-10-24): 측정 신호 정의 형식 (D2, A6-U10)
+- 사업 성과(`effect`)의 측정 신호 1개는 정의 형식을 따른다: `id`, `description`, `page_ref`(별칭 키만, 실제 주소·제품명은 `instance/`), `action`, `period`(`iso_week`), `tz`(IANA), `min_observations`(정수 ≥ 1), `attachment_required`(`true` 고정), 선택 `pass_threshold`(단위 없음). 형식 검증은 `@aot/domain`의 `validateMeasurementSignal`이 하고, 정의는 도메인 팩이 선언한다([ADR-0012](0012-extension-unit-contract.md)).
+- Phase A 의 "원본 증거"는 사람이 입력한 값과, 값마다 첨부한 `evidence`(화면·내보내기 파일)다. 근거 없는 값(`attachment_required`를 끈 정의)은 형식 검증이 거부한다. 에이전트 보고서는 여전히 원본 증거가 아니다. 읽기 전용 분석 API 연결과 `min_observations` 판정 규칙의 사용은 후속(U13 이후)이다.
+

@@ -26,6 +26,9 @@ export {
 } from './spec/task-spec.ts';
 export { MAX_TIME_LIMIT_MS, parseTimeLimit } from './spec/time-limit.ts';
 export { checkTaskSpecReferences } from './spec/spec-references.ts';
+export {
+  MAX_MEASUREMENT_DESCRIPTION_CHARS, MEASUREMENT_PERIODS, validateMeasurementSignal, type MeasurementPeriod, type MeasurementSignal,
+} from './spec/measurement-signal.ts';
 export { PACK_CONTENT_KEYS, validatePackManifest, type PackContentKey, type PackManifest } from './spec/pack-manifest.ts';
 export {
   isNonBlankString, isPlainObject, IssueCollector, ValidationError,

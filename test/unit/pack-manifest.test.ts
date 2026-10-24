@@ -46,7 +46,8 @@ test('required_tools is a list of unique names', () => {
   assert.ok(has(errorsOf({ ...valid(), required_tools: [''] }), 'required_tools[0]', 'type'));
 });
 
-test('contents may only name the four pack directories and must stay inside the pack', () => {
+test('contents may only name the five pack directories and must stay inside the pack', () => {
+  assert.equal(validatePackManifest({ ...valid(), contents: { ...valid().contents, measurement_signals: 'measurement-signals/' } }).ok, true);
   assert.ok(has(errorsOf({ ...valid(), contents: { connectors: 'connectors/' } }), 'contents.connectors', 'unknown_field'));
   assert.ok(has(errorsOf({ ...valid(), contents: { workflows: '../core/' } }), 'contents.workflows', 'path'));
   assert.ok(has(errorsOf({ ...valid(), contents: { workflows: '/etc/' } }), 'contents.workflows', 'path'));

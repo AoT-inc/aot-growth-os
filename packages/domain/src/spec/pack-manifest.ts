@@ -1,11 +1,11 @@
 // 팩 manifest 형식 검증 (ADR-0012 §1: 이름, 버전, 요구 코어 버전, 필요한 도구, 구성 디렉터리).
 // 형식만 본다. 팩의 채택·권한은 코어의 정책·승인 경로가 정하며 manifest 로 얻을 수 없다 (ADR-0012 §3).
-// 측정 신호 정의 형식은 문서에 필드가 정해지지 않아 여기에 넣지 않았다 (보고 사항).
+// 측정 신호 정의의 형식은 measurement-signal.ts 가 검증하고, 정의 파일의 위치는 `contents.measurement_signals` 로 선언한다 (A6-U10).
 import {
   IssueCollector, isNonBlankString, isPlainObject, joinPath, rejectUnknownKeys, type ValidationResult,
 } from '../validation.ts';
 
-export const PACK_CONTENT_KEYS = ['workflows', 'routines', 'evaluations', 'policy_examples'] as const;
+export const PACK_CONTENT_KEYS = ['workflows', 'routines', 'evaluations', 'policy_examples', 'measurement_signals'] as const;
 export type PackContentKey = (typeof PACK_CONTENT_KEYS)[number];
 
 export interface PackManifest {

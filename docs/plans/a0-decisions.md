@@ -57,7 +57,9 @@
 | C. 콘텐츠 반응(클릭·조회) | 1 충족, 4 약함 | 사업 성과와의 연결이 약하다 |
 | D. 매출 | 4 약함, 1 부족 | 지연이 길고 귀속이 어렵다. Phase A에 부적합 |
 
-**권장: A.** 실제로 어느 제품의 어느 페이지·행동인지는 `instance/`에 기록한다. 결정 전에 주간 사이클을 사람이 손으로 1~2회 돌려 보고(조사 → 실험 제안 → 측정) 관측 수가 나오는지 확인하는 것을 권한다. 이 수동 시험은 Phase A 전체의 사용자 가치를 미리 확인하는 가장 싼 방법이다.
+**권장: A.** 실제로 어느 제품의 어느 페이지·행동인지는 `instance/`에 기록한다.
+
+**정의 형식 (구현: A6-U10, `validateMeasurementSignal`).** 팩의 `measurement-signals/<id>.json`에 둔다. 필드: `id`, `description`, `page_ref`(실제 주소가 아니라 별칭 키 `<종류>:<이름>`, 예 `landing:example-product`; 별칭 → 실제 페이지는 `instance/`에만), `action`(목표 행동 이름), `period`(`iso_week`만), `tz`(IANA, 주 경계), `min_observations`(정수 ≥ 1), `attachment_required`(`true` 고정: Phase A 는 사람이 입력한 값마다 근거를 `evidence`로 첨부), 선택 `pass_threshold`(단위 없는 수). 알 수 없는 키와 URL 모양 문자열은 거부한다. 기록: [ADR-0007 Amendment](../adr/0007-independent-evaluation.md), [ADR-0012 Amendment](../adr/0012-extension-unit-contract.md), [A6-U10 기록](phase-a.md#a6-u10-기록-2026-10-24). 결정 전에 주간 사이클을 사람이 손으로 1~2회 돌려 보고(조사 → 실험 제안 → 측정) 관측 수가 나오는지 확인하는 것을 권한다. 이 수동 시험은 Phase A 전체의 사용자 가치를 미리 확인하는 가장 싼 방법이다.
 
 ## D3. 위험 변경 승인자 구성 (Q6)
 

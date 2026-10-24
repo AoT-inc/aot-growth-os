@@ -1,0 +1,10 @@
+{
+  "id": "weekly-landing-conversions",
+  "description": "랜딩 페이지 1개의 주간 목표 행동 전환 수. 사람이 값을 입력하고 근거(화면·내보내기 파일)를 첨부한다.",
+  "page_ref": "landing:example-product",
+  "action": "signup",
+  "period": "iso_week",
+  "tz": "Asia/Seoul",
+  "min_observations": 1,
+  "attachment_required": true
+}

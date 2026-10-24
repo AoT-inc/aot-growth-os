@@ -127,7 +127,7 @@
 | 단위 | 내용 | 선행 |
 |---|---|---|
 | U9 | 루틴 발화 시각 계산(cron 부분집합 + IANA tz, `catch_up`), 템플릿 포트 `RoutineTemplateSource`, 템플릿 하나에서 업무 여러 개 발화(템플릿 안 이름으로 의존) | 없음 |
-| U10 | 측정 신호 정의 형식(D2), 팩의 루틴·템플릿 선언, 팩 로더 | U9 |
+| U10 | 측정 신호 정의 형식(D2), 팩의 루틴·템플릿 선언, 팩 로더 (완료, [기록](#a6-u10-기록-2026-10-24)) | U9 |
 | U11 | 업무 간 결과 전달(`inputs[kind=task_result]` → `AdapterInput.upstream`, `external_untrusted`), 업무별 어댑터 선택 | U10 |
 | U12 | 조사 결과 `uncertainties[]`·`uncertainty_listed` 검사, 가짜 LLM 검증기 연결 | U10 |
 | U13 | 측정 값 입력(소켓 `measure` → `recordMeasurement`, 사람만), 대기 조건, `createMeasurementSignalSource` | U10 |
@@ -142,7 +142,18 @@
 - 구현: `packages/task-engine/src/schedule.ts`(순수 함수: `parseSchedule`, `nextSlot`, `slotsBetween`, `latestSlot`, `planFirings`, `missedSlots`), `routine.ts`(포트 `RoutineTemplateSource`, `RoutineFirer`), `create.ts`의 `fireRoutineTasks`(템플릿 하나로 업무 여러 개를 한 트랜잭션에 발화), `TaskWorker` 옵션 `routines`(포트가 주입된 경우에만 tick 이 도래한 슬롯을 발화, 보고는 `TickReport.routines`).
 - 일정 형식, 시간대 경계(건너뛴 시각은 건너뛴 길이만큼 뒤로, 겹친 시각은 앞선 쪽 한 번), `catch_up`, 기준점, 허용 지연의 정의는 ADR-0004 Amendment.
 - 시험: 단위 `task-schedule`(표 시험·잘못된 일정 거부·catch_up), `task-routine`(워커 통합: 업무 여러 개와 이름 의존, 거부, 재시도), 다중 프로세스 `task-engine-routine-multiprocess`(두 데몬이 같은 슬롯을 동시에 tick → 발화 1건·템플릿 1벌, 3주 정지 후 `run_once`/`skip`).
-- 열린 항목: 한 번도 발화하지 않은 루틴의 기준 시각은 `routine` 행에 켠 시각이 없어 `activatedAt` 주입이 없으면 "프로세스가 처음 본 시각"이다. 루틴 활성화(U15)가 활성화 event 의 시각을 `activatedAt` 으로 넘긴다. 템플릿 포트의 실제 구현(팩 로더)은 U10.
+- 열린 항목: 한 번도 발화하지 않은 루틴의 기준 시각은 `routine` 행에 켠 시각이 없어 `activatedAt` 주입이 없으면 "프로세스가 처음 본 시각"이다. 루틴 활성화(U15)가 활성화 event 의 시각을 `activatedAt` 으로 넘긴다. 템플릿 포트의 실제 구현(팩 로더)은 U10 에서 했다 ([A6-U10 기록](#a6-u10-기록-2026-10-24)).
+
+#### A6-U10 기록 (2026-10-24)
+
+- 구현: ① 측정 신호 정의 형식(D2): `packages/domain/src/spec/measurement-signal.ts`의 `validateMeasurementSignal`. 필드 `id`, `description`, `page_ref`(별칭 키 `<종류>:<이름>`, 주소 금지), `action`, `period`(`iso_week`만), `tz`(IANA), `min_observations`(정수 ≥ 1), `attachment_required`(`true`만, 생략도 거부), 선택 `pass_threshold`(유한한 수, 단위 없음). 알 수 없는 키·URL 모양 문자열을 거부하고 사유 코드를 모아 돌려준다. ② 팩 선언: `packs/example-marketing/`에 루틴 1개(주간 시장 조사, `0 9 * * 1 Asia/Seoul`, `catch_up: skip`), 업무 템플릿 1개(조사 업무 1건, `fetch_url` 읽기), 측정 신호 1개(`landing:example-product`, `signup`). manifest 에 `required_tools: ["fetch_url"]`와 새 구성 디렉터리 `contents.measurement_signals`를 더했다(`PACK_CONTENT_KEYS`, [ADR-0012 Amendment](../adr/0012-extension-unit-contract.md)). ③ 팩 로더 `apps/daemon/src/pack-loader.ts`: 디렉터리를 데이터로 읽고(코드 import 없음) 전부 검증(`loadPack`, 문제는 파일·경로·코드와 함께 모아 `PackLoadError`), 루틴을 DB 에 반영(`syncPackRoutines`), 포트 `RoutineTemplateSource` 구현(`templateSource`), 측정 신호 목록(`signals`)을 돌려준다. ④ 데몬: 설정 키 `pack_dir`·`pack_values`(`packOptionsFromConfig`), `assembleDaemon({pack})`이 로드·반영하고 워커 `routines.source`에 연결한다. 설정이 없으면 이전 동작이다(`Daemon.pack`·`packSync`는 null).
+- 해석·결정:
+  - **루틴 반영 규칙(한 트랜잭션, 멱등).** 루틴은 항상 `enabled=0`으로 만든다(켜는 것은 U15 의 실험 승인). 없으면 만들고(id = `routine-<slug>`), 같으면 아무것도 쓰지 않고(켜진 상태도 건드리지 않음), 선언이 DB 행과 다르면 **`enabled=0`인 행만 선언에 맞춰 갱신**하고 `enabled=1`인 행은 `routine_enabled_conflict`로 거부한다(켜진 루틴의 일정·템플릿을 팩 파일 수정으로 바꾸면 실험 승인 경로를 우회한다). 팩에서 사라진 루틴은 지우지도 끄지도 않는다. `org_unit`·`product`는 slug 로 DB 행을 찾고, 없거나 `registered`가 아닌 product 는 거부한다(schema.sql 의 "registered가 아닌 product 는 product_id 가 가리킬 수 없다"). 하나라도 거부되면 아무것도 쓰지 않으며 조립이 던진다(데몬이 시작하지 못한다).
+  - **치환.** 템플릿·루틴 선언의 *문자열 값*에서 `{{name}}`(소문자·숫자·밑줄)을 `pack_values`로 바꾼다. JSON 을 파싱한 뒤 값만 바꾸는 단일 패스라 값이 구조를 바꾸거나 다른 자리표시자를 끌어올 수 없다(값 안의 `{{`·`}}` 거부, 키 안의 자리표시자 거부). 값이 없는 자리표시자·모양이 틀린 중괄호는 거부하고, 치환한 명세는 `validateTaskSpec`(draft, trigger 를 붙여서)을 통과해야 한다. 검증은 시작 때 모든 템플릿에 대해 한 번 하고(빠진 값이 있는 팩은 시작하지 못함), 해석할 때(`resolve`)도 다시 한다(결정적 거부는 `TaskCreationError`라 RoutineFirer 가 같은 슬롯을 다시 시도하지 않는다). 템플릿의 `trigger`·`dependencies`는 엔진이 정하므로 거부한다. 호출마다 명세 복사본을 돌려준다.
+  - **파일 규칙.** 파일 이름(확장자 제외)은 `id`/`slug`와 같아야 한다. 심볼릭 링크·1 MiB 초과·`.json` 아닌 파일(무시)을 다룬다. 템플릿은 파일당 버전 하나이고 `routine.task_template`(`<id>@<version>`)이 가리키는 템플릿이 팩에 없으면 거부한다.
+  - **U9 의 남은 문제**(첫 발화 전 루틴의 기준점 `activatedAt`)는 U15 몫이라 건드리지 않았다. 루틴이 모두 꺼져 있어 이 단계에서는 발화가 일어나지 않는다.
+- 시험: 단위 `measurement-signal`(표 시험: 정상, 알 수 없는 키, 잘못된 period·tz, `min_observations` 0·소수·문자, `attachment_required` false·생략·문자, `pass_threshold`, URL 거부, 팩 안 정의 파일 전부), `pack-loader`(예제 팩 전체 검증, 치환 결과가 `validateTaskSpec` 통과, 미치환 자리표시자·값 검증·잘못된 중괄호 거부, 파일 형식 위반 전부 수집, `syncPackRoutines` 멱등·비활성·갱신 규칙·켜진 행 거부·없는 부서/제품·미등록 제품), `daemon-pack`(조립 시 설정 유무 두 경우, 재조립 무변화, 비활성 동안 발화 없음, 켜면 팩 템플릿으로 업무가 생김).
+- 열린 항목: ① 팩 `required_tools`가 실제 도구 선언과 맞는지는 확인하지 않는다(데몬의 도구 목록이 없는 조립도 있다). ② 템플릿에 날짜·주차 같은 슬롯 값을 넣는 내장 자리표시자는 없다(필요해지면 U11 이후). ③ 측정 신호 정의는 읽어 두기만 한다(값 입력·대기 조건은 U13).
 
 ## 3. 필수 테스트 매핑
 

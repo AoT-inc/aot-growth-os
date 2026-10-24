@@ -3,11 +3,12 @@
   "name": "example-marketing",
   "version": "0.0.0",
   "requires_core": ">=0.0.0 <1.0.0",
-  "required_tools": [],
+  "required_tools": ["fetch_url"],
   "contents": {
     "workflows": "workflows/",
     "routines": "routines/",
     "evaluations": "evaluations/",
-    "policy_examples": "policy-examples/"
+    "policy_examples": "policy-examples/",
+    "measurement_signals": "measurement-signals/"
   }
 }

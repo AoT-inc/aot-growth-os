@@ -42,7 +42,8 @@ export function rig(env: PolicyEnv, candidates: unknown[], extra: Partial<Assemb
     db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
     paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
     evaluation: { fetcher: new FakeFetcher({ [EXAMPLE_URL]: PAGE }) },
-    measurementSignals: [PACK_SIGNAL],
+    // 팩을 주면 측정 신호 정의는 팩에서 온다(둘 다 주면 조립이 거부한다)
+    ...(extra.pack === undefined ? { measurementSignals: [PACK_SIGNAL] } : {}),
     agent: {
       adapter: research, adapters: new Map([['planner-fake', planner]]), timers: new ManualGatewayTimers(),
       selectAdapter: (spec) => (spec.validation.deterministic.includes('experiment_candidates') ? 'planner-fake' : null),

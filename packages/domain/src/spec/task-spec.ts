@@ -15,6 +15,22 @@ import {
 import { MAX_MEASUREMENT_INPUTS, MEASUREMENT_INPUT_KIND, MEASUREMENT_REF_PREFIX, parseMeasurementRef } from './measurement-signal.ts';
 import { parseTimeLimit } from './time-limit.ts';
 
+// 기억 입력 (A6-U16): `inputs[kind='memory']`. ref 는 `memory:<memory_item id>`(그 항목이 *지금 현재 사실*이어야 한다) 또는 선택자 `memory:latest#strategy_record`
+// (같은 상품의 가장 최근 현재 사실 `strategy_record` — 업무를 만들 때 구체 id 로 바뀌고, 없으면 입력이 빠진다). 해석·확인은 DB 가 필요하므로 업무 생성 단계(task-engine)가 한다.
+export const MEMORY_INPUT_KIND = 'memory';
+export const MEMORY_REF_PREFIX = 'memory:';
+export const MEMORY_LATEST_SELECTOR = 'memory:latest#strategy_record';
+export const MAX_MEMORY_INPUTS = 3;
+const MEMORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** `memory:<id>` 면 `{id}`, 선택자면 `{latest: 'strategy_record'}`, 그 밖은 null */
+export function parseMemoryRef(ref: string): { id: string } | { latest: 'strategy_record' } | null {
+  if (ref === MEMORY_LATEST_SELECTOR) return { latest: 'strategy_record' };
+  if (!ref.startsWith(MEMORY_REF_PREFIX)) return null;
+  const id = ref.slice(MEMORY_REF_PREFIX.length);
+  return MEMORY_ID.test(id) ? { id } : null;
+}
+
 export interface TaskTrigger { kind: TriggerKind; ref: string }
 export interface TaskInput { name: string; ref: string; kind: string }
 
@@ -197,6 +213,28 @@ function checkInputs(value: unknown, out: IssueCollector): void {
   });
   checkTaskResultInputs(value, out);
   checkMeasurementInputs(value, out);
+  checkMemoryInputs(value, out);
+}
+
+/** `memory` 입력의 형식 (A6-U16): `memory:<id>` 또는 선택자, 최대 MAX_MEMORY_INPUTS 개, 이름 중복 없음. 기억 항목의 존재·현재 사실 여부는 생성 단계가 본다 */
+function checkMemoryInputs(inputs: unknown[], out: IssueCollector): void {
+  const names = new Set<string>();
+  let count = 0;
+  inputs.forEach((item: unknown, index) => {
+    if (!isPlainObject(item) || item['kind'] !== MEMORY_INPUT_KIND) return;
+    const path = joinPath('inputs', index);
+    count += 1;
+    if (count === MAX_MEMORY_INPUTS + 1) out.add(path, 'too_many', `more than ${MAX_MEMORY_INPUTS} '${MEMORY_INPUT_KIND}' inputs`);
+    const ref = item['ref'];
+    if (isNonBlankString(ref) && parseMemoryRef(ref) === null) {
+      out.add(joinPath(path, 'ref'), 'format', `a '${MEMORY_INPUT_KIND}' input ref must be '${MEMORY_REF_PREFIX}<memory item id>' or '${MEMORY_LATEST_SELECTOR}'`);
+    }
+    const name = item['name'];
+    if (isNonBlankString(name)) {
+      if (names.has(name)) out.add(joinPath(path, 'name'), 'duplicate', `more than one '${MEMORY_INPUT_KIND}' input is named '${name}'`);
+      names.add(name);
+    }
+  });
 }
 
 /**

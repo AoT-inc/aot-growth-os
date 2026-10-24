@@ -36,7 +36,10 @@ export type StrategyRuleCode =
   | 'not_found'
   | 'stale_state'
   | 'approval_missing'
-  | 'experiment_scope_required';
+  | 'experiment_scope_required'
+  | 'reason_required'
+  | 'no_result'
+  | 'not_passed';
 
 export class StrategyRuleError extends Error {
   readonly code: StrategyRuleCode;
@@ -298,4 +301,259 @@ export function pendingExperimentActivations(db: Db, limit = 20): string[] {
      ORDER BY s.created_at, s.rowid LIMIT ?`,
     [EXPERIMENT_ACTIVATION_KEY_PREFIX, limit],
   ).map((row) => row.id);
+}
+
+
+// ===== 실험 결과 검토·결정 기록 (A6-U16, 주간 사이클 7단계) =====
+// 실험 1주가 지난 뒤 사이클이 결과 검토 업무를 만들고(event `experiment-review:<전략 id>`), 그 업무의 평가가 pass 또는 fail 로 정해지면 결과를 기록하며
+// (event `experiment-result:<전략 id>`, 기억 항목은 평가 패키지의 `recordExperimentResult`), 전략 상태는 사람의 결정(승격·거절) 또는 fail 일 때의 시스템 거절로 바뀐다
+// (event `experiment-decision:<전략 id>`). 키와 조회는 evaluation(합격선 읽기)·apps(사이클, 승인 CLI)가 모두 읽으므로 여기에 둔다.
+//
+// rejectExperiment: `experiment → rejected` (허용표, 사유 필수). 사람 또는 시스템(평가 fail)이 부르고 에이전트는 거부된다.
+// promoteExperiment: `experiment → active` 승격은 사람만, 기록된 결과가 pass(평가 pass AND safety pass)일 때만. 이전 `active` 는 같은 트랜잭션에서 `retired` 로 둔다(롤백 지점).
+// 둘 다 Db.writeTx 안에서만 부른다(루틴 끄기·종료 기록은 task-engine 의 endExperimentInTx 와 같은 트랜잭션에서 apps 가 묶는다).
+
+export const EXPERIMENT_REVIEW_EVENT = { source: 'experiment-cycle', type: 'experiment.review_created' } as const;
+export const EXPERIMENT_RESULT_EVENT = { source: 'experiment-cycle', type: 'experiment.result_recorded' } as const;
+export const EXPERIMENT_DECISION_EVENT = { source: 'experiment-cycle', type: 'experiment.decided' } as const;
+export const EXPERIMENT_REVIEW_KEY_PREFIX = 'experiment-review:';
+export const EXPERIMENT_RESULT_KEY_PREFIX = 'experiment-result:';
+export const EXPERIMENT_DECISION_KEY_PREFIX = 'experiment-decision:';
+
+export const experimentReviewKey = (strategyVersionId: string): string => `${EXPERIMENT_REVIEW_KEY_PREFIX}${strategyVersionId}`;
+export const experimentResultKey = (strategyVersionId: string): string => `${EXPERIMENT_RESULT_KEY_PREFIX}${strategyVersionId}`;
+export const experimentDecisionKey = (strategyVersionId: string): string => `${EXPERIMENT_DECISION_KEY_PREFIX}${strategyVersionId}`;
+/** 결정적 event id (같은 키는 같은 id) */
+export const experimentEventId = (key: string): string => `event-${sha256Hex(key).slice(0, 32)}`;
+
+export interface ExperimentReview {
+  eventId: string;
+  strategyVersionId: string;
+  reviewTaskId: string;
+  /** 판정 대상 주 (`YYYY-Www`, 측정 신호의 tz) */
+  experimentWeek: string;
+  signalId: string;
+  period: { start: string; end: string; tz: string };
+  activatedAt: string;
+  /** 비교 기록의 기준선 (없으면 null) */
+  baseline: { week: string; value: number } | null;
+  /** 이 실험의 합격선 (비교 기록이 기준선 대비로 정함, 없으면 null) */
+  passAtLeast: number | null;
+  planningTaskId: string | null;
+  createdAt: string;
+}
+
+export interface RecordExperimentReviewInput {
+  strategyVersionId: string;
+  reviewTaskId: string;
+  experimentWeek: string;
+  signalId: string;
+  period: { start: string; end: string; tz: string };
+  activatedAt: string;
+  baseline: { week: string; value: number } | null;
+  passAtLeast: number | null;
+  planningTaskId: string | null;
+  by: TransitionActor;
+}
+
+/** 결과 검토 업무를 만들었다는 기록 (멱등). 합격선·기준선을 이 시점의 값으로 고정해 둔다. Db.writeTx 안에서 부른다 */
+export function recordExperimentReview(tx: Db, clock: Clock, input: RecordExperimentReviewInput): { created: boolean; eventId: string } {
+  refuseAgent(input.by, 'record an experiment review');
+  const key = experimentReviewKey(input.strategyVersionId);
+  const eventId = experimentEventId(key);
+  if (tx.get('SELECT 1 AS one FROM event WHERE idempotency_key = ?', [key])) return { created: false, eventId };
+  const now = clock.nowIso();
+  tx.run(
+    `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    [
+      eventId, EXPERIMENT_REVIEW_EVENT.source, input.strategyVersionId, EXPERIMENT_REVIEW_EVENT.type,
+      JSON.stringify({
+        strategy_version_id: input.strategyVersionId, review_task_id: input.reviewTaskId, experiment_week: input.experimentWeek, signal_id: input.signalId,
+        period: input.period, activated_at: input.activatedAt, baseline: input.baseline, pass_at_least: input.passAtLeast, planning_task_id: input.planningTaskId,
+      }),
+      key, now, now,
+    ],
+  );
+  return { created: true, eventId };
+}
+
+function reviewOf(row: { id: string; payload: string; received_at: string }): ExperimentReview | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(row.payload);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(payload) || !isNonBlankString(payload['strategy_version_id']) || !isNonBlankString(payload['review_task_id'])
+    || !isNonBlankString(payload['experiment_week']) || !isNonBlankString(payload['signal_id']) || !isPlainObject(payload['period'])) return null;
+  const period = payload['period'];
+  const baseline = payload['baseline'];
+  return {
+    eventId: row.id,
+    strategyVersionId: payload['strategy_version_id'],
+    reviewTaskId: payload['review_task_id'],
+    experimentWeek: payload['experiment_week'],
+    signalId: payload['signal_id'],
+    period: { start: String(period['start']), end: String(period['end']), tz: String(period['tz']) },
+    activatedAt: String(payload['activated_at']),
+    baseline: isPlainObject(baseline) && typeof baseline['value'] === 'number' ? { week: String(baseline['week']), value: baseline['value'] } : null,
+    passAtLeast: typeof payload['pass_at_least'] === 'number' && Number.isFinite(payload['pass_at_least']) ? payload['pass_at_least'] : null,
+    planningTaskId: typeof payload['planning_task_id'] === 'string' ? payload['planning_task_id'] : null,
+    createdAt: row.received_at,
+  };
+}
+
+/** 전략의 결과 검토 기록 (없으면 null) */
+export function findExperimentReview(db: Db, strategyVersionId: string): ExperimentReview | null {
+  const row = db.get<{ id: string; payload: string; received_at: string }>(
+    'SELECT id, payload, received_at FROM event WHERE idempotency_key = ? AND source = ? AND type = ?',
+    [experimentReviewKey(strategyVersionId), EXPERIMENT_REVIEW_EVENT.source, EXPERIMENT_REVIEW_EVENT.type],
+  );
+  return row ? reviewOf(row) : null;
+}
+
+/** 결과 검토 업무가 가리키는 검토 기록 (그 업무가 결과 검토 업무가 아니면 null). 평가기의 합격선 조회가 쓴다 */
+export function findExperimentReviewByTask(db: Db, taskId: string): ExperimentReview | null {
+  const row = db.get<{ id: string; payload: string; received_at: string }>(
+    'SELECT id, payload, received_at FROM event WHERE source = ? AND type = ? AND json_extract(payload, \'$.review_task_id\') = ?',
+    [EXPERIMENT_REVIEW_EVENT.source, EXPERIMENT_REVIEW_EVENT.type, taskId],
+  );
+  return row ? reviewOf(row) : null;
+}
+
+export interface ExperimentResult {
+  eventId: string;
+  strategyVersionId: string;
+  reviewTaskId: string;
+  evaluationId: string;
+  conclusion: 'pass' | 'fail';
+  measurementMemoryId: string;
+  strategyRecordMemoryId: string;
+  totalCostUsd: number;
+  humanMinutes: number;
+  recordedAt: string;
+}
+
+/** 전략의 기록된 결과 (없으면 null). 결과 기록은 평가 패키지의 `recordExperimentResult` 가 쓴다 */
+export function findExperimentResult(db: Db, strategyVersionId: string): ExperimentResult | null {
+  const row = db.get<{ id: string; payload: string; received_at: string }>(
+    'SELECT id, payload, received_at FROM event WHERE idempotency_key = ? AND source = ? AND type = ?',
+    [experimentResultKey(strategyVersionId), EXPERIMENT_RESULT_EVENT.source, EXPERIMENT_RESULT_EVENT.type],
+  );
+  if (!row) return null;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(row.payload);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(payload) || (payload['conclusion'] !== 'pass' && payload['conclusion'] !== 'fail')) return null;
+  return {
+    eventId: row.id,
+    strategyVersionId: String(payload['strategy_version_id']),
+    reviewTaskId: String(payload['review_task_id']),
+    evaluationId: String(payload['evaluation_id']),
+    conclusion: payload['conclusion'],
+    measurementMemoryId: String(payload['measurement_memory_id']),
+    strategyRecordMemoryId: String(payload['strategy_record_memory_id']),
+    totalCostUsd: Number(payload['total_cost_usd']),
+    humanMinutes: Number(payload['human_minutes']),
+    recordedAt: row.received_at,
+  };
+}
+
+export interface ExperimentDecision {
+  eventId: string;
+  strategyVersionId: string;
+  decision: 'promoted' | 'rejected';
+  by: TransitionActor;
+  actorId: string | null;
+  reason: string;
+  retired: string[];
+  decidedAt: string;
+}
+
+/** 전략의 결정 기록(승격·거절, 없으면 null) */
+export function findExperimentDecision(db: Db, strategyVersionId: string): ExperimentDecision | null {
+  const row = db.get<{ id: string; payload: string; occurred_at: string }>(
+    'SELECT id, payload, occurred_at FROM event WHERE idempotency_key = ? AND source = ? AND type = ?',
+    [experimentDecisionKey(strategyVersionId), EXPERIMENT_DECISION_EVENT.source, EXPERIMENT_DECISION_EVENT.type],
+  );
+  if (!row) return null;
+  const payload = JSON.parse(row.payload) as Record<string, unknown>;
+  return {
+    eventId: row.id, strategyVersionId, decision: payload['decision'] === 'promoted' ? 'promoted' : 'rejected', by: payload['by'] as TransitionActor,
+    actorId: typeof payload['actor_id'] === 'string' ? payload['actor_id'] : null, reason: String(payload['reason']), retired: stringList(payload['retired']), decidedAt: row.occurred_at,
+  };
+}
+
+function writeDecision(tx: Db, clock: Clock, input: { strategyVersionId: string; decision: 'promoted' | 'rejected'; by: TransitionActor; actorId: string | null; reason: string; retired: string[] }): void {
+  const key = experimentDecisionKey(input.strategyVersionId);
+  const now = clock.nowIso();
+  tx.run(
+    `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    [
+      experimentEventId(key), EXPERIMENT_DECISION_EVENT.source, input.strategyVersionId, EXPERIMENT_DECISION_EVENT.type,
+      JSON.stringify({ strategy_version_id: input.strategyVersionId, decision: input.decision, by: input.by, actor_id: input.actorId, reason: input.reason, retired: input.retired }),
+      key, now, now,
+    ],
+  );
+}
+
+const requireReason = (reason: string | undefined, what: string): string => {
+  if (!isNonBlankString(reason)) throw new StrategyRuleError('reason_required', `${what} needs a reason`);
+  return reason.trim();
+};
+
+export interface RejectExperimentInput {
+  strategyVersionId: string;
+  /** 사람 또는 시스템(평가가 fail 일 때는 'evaluator'). 에이전트면 거부 */
+  by: TransitionActor;
+  /** `by='human'` 이면 필수: 그 사람의 actor id */
+  actorId?: string;
+  reason: string;
+}
+
+/** `experiment → rejected`. 사유를 상태 전이 사유와 결정 기록에 남긴다. 이미 `experiment` 가 아니면 stale_state. Db.writeTx 안에서 부른다 */
+export function rejectExperiment(tx: Db, clock: Clock, input: RejectExperimentInput): StrategyVersionRow {
+  refuseAgent(input.by, 'reject an experiment');
+  const reason = requireReason(input.reason, 'rejecting an experiment');
+  const row = transitionStrategyVersion(tx, {
+    strategyVersionId: input.strategyVersionId, from: 'experiment', to: 'rejected', by: input.by, reason,
+    ...(input.actorId === undefined ? {} : { actorId: input.actorId }),
+  });
+  writeDecision(tx, clock, { strategyVersionId: input.strategyVersionId, decision: 'rejected', by: input.by, actorId: input.actorId ?? null, reason, retired: [] });
+  return row;
+}
+
+export interface PromoteExperimentInput {
+  strategyVersionId: string;
+  /** 승격하는 사람 (actor.kind='human') */
+  actorId: string;
+  reason: string;
+}
+
+/**
+ * `experiment → active` 승격 (사람만). 기록된 결과가 pass 이고 그 평가가 pass AND safety pass 일 때만 가능하다 — fail·inconclusive·결과 없음은 승격 사유가 아니다.
+ * 이전 `active` 전략은 같은 트랜잭션에서 `retired` 로 둔다(롤백 지점). Db.writeTx 안에서 부른다.
+ */
+export function promoteExperiment(tx: Db, clock: Clock, input: PromoteExperimentInput): { strategy: StrategyVersionRow; retired: string[] } {
+  const reason = requireReason(input.reason, 'promoting an experiment');
+  const id = input.strategyVersionId;
+  const result = findExperimentResult(tx, id);
+  if (result === null) throw new StrategyRuleError('no_result', `strategy_version '${id}' has no recorded experiment result; a strategy is promoted only after a passing review`);
+  const evaluation = tx.get<{ outcome: string; safety: string }>('SELECT outcome, safety FROM evaluation WHERE id = ?', [result.evaluationId]);
+  if (result.conclusion !== 'pass' || evaluation === undefined || evaluation.outcome !== 'pass' || evaluation.safety !== 'pass') {
+    throw new StrategyRuleError('not_passed', `strategy_version '${id}' did not pass its review (recorded conclusion ${result.conclusion}); it is not promoted`);
+  }
+  const strategy = transitionStrategyVersion(tx, { strategyVersionId: id, from: 'experiment', to: 'active', by: 'human', actorId: input.actorId, reason });
+  const retired: string[] = [];
+  for (const previous of tx.all<{ id: string }>("SELECT id FROM strategy_version WHERE status = 'active' AND id <> ? ORDER BY created_at, rowid", [id])) {
+    transitionStrategyVersion(tx, { strategyVersionId: previous.id, from: 'active', to: 'retired', by: 'human', actorId: input.actorId, reason: `replaced by ${id}: ${reason}` });
+    retired.push(previous.id);
+  }
+  writeDecision(tx, clock, { strategyVersionId: id, decision: 'promoted', by: 'human', actorId: input.actorId, reason, retired });
+  return { strategy, retired };
 }

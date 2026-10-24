@@ -6,10 +6,11 @@
 //   - 데이터 품질: 사람이 밝힌 품질이 `good` 이고, 첨부가 필수인 신호면 이벤트의 첨부 *전부*가 이 업무의 `internal` 근거 행(`document`, `sha256:<해시>`)과
 //     측정 근거 행(`measurement`, 같은 키)으로 남아 있을 때만 통과. 아니면 품질 불량 → 평가 inconclusive (기존 평가 규칙 그대로)
 //   - 신호 정의가 없거나 이벤트가 없거나 payload 를 읽을 수 없으면 "측정 불가"(inconclusive)
+//   - 합격선: 결과 검토 업무(domain 의 검토 기록이 그 업무를 가리킴, A6-U16)면 그 실험의 합격선(비교 기록의 기준선 + 상승분), 아니면 신호 정의의 `pass_threshold`
 // 에이전트 보고서는 읽지 않는다(evaluation.md §3). 이벤트 형식(source·type·payload 키)은 task-engine measurement.ts 와 같아야 한다 — 패키지 경계상 상수를 가져오지 못하므로
 // 여기 다시 적고 시험(evaluation-measurement-source)이 task-engine 의 값과 대조한다.
 import {
-  isPlainObject, MEASUREMENT_INPUT_KIND, parseMeasurementRef,
+  findExperimentReviewByTask, isPlainObject, MEASUREMENT_INPUT_KIND, parseMeasurementRef,
   type Db, type MeasurementSignal, type TaskSpec,
 } from '@aot/domain';
 
@@ -68,6 +69,11 @@ function readObservation(db: Db, signals: ReadonlyMap<string, MeasurementSignal>
     return unmeasurable(`the recorded value for ${input.ref} does not have the expected shape`);
   }
 
+  // 실험 결과 검토 업무(A6-U16)면 합격선은 그 실험의 것이다: 비교기가 기준선 대비로 정해 검토 기록에 고정해 둔 값(신호 정의의 정적 `pass_threshold` 보다 구체적이다).
+  // 평가기 규칙은 바뀌지 않는다 — 합격선은 `EffectSignal.passAtLeast` 로 들어가 기존 `assessEffect` 가 읽는다. 다른 신호·다른 주의 입력이면 적용하지 않는다.
+  const review = findExperimentReviewByTask(db, taskId);
+  const experimentLine = review !== null && review.signalId === parsed.signalId && review.experimentWeek === parsed.week ? review.passAtLeast : null;
+
   const problems: string[] = [];
   if (quality === 'poor') problems.push('the person who recorded the value marked its data quality as poor');
   if (signal.attachment_required) problems.push(...attachmentProblems(db, taskId, input.ref, attachments));
@@ -81,7 +87,7 @@ function readObservation(db: Db, signals: ReadonlyMap<string, MeasurementSignal>
       minObservations: signal.min_observations,
       dataQualityOk: problems.length === 0,
       ...(problems.length === 0 ? {} : { qualityNote: problems.join('; ') }),
-      ...(signal.pass_threshold === undefined ? {} : { passAtLeast: signal.pass_threshold }),
+      ...(experimentLine !== null ? { passAtLeast: experimentLine } : signal.pass_threshold === undefined ? {} : { passAtLeast: signal.pass_threshold }),
     },
   };
 }

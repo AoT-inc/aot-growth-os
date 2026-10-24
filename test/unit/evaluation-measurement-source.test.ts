@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, type TestContext } from 'node:test';
 
-import type { Db, FakeClock, MeasurementSignal } from '@aot/domain';
+import { recordExperimentReview, type Db, type FakeClock, type MeasurementSignal } from '@aot/domain';
 import { createMeasurementSignalSource, evaluateRun, MEASUREMENT_SOURCE_EVENT } from '@aot/evaluation';
 import { MEASUREMENT_EVENT_SOURCE, MEASUREMENT_EVENT_TYPE, recordMeasurement, type RecordMeasurementInput } from '@aot/task-engine';
 
@@ -121,5 +121,62 @@ describe('createMeasurementSignalSource', () => {
     assert.equal(await createMeasurementSignalSource({ db, signals }).read(plain), null);
     await createMeasurementSignalSource({ db, signals }).read(run);
     assert.equal(totalChanges(db), before, 'the source only reads');
+  });
+});
+
+describe('the pass line of a result review task (A6-U16)', () => {
+  const reviewOf = (db: Db, clock: FakeClock, taskId: string, over: { week?: string; signalId?: string; passAtLeast?: number | null } = {}) => db.writeTx((tx) => recordExperimentReview(tx, clock, {
+    strategyVersionId: 'strategy-x', reviewTaskId: taskId, experimentWeek: over.week ?? '2026-W43', signalId: over.signalId ?? PACK_SIGNAL.id,
+    period: { start: '2026-10-18T15:00:00.000Z', end: '2026-10-25T15:00:00.000Z', tz: 'Asia/Seoul' }, activatedAt: '2026-10-12T00:00:00.000Z',
+    baseline: { week: '2026-W42', value: 9 }, passAtLeast: over.passAtLeast === undefined ? 11 : over.passAtLeast, planningTaskId: null, by: 'evaluator',
+  }));
+  const strategyOf = (db: Db) => db.writeTx((tx) => tx.run(
+    "INSERT INTO strategy_version (id, parent_id, title, body, rationale_refs, status, experiment_scope, created_by, created_at) VALUES ('strategy-x', NULL, 't', 'b', '[]', 'experiment', '{}', 'actor-owner', '2026-10-19T00:00:00.000Z')",
+  ));
+
+  it("uses the experiment's own pass line (baseline + lift from the comparison) over the static pass_threshold of the definition; the evaluator rules are unchanged", async (t) => {
+    const { db, clock, signals, source } = rig(t, { pass_threshold: 1 });
+    strategyOf(db);
+    const run = measuredRun(db, clock, signals[0]!, { value: 10 });
+    reviewOf(db, clock, run.taskId, { passAtLeast: 11 });
+    const observation = await source.read(run);
+    assert.ok(observation?.measurable === true);
+    assert.equal(observation.signal.passAtLeast, 11);
+    const report = await evaluateRun({ db, clock, fetcher: new FakeFetcher(), effect: source }, run);
+    assert.equal(report.evaluation.outcome, 'fail', '10 is below the experiment pass line 11 although it is above the static threshold 1');
+    assert.match(report.evaluation.effect_note!, /below_target: mean 10/);
+  });
+
+  it('a value at the pass line is a pass; too few observations is still inconclusive (the evaluator rules apply as before)', async (t) => {
+    const { db, clock, signals, source } = rig(t, { min_observations: 3 });
+    strategyOf(db);
+    const run = measuredRun(db, clock, signals[0]!, { value: 11 });
+    reviewOf(db, clock, run.taskId, { passAtLeast: 11 });
+    assert.equal((await evaluateRun({ db, clock, fetcher: new FakeFetcher(), effect: source }, run)).evaluation.outcome, 'pass');
+    const few = rig(t, { min_observations: 5 });
+    strategyOf(few.db);
+    const fewRun = measuredRun(few.db, few.clock, few.signals[0]!, { value: 50 });
+    reviewOf(few.db, few.clock, fewRun.taskId, { passAtLeast: 11 });
+    assert.equal((await evaluateRun({ db: few.db, clock: few.clock, fetcher: new FakeFetcher(), effect: few.source }, fewRun)).evaluation.outcome, 'inconclusive');
+  });
+
+  it('does not apply to a task that is not the review task, to another signal or another week, or when the review has no pass line', async (t) => {
+    const { db, clock, signals, source } = rig(t, { pass_threshold: 5 });
+    strategyOf(db);
+    const run = measuredRun(db, clock, signals[0]!);
+    const passLine = async () => {
+      const observation = await source.read(run);
+      return observation?.measurable === true ? observation.signal.passAtLeast : 'unmeasurable';
+    };
+    assert.equal(await passLine(), 5, 'not a review task: the definition');
+    const other = submittedRun(db, clock, { spec: { objective: 'other', inputs: [{ name: 'k', ref: 'r:o', kind: 'k' }] } });
+    reviewOf(db, clock, other.taskId, { passAtLeast: 99 });
+    assert.equal(await passLine(), 5, 'the review belongs to another task');
+    db.writeTx((tx) => tx.run("DELETE FROM event WHERE idempotency_key = 'experiment-review:strategy-x'"));
+    reviewOf(db, clock, run.taskId, { week: '2026-W44', passAtLeast: 99 });
+    assert.equal(await passLine(), 5, 'another week');
+    db.writeTx((tx) => tx.run("DELETE FROM event WHERE idempotency_key = 'experiment-review:strategy-x'"));
+    reviewOf(db, clock, run.taskId, { passAtLeast: null });
+    assert.equal(await passLine(), 5, 'the comparison left no pass line');
   });
 });

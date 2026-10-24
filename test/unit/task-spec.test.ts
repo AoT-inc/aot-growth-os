@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, test } from 'node:test';
 
-import { contentHash, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, resolveExpectedQuotes, validateTaskSpec, type Issue } from '@aot/domain';
+import { contentHash, MAX_MEMORY_INPUTS, parseMemoryRef, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, resolveExpectedQuotes, validateTaskSpec, type Issue } from '@aot/domain';
 import { taskSubject, taskSubjectHash } from '@aot/policy';
 
 import { marketResearchExample, minimalDraft, productRegistrationTemplate, sourceQuoteExample } from '../support/spec-fixtures.ts';
@@ -90,6 +90,23 @@ describe('expected_quotes', () => {
     assert.notEqual(hashOf(base), hashOf({ ...base, expected_quotes: undefined }));
     assert.equal(hashOf(base), hashOf(withQuotes([{ source: 'notes', text: 'one' }])));
     assert.notEqual(contentHash(base), contentHash(withQuotes([{ source: 'notes', text: 'two' }])));
+  });
+});
+
+describe("inputs of kind 'memory' (A6-U16)", () => {
+  const withInputs = (inputs: unknown) => ({ ...minimalDraft(), inputs });
+  it('accepts memory:<id> and the selector memory:latest#strategy_record', () => {
+    assert.equal(draft(withInputs([{ name: 'previous', ref: 'memory:mem-1234', kind: 'memory' }])).ok, true);
+    assert.equal(draft(withInputs([{ name: 'previous', ref: 'memory:latest#strategy_record', kind: 'memory' }])).ok, true);
+    assert.deepEqual(parseMemoryRef('memory:mem-1'), { id: 'mem-1' });
+    assert.deepEqual(parseMemoryRef('memory:latest#strategy_record'), { latest: 'strategy_record' });
+    for (const bad of ['memory:', 'memory:a b', 'memory:latest#lesson', 'mem-1', 'memory:../x', 'memory:' + 'a'.repeat(129)]) assert.equal(parseMemoryRef(bad), null, bad);
+  });
+  it('rejects a malformed ref, duplicate names and more than the maximum', () => {
+    assert.ok(has(errorsOf(withInputs([{ name: 'p', ref: 'memory:latest#lesson', kind: 'memory' }])), 'inputs[0].ref', 'format'));
+    assert.ok(has(errorsOf(withInputs([{ name: 'p', ref: 'memory:a', kind: 'memory' }, { name: 'p', ref: 'memory:b', kind: 'memory' }])), 'inputs[1].name', 'duplicate'));
+    const many = Array.from({ length: MAX_MEMORY_INPUTS + 1 }, (_, i) => ({ name: `p${i}`, ref: `memory:m${i}`, kind: 'memory' }));
+    assert.ok(has(errorsOf(withInputs(many)), `inputs[${MAX_MEMORY_INPUTS}]`, 'too_many'));
   });
 });
 

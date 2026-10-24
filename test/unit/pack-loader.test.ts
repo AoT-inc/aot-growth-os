@@ -63,6 +63,7 @@ describe('the example pack', () => {
       ['weekly-market-research', '0 9 * * 1 Asia/Seoul', 'skip', 'weekly-market-research@1', 'core', 'example-product'],
     ]);
     assert.deepEqual(pack.templates.map((t) => [t.id, t.version, t.tasks.map((task) => task.name)]), [
+      ['experiment-result-review', 1, ['review']],
       ['weekly-experiment-planning', 1, ['research', 'plan']],
       ['weekly-market-research', 1, ['research']],
     ]);
@@ -137,7 +138,8 @@ describe('the example pack', () => {
     assert.equal(validateTaskSpec(plan, 'draft').ok, true);
     assert.deepEqual(plan['inputs'], [
       { name: 'findings', ref: 'task:research', kind: 'task_result' },
-      { name: 'baseline', ref: 'measurement:weekly-landing-conversions@2026-W43', kind: 'measurement' },
+      { name: 'baseline', ref: 'measurement:weekly-landing-conversions@2026-W43', kind: 'measurement' }, // {{last_week}}: SLOT 은 2026-W44 월요일 → 지난주 W43
+      { name: 'previous-experiment', ref: 'memory:latest#strategy_record', kind: 'memory' },
     ]);
     const ids = (plan['validation'] as { deterministic: string[] }).deterministic;
     assert.ok(ids.includes('experiment_candidates'));
@@ -145,11 +147,68 @@ describe('the example pack', () => {
     for (const task of tasks) {
       for (const id of (task.spec['validation'] as { deterministic: string[] }).deterministic) assert.ok(registered.has(id), `${task.name}: ${id} is registered`);
     }
-    // 기준선 주는 명시 주만: 값이 없거나 주가 아니면 시작 때 거부
-    const missing: Record<string, string> = { ...VALUES };
-    delete missing['baseline_week'];
-    assert.ok(has(issuesOf({ dir: PACK_DIR, values: missing }), 'workflows/weekly-experiment-planning.json', 'unresolved_placeholder', 'tasks[1].spec.inputs[1].ref'));
-    assert.ok(has(issuesOf({ dir: PACK_DIR, values: { ...VALUES, baseline_week: 'last-week' } }), 'workflows/weekly-experiment-planning.json', 'format', 'tasks[1].spec.inputs[1].ref'));
+  });
+
+  it('{{last_week}} (A6-U16): the ISO week before the one that holds the firing slot, counted in the time zone of the signal; the baseline week is no longer a pack value', () => {
+    const pack = loadPack({ dir: PACK_DIR, values: VALUES });
+    const routine = { id: 'r1', slug: 'weekly-experiment-planning', orgUnitId: 'u', productId: null, schedule: 's', taskTemplate: 'weekly-experiment-planning@1', catchUp: 'skip' as const };
+    const baselineAt = (scheduledFor: string): unknown => {
+      const plan = pack.templateSource.resolve({ routine, scheduledFor })[1]!.spec;
+      return (plan['inputs'] as { name: string; ref: string }[]).find((input) => input.name === 'baseline')!.ref;
+    };
+    const W = (week: string) => `measurement:weekly-landing-conversions@${week}`;
+    assert.equal(baselineAt('2026-10-26T00:00:00.000Z'), W('2026-W43')); // Mon 09:00 KST (slot of W44)
+    assert.equal(baselineAt('2026-11-02T00:00:00.000Z'), W('2026-W44'));
+    // 주 경계는 신호의 tz(Asia/Seoul) 벽시계: UTC 로는 일요일 15:00 이지만 서울은 월요일 00:00 → 새 주(W44)가 시작된 것이다
+    assert.equal(baselineAt('2026-10-25T14:59:59.000Z'), W('2026-W42')); // Sun 23:59:59 KST = W43 → 지난주 W42
+    assert.equal(baselineAt('2026-10-25T15:00:00.000Z'), W('2026-W43')); // Mon 00:00 KST = W44 → 지난주 W43
+    // 연 경계: 2026-W01 은 2025-12-29(월) 시작 → 그 주 슬롯의 지난주는 2025-W52
+    assert.equal(baselineAt('2025-12-29T00:00:00.000Z'), W('2025-W52'));
+    // 같은 슬롯이면 몇 번 풀어도 같다 (시계를 읽지 않는다)
+    assert.equal(baselineAt('2026-10-26T00:00:00.000Z'), baselineAt('2026-10-26T00:00:00.000Z'));
+    // 예약어라 pack_values 로는 줄 수 없다. 옛 baseline_week 값은 쓰이지 않는다(있어도 무해)
+    assert.ok(has(issuesOf({ dir: PACK_DIR, values: { ...VALUES, last_week: '2026-W43' } }), 'pack_values', 'reserved_placeholder', 'last_week'));
+    assert.ok(has(issuesOf({ dir: PACK_DIR, values: { ...VALUES, experiment_week: '2026-W43' } }), 'pack_values', 'reserved_placeholder'));
+    const withoutBaseline = Object.fromEntries(Object.entries(VALUES).filter(([name]) => name !== 'baseline_week'));
+    assert.doesNotThrow(() => loadPack({ dir: PACK_DIR, values: withoutBaseline }));
+  });
+
+  it('dynamic placeholders are allowed only as the whole measurement ref and need a signal of the pack', (t) => {
+    const dir = copyPack(t);
+    const file = 'workflows/weekly-experiment-planning.json';
+    const edit = (change: (inputs: { name: string; ref: string }[]) => void): PackOptions => {
+      const template = readJson(dir, file) as { tasks: { spec: { inputs: { name: string; ref: string }[] } }[] };
+      change(template.tasks[1]!.spec.inputs);
+      writeJson(dir, file, template);
+      return { dir, values: VALUES };
+    };
+    assert.ok(has(issuesOf(edit((inputs) => { inputs[1]!.ref = 'measurement:weekly-landing-conversions@{{last_week}}-x'; })), 'workflows/weekly-experiment-planning.json', 'dynamic_placeholder_position', 'tasks[1].spec.inputs[1].ref'));
+    assert.ok(has(issuesOf(edit((inputs) => { inputs[1]!.ref = 'measurement:no-such-signal@{{last_week}}'; })), 'workflows/weekly-experiment-planning.json', 'unknown_signal', 'tasks[1].spec.inputs[1].ref'));
+    assert.ok(has(issuesOf(edit((inputs) => { inputs[1]!.ref = 'task:{{last_week}}'; })), 'workflows/weekly-experiment-planning.json', 'dynamic_placeholder_position'));
+  });
+
+  it('instantiate (A6-U16): the review template is filled with the experiment week and the upstream task ids; missing values and a wrong shape are deterministic refusals', () => {
+    const pack = loadPack({ dir: PACK_DIR, values: VALUES });
+    const ref = 'experiment-result-review@1';
+    const [review] = pack.templateSource.instantiate(ref, { values: { experiment_week: '2026-W45', planning_task: 'task-plan', research_task: 'task-research' } });
+    assert.equal(review!.name, 'review');
+    assert.equal('trigger' in review!.spec, false);
+    assert.deepEqual(review!.spec['inputs'], [
+      { name: 'research', ref: 'task:task-research', kind: 'task_result' },
+      { name: 'plan', ref: 'task:task-plan', kind: 'task_result' },
+      { name: 'result', ref: 'measurement:weekly-landing-conversions@2026-W45', kind: 'measurement' },
+    ]);
+    assert.equal(validateTaskSpec({ ...review!.spec, trigger: { kind: 'event', ref: 'e' }, dependencies: ['task-plan', 'task-research'] }, 'draft').ok, true);
+    for (const missing of ['experiment_week', 'planning_task', 'research_task'] as const) {
+      const values: Record<string, string> = { experiment_week: '2026-W45', planning_task: 'task-plan', research_task: 'task-research' };
+      delete values[missing];
+      assert.throws(() => pack.templateSource.instantiate(ref, { values }), (error: unknown) => error instanceof TaskCreationError && error.issues.some((i) => i.code === 'unresolved_placeholder'), missing);
+    }
+    assert.throws(() => pack.templateSource.instantiate(ref, { values: { experiment_week: '2026-W99', planning_task: 'a', research_task: 'b' } }), (error: unknown) => error instanceof TaskCreationError);
+    assert.throws(() => pack.templateSource.instantiate('nothing@1'), (error: unknown) => error instanceof Error && !(error instanceof TaskCreationError));
+    // 루틴 발화에는 last_week 만 채워지므로 검토 템플릿(다른 값이 필요)은 루틴으로 풀 수 없다
+    const routine = { id: 'r1', slug: 'x', orgUnitId: 'u', productId: null, schedule: 's', taskTemplate: ref, catchUp: 'skip' as const };
+    assert.throws(() => pack.templateSource.resolve({ routine, scheduledFor: SLOT }), (error: unknown) => error instanceof TaskCreationError);
   });
 
   it('an unknown template is an error (and not a deterministic task rejection)', () => {

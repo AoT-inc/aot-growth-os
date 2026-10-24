@@ -4,7 +4,7 @@
 // 의존: @aot/domain 만. 정책 훅은 domain 의 TaskPolicyGate 포트, 검증은 domain 의 TaskValidator 포트(evaluation 이 구현), 실행은 이 패키지의 TaskExecutor 포트(A5 가 구현).
 export { canonicalJson } from './canonical.ts';
 export {
-  createTask, createTaskInTx, eventIdempotencyKey, findDependencyCycle, fireRoutine, fireRoutineTasks, recordEvent,
+  createTask, createTaskInTx, eventIdempotencyKey, withRefusalRecord, findDependencyCycle, fireRoutine, fireRoutineTasks, recordEvent,
   type CreateContext, type CreateTaskInput, type CreateTaskResult, type FireRoutineResult, type FireRoutineTasksResult, type IncomingEvent,
   type RecordEventResult, type RoutineFiring, type RoutineTemplateTask,
 } from './create.ts';
@@ -22,7 +22,7 @@ export {
   type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
 } from './effects.ts';
 export {
-  activateExperiment, endExperiment, EXPERIMENT_TASK_CAUSE, ExperimentActivationError,
+  activateExperiment, endExperiment, endExperimentInTx, EXPERIMENT_TASK_CAUSE, ExperimentActivationError,
   type ActivateExperimentInput, type ActivateExperimentResult, type ApprovalCheck, type EndExperimentInput, type EndExperimentResult, type ExperimentRefusalCode,
 } from './experiment.ts';
 export { EffectRefusedError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError } from './errors.ts';

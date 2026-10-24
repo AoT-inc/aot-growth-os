@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  checkTaskSpecReferences, currentPolicyVersionId, isPlainObject, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
+  checkTaskSpecReferences, currentFacts, currentPolicyVersionId, getMemoryItem, isCurrentFact, isPlainObject, MEMORY_INPUT_KIND, parseMemoryRef, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type Clock, type Db, type Issue, type TaskPolicyGate, type TaskSpec, type TaskSpecDraft, type TaskStatus, type TriggerKind,
 } from '@aot/domain';
 
@@ -73,14 +73,16 @@ export function createTaskInTx(tx: Db, context: CreateContext, input: CreateTask
   const now = context.clock.nowIso();
   const checked = validateTaskSpec(input.spec, 'draft');
   if (!checked.ok) throw new TaskCreationError(checked.errors);
-  const draft = checked.value;
+  const original = checked.value;
 
-  const dedupeKey = input.dedupeKey ?? sha256(canonicalJson({ trigger: draft.trigger, inputs: draft.inputs }));
+  // 같은 트리거·같은 입력의 판정은 작성자가 낸 입력(선택자 그대로)으로 한다: 기억 선택자가 시간이 지나 다른 항목을 가리켜도 같은 발화는 같은 업무다.
+  const dedupeKey = input.dedupeKey ?? sha256(canonicalJson({ trigger: original.trigger, inputs: original.inputs }));
   const existing = tx.get<{ id: string; status: TaskStatus }>(
     "SELECT id, status FROM task WHERE dedupe_key = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
     [dedupeKey],
   );
   if (existing) return { created: false, taskId: existing.id, status: existing.status };
+  const draft = resolveMemoryInputs(tx, context.clock, original);
 
   const taskId = input.id ?? context.newId?.() ?? `task-${randomUUID()}`;
   if (tx.get('SELECT 1 AS one FROM task WHERE id = ?', [taskId])) {
@@ -141,6 +143,43 @@ export function createTaskInTx(tx: Db, context: CreateContext, input: CreateTask
     ...(input.causedBy === undefined ? {} : { causedBy: input.causedBy }),
   });
   return { created: true, taskId, status };
+}
+
+/**
+ * 기억 입력(`inputs[kind='memory']`, A6-U16)을 업무를 만드는 시점의 구체 참조로 바꾼다.
+ *  - 선택자 `memory:latest#strategy_record`: 같은 상품의 가장 최근 *현재 사실* `strategy_record`(반증·만료·대체·미검증·외부 유래 항목은 `currentFacts` 가 이미 뺀다)의
+ *    `memory:<id>` 로 바꾼다. 없으면 그 입력을 뺀다(선택 입력).
+ *  - 구체 참조 `memory:<id>`: 항목이 있고 지금도 현재 사실이어야 한다. 아니면 생성을 거부한다(조용히 낡은 기억을 입력으로 삼지 않는다).
+ * 저장되는 명세에는 구체 참조만 남아 승인 해시·감사가 같은 항목을 가리킨다. 항목 내용은 명세에 복사하지 않는다(참조만).
+ */
+function resolveMemoryInputs(tx: Db, clock: Clock, draft: TaskSpecDraft): TaskSpecDraft {
+  if (!draft.inputs.some((item) => item.kind === MEMORY_INPUT_KIND)) return draft;
+  const productId = draft.product === undefined ? null : tx.get<{ id: string }>('SELECT id FROM product WHERE slug = ?', [draft.product])?.id ?? null;
+  const now = clock.nowIso();
+  const issues: Issue[] = [];
+  const inputs: TaskSpecDraft['inputs'] = [];
+  draft.inputs.forEach((item, index) => {
+    if (item.kind !== MEMORY_INPUT_KIND) {
+      inputs.push(item);
+      return;
+    }
+    const parsed = parseMemoryRef(item.ref);
+    const path = `inputs[${index}].ref`;
+    if (parsed === null) return void issues.push({ path, code: 'format', message: `'${item.ref}' is not a memory reference` });
+    if ('latest' in parsed) {
+      const latest = currentFacts(tx, { clock, kind: parsed.latest }).find((memory) => memory.product_id === productId);
+      if (latest !== undefined) inputs.push({ ...item, ref: `memory:${latest.id}` });
+      return;
+    }
+    const memory = getMemoryItem(tx, parsed.id);
+    if (memory === undefined) return void issues.push({ path, code: 'not_found', message: `memory item '${parsed.id}' does not exist` });
+    if (!isCurrentFact(memory, now)) {
+      return void issues.push({ path, code: 'memory_not_current', message: `memory item '${parsed.id}' is not a current fact (refuted, superseded, expired or unverified); it cannot be a task input` });
+    }
+    inputs.push(item);
+  });
+  if (issues.length > 0) throw new TaskCreationError(issues);
+  return { ...draft, inputs };
 }
 
 interface FilledSpec {

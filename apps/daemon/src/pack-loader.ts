@@ -10,6 +10,11 @@
 //   치환은 단일 패스다. 값 안의 `{{`·`}}` 는 거부한다. 값이 없는 자리표시자, 모양이 틀린 `{{`·`}}` 는 거부한다. 치환한 업무 명세는 `validateTaskSpec` 을 통과해야 한다.
 //   로드는 시작할 때 한 번 하고 *전부* 검증한다(필요한 값이 빠진 팩은 데몬이 시작하지 못한다). 템플릿을 해석할 때(`resolve`)도 trigger 를 붙여 다시 검증한다.
 //
+// 동적 자리표시자 (A6-U16): `{{last_week}}`·`{{experiment_week}}`·`{{planning_task}}`·`{{research_task}}` 는 pack_values 가 아니라 *해석할 때* 채운다(예약어라 pack_values 로 줄 수 없다).
+//   · `{{last_week}}` = 루틴 발화 슬롯(`scheduledFor`, 주입된 시각)이 속한 ISO 주의 바로 앞 주. `{{experiment_week}}` = 호출자(사이클)가 준 판정 대상 주.
+//     둘 다 측정 입력 ref 의 전체 모양 `measurement:<신호 id>@{{...}}` 에서만 쓸 수 있고(주 키를 센 시간대는 그 신호 정의의 tz), 다른 자리에서는 거부한다.
+//   · `{{planning_task}}`·`{{research_task}}` = 호출자가 준 업무 id (결과 검토 템플릿의 `task_result` 입력 `task:{{...}}`). 그 업무들은 호출자가 `dependencies` 로 건다.
+//   로드할 때 모든 템플릿을 시험 값으로 한 번 풀어 보고, 해석(`resolve`·`instantiate`)할 때 다시 풀어 검증한다. 값이 모자라면 결정적 거부(`TaskCreationError`)다.
 // DB 반영(`syncPackRoutines`): 한 트랜잭션, 멱등. 루틴은 항상 `enabled=0` 으로 만든다 — 켜는 것은 실험 승인(U15)의 몫이라 팩이 스스로 켤 수 없다.
 //   - 없으면 만든다(`enabled=0`). 같으면 아무것도 하지 않는다(`enabled` 도 건드리지 않는다).
 //   - 선언이 DB 행과 다르면: `enabled=0` 인 행은 선언에 맞춰 갱신한다(아직 승인된 적 없는 상태라 우회할 승인이 없다). `enabled=1` 인 행은 거부한다
@@ -22,7 +27,9 @@ import {
   isNonBlankString, isPlainObject, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, validateMeasurementSignal, validatePackManifest, validateTaskSpec,
   type CatchUpMode, type Db, type Issue, type MeasurementSignal, type PackContentKey, type PackManifest, type PlainObject,
 } from '@aot/domain';
-import { parseSchedule, ScheduleError, TaskCreationError, type RoutineTemplateRequest, type RoutineTemplateSource, type RoutineTemplateTask } from '@aot/task-engine';
+import {
+  parseSchedule, previousIsoWeekKey, ScheduleError, TaskCreationError, type RoutineTemplateRequest, type RoutineTemplateSource, type RoutineTemplateTask,
+} from '@aot/task-engine';
 
 /** 팩 파일 하나의 문제. `file` 은 팩 디렉터리 기준 상대 경로(`manifest.json`, `workflows/x.json`, 설정이면 `pack_values`) */
 export interface PackIssue extends Issue {
@@ -102,9 +109,25 @@ export interface PackTemplate {
   tasks: PackTemplateTask[];
 }
 
+/** 해석할 때 채우는 동적 자리표시자 (예약어: pack_values 로 줄 수 없다) */
+export const DYNAMIC_PLACEHOLDERS = ['last_week', 'experiment_week', 'planning_task', 'research_task'] as const;
+export type DynamicPlaceholder = (typeof DYNAMIC_PLACEHOLDERS)[number];
+
+export interface InstantiateOptions {
+  /** `{{last_week}}` 를 셀 기준 순간 (UTC ISO). 루틴 발화는 슬롯 시각 */
+  at?: string;
+  /** `{{experiment_week}}`·`{{planning_task}}`·`{{research_task}}` 의 값 */
+  values?: Partial<Record<Exclude<DynamicPlaceholder, 'last_week'>, string>>;
+}
+
 /** 포트 구현. 동기라서 반환형을 좁혀 둔다(포트 `RoutineTemplateSource` 에 그대로 연결된다) */
 export interface PackTemplateSource extends RoutineTemplateSource {
   resolve(request: RoutineTemplateRequest): readonly RoutineTemplateTask[];
+  /**
+   * 루틴 밖에서 템플릿을 풀어 업무 명세 초안(trigger·dependencies 없음)을 돌려준다 (결과 검토 업무, A6-U16). 동적 자리표시자는 `options` 로 채운다.
+   * 모르는 템플릿·모자란 값·명세 검증 실패는 `TaskCreationError`(결정적 거부).
+   */
+  instantiate(templateRef: string, options?: InstantiateOptions): readonly PackTemplateTask[];
 }
 
 export interface LoadedPack {
@@ -166,12 +189,13 @@ export function loadPack(options: PackOptions): LoadedPack {
     }
   }
   // 모든 템플릿을 시작할 때 한 번 풀어 본다 — 치환 결과가 validateTaskSpec 을 통과하는지, 값이 빠지지 않았는지.
+  const signalTz = new Map(signals.map((signal) => [signal.id, signal.tz]));
   for (const template of templates) {
-    for (const issue of probeTemplate(template)) add(`workflows/${template.id}.json`, issue.path, issue.code, issue.message);
+    for (const issue of probeTemplate(template, signalTz)) add(`workflows/${template.id}.json`, issue.path, issue.code, issue.message);
   }
   if (issues.length > 0) throw new PackLoadError(issues);
 
-  return { dir, manifest, routines, templates, signals, templateSource: createTemplateSource(byRef) };
+  return { dir, manifest, routines, templates, signals, templateSource: createTemplateSource(byRef, signalTz) };
 }
 
 function checkValues(values: Readonly<Record<string, string>>, add: Collect): Record<string, string> {
@@ -183,6 +207,7 @@ function checkValues(values: Readonly<Record<string, string>>, add: Collect): Re
   for (const [name, value] of Object.entries(values)) {
     if (!VALUE_NAME.test(name)) add('pack_values', name, 'name', `placeholder name '${name}' must be lowercase letters, digits and underscores, starting with a letter`);
     else if (typeof value !== 'string' || value.trim() === '') add('pack_values', name, 'type', `value of '${name}' must be a non-empty string`);
+    else if ((DYNAMIC_PLACEHOLDERS as readonly string[]).includes(name)) add('pack_values', name, 'reserved_placeholder', `'${name}' is filled when a template is resolved; it cannot be given in pack_values`);
     else if (value.includes('{{') || value.includes('}}')) add('pack_values', name, 'braces', `value of '${name}' must not contain "{{" or "}}" (substitution is a single pass)`);
     else clean[name] = value;
   }
@@ -241,6 +266,7 @@ function substitute(value: unknown, values: Readonly<Record<string, string>>, fi
   if (typeof value === 'string') {
     const replaced = value.replace(PLACEHOLDER, (match, name: string) => {
       if (Object.hasOwn(values, name)) return values[name]!;
+      if ((DYNAMIC_PLACEHOLDERS as readonly string[]).includes(name)) return match; // 해석할 때 채운다
       add(file, path, 'unresolved_placeholder', `placeholder '${match}' has no value in pack_values`);
       return match;
     });
@@ -318,6 +344,8 @@ function checkResultInputs(tasks: readonly PackTemplateTask[], file: string, add
     inputs.forEach((item: unknown, inputIndex) => {
       if (!isPlainObject(item) || item['kind'] !== TASK_RESULT_INPUT_KIND || typeof item['ref'] !== 'string' || !item['ref'].startsWith(TASK_RESULT_REF_PREFIX)) return;
       const name = item['ref'].slice(TASK_RESULT_REF_PREFIX.length);
+      // `task:{{planning_task}}` 같은 동적 참조는 호출자가 만든 업무 id 를 가리킨다(같은 템플릿의 업무가 아님). 의존은 호출자가 건다.
+      if (name.includes('{{')) return;
       const path = `tasks[${index}].spec.inputs[${inputIndex}].ref`;
       if (!names.has(name)) add(file, path, 'not_found', `a template can read the result of a task of the same template only; '${name}' is not one`);
       else if (!task.dependsOn.includes(name)) add(file, path, 'upstream_not_a_dependency', `task '${task.name}' reads the result of '${name}', which must be in its depends_on`);
@@ -383,35 +411,104 @@ function loadRoutine(file: string, raw: unknown, values: Readonly<Record<string,
 }
 
 const PROBE_SCHEDULED_FOR = '2000-01-03T00:00:00.000Z';
+const PROBE_OPTIONS: InstantiateOptions = {
+  at: PROBE_SCHEDULED_FOR,
+  values: { experiment_week: '2000-W02', planning_task: 'task-probe-planning', research_task: 'task-probe-research' },
+};
+const DYNAMIC_PATTERN = /\{\{(last_week|experiment_week|planning_task|research_task)\}\}/g;
+const DYNAMIC_MEASUREMENT_REF = /^measurement:([a-z0-9][a-z0-9-]*)@\{\{(last_week|experiment_week)\}\}$/;
 
 function specWithTrigger(spec: PlainObject, slug: string, scheduledFor: string): PlainObject {
   return { ...structuredClone(spec), trigger: { kind: 'routine', ref: `${slug}@${scheduledFor}` } };
 }
 
-function probeTemplate(template: PackTemplate): Issue[] {
+/** 문자열 값의 동적 자리표시자를 채운다. 문제는 issues 에 모으고 그 자리는 그대로 둔다 */
+function fillDynamic(value: unknown, options: InstantiateOptions, signalTz: ReadonlyMap<string, string>, path: string, issues: Issue[]): unknown {
+  if (typeof value === 'string') {
+    if (!value.includes('{{')) return value;
+    const whole = DYNAMIC_MEASUREMENT_REF.exec(value);
+    if (whole !== null) {
+      const [, signalId, name] = whole as unknown as [string, string, string];
+      const tz = signalTz.get(signalId);
+      if (tz === undefined) {
+        issues.push({ path, code: 'unknown_signal', message: `measurement signal '${signalId}' is not defined in this pack` });
+        return value;
+      }
+      if (name === 'last_week') {
+        if (options.at === undefined || Number.isNaN(Date.parse(options.at))) {
+          issues.push({ path, code: 'unresolved_placeholder', message: "'{{last_week}}' needs the firing time of the routine slot" });
+          return value;
+        }
+        return `measurement:${signalId}@${previousIsoWeekKey(Date.parse(options.at), tz)}`;
+      }
+      const week = options.values?.experiment_week;
+      if (week === undefined) {
+        issues.push({ path, code: 'unresolved_placeholder', message: "'{{experiment_week}}' was not given" });
+        return value;
+      }
+      return `measurement:${signalId}@${week}`;
+    }
+    return value.replace(DYNAMIC_PATTERN, (match, name: string) => {
+      if (name === 'last_week' || name === 'experiment_week') {
+        issues.push({ path, code: 'dynamic_placeholder_position', message: `'${match}' is allowed only as the whole ref 'measurement:<signal id>@${match}'` });
+        return match;
+      }
+      const given = options.values?.[name as 'planning_task' | 'research_task'];
+      if (given === undefined) {
+        issues.push({ path, code: 'unresolved_placeholder', message: `'${match}' was not given` });
+        return match;
+      }
+      return given;
+    });
+  }
+  if (Array.isArray(value)) return value.map((item: unknown, index) => fillDynamic(item, options, signalTz, `${path}[${index}]`, issues));
+  if (isPlainObject(value)) {
+    const out: PlainObject = {};
+    for (const [key, item] of Object.entries(value)) out[key] = fillDynamic(item, options, signalTz, path === '' ? key : `${path}.${key}`, issues);
+    return out;
+  }
+  return value;
+}
+
+function probeTemplate(template: PackTemplate, signalTz: ReadonlyMap<string, string>): Issue[] {
   const issues: Issue[] = [];
   template.tasks.forEach((task, index) => {
-    const result = validateTaskSpec(specWithTrigger(task.spec, 'probe', PROBE_SCHEDULED_FOR), 'draft');
-    if (!result.ok) for (const e of result.errors) issues.push({ path: `tasks[${index}].spec${e.path === '' ? '' : `.${e.path}`}`, code: e.code, message: e.message });
+    const base = `tasks[${index}].spec`;
+    const local: Issue[] = [];
+    const filled = fillDynamic(task.spec, PROBE_OPTIONS, signalTz, '', local) as PlainObject;
+    for (const e of local) issues.push({ path: `${base}${e.path === '' ? '' : `.${e.path}`}`, code: e.code, message: e.message });
+    if (local.length > 0) return;
+    const result = validateTaskSpec(specWithTrigger(filled, 'probe', PROBE_SCHEDULED_FOR), 'draft');
+    if (!result.ok) for (const e of result.errors) issues.push({ path: `${base}${e.path === '' ? '' : `.${e.path}`}`, code: e.code, message: e.message });
   });
   return issues;
 }
 
-function createTemplateSource(byRef: ReadonlyMap<string, PackTemplate>): PackTemplateSource {
+function createTemplateSource(byRef: ReadonlyMap<string, PackTemplate>, signalTz: ReadonlyMap<string, string>): PackTemplateSource {
+  const filledTasks = (templateRef: string, options: InstantiateOptions, trigger: ((spec: PlainObject) => PlainObject) | null): RoutineTemplateTask[] => {
+    const template = byRef.get(templateRef);
+    if (template === undefined) throw new Error(`pack has no template '${templateRef}'`);
+    const issues: Issue[] = [];
+    const tasks = template.tasks.map((task, index): RoutineTemplateTask => {
+      const base = `tasks[${index}].spec`;
+      const local: Issue[] = [];
+      const filled = fillDynamic(task.spec, options, signalTz, '', local) as PlainObject;
+      for (const e of local) issues.push({ path: `${base}${e.path === '' ? '' : `.${e.path}`}`, code: e.code, message: e.message });
+      const spec = trigger === null ? filled : trigger(filled);
+      const result = local.length > 0 ? null : validateTaskSpec(trigger === null ? specWithTrigger(spec, 'instantiate', PROBE_SCHEDULED_FOR) : spec, 'draft');
+      if (result !== null && !result.ok) for (const e of result.errors) issues.push({ path: `${base}${e.path === '' ? '' : `.${e.path}`}`, code: e.code, message: e.message });
+      return { name: task.name, spec, dependsOn: [...task.dependsOn] };
+    });
+    // 결정적인 거부다: 같은 값으로는 다시 시도해도 같다. 호출자(RoutineFirer 등)가 같은 일을 다시 시도하지 않는다.
+    if (issues.length > 0) throw new TaskCreationError(issues);
+    return tasks;
+  };
   return {
     resolve(request: RoutineTemplateRequest): readonly RoutineTemplateTask[] {
-      const template = byRef.get(request.routine.taskTemplate);
-      if (template === undefined) throw new Error(`pack has no template '${request.routine.taskTemplate}'`);
-      const issues: Issue[] = [];
-      const tasks = template.tasks.map((task, index): RoutineTemplateTask => {
-        const spec = specWithTrigger(task.spec, request.routine.slug, request.scheduledFor);
-        const result = validateTaskSpec(spec, 'draft');
-        if (!result.ok) for (const e of result.errors) issues.push({ path: `tasks[${index}].spec${e.path === '' ? '' : `.${e.path}`}`, code: e.code, message: e.message });
-        return { name: task.name, spec, dependsOn: [...task.dependsOn] };
-      });
-      // 결정적인 거부다: 같은 값으로는 다시 시도해도 같다. 호출자(RoutineFirer)가 이 슬롯을 다시 시도하지 않는다.
-      if (issues.length > 0) throw new TaskCreationError(issues);
-      return tasks;
+      return filledTasks(request.routine.taskTemplate, { at: request.scheduledFor }, (spec) => specWithTrigger(spec, request.routine.slug, request.scheduledFor));
+    },
+    instantiate(templateRef: string, options: InstantiateOptions = {}): readonly PackTemplateTask[] {
+      return filledTasks(templateRef, options, null).map((task) => ({ name: task.name, dependsOn: [...(task.dependsOn ?? [])], spec: task.spec as PlainObject }));
     },
   };
 }

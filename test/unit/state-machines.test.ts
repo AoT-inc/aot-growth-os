@@ -29,7 +29,7 @@ const ORG_ALLOWED: Pair[] = [
 ];
 const ROLE_ALLOWED: Pair[] = [['proposed', 'trial'], ['trial', 'active'], ['active', 'retired']];
 const STRATEGY_ALLOWED: Pair[] = [
-  ['proposed', 'experiment'], ['proposed', 'active'], ['proposed', 'rejected'], ['experiment', 'active'], ['active', 'retired'],
+  ['proposed', 'experiment'], ['proposed', 'active'], ['proposed', 'rejected'], ['experiment', 'active'], ['experiment', 'rejected'], ['active', 'retired'],
 ];
 const PUBLICATION_ALLOWED: Pair[] = [
   ['draft', 'pending_approval'], ['pending_approval', 'published'], ['draft', 'published'], ['published', 'withdrawn'],

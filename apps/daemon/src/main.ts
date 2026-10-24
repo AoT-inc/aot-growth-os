@@ -13,6 +13,8 @@
 // 주간 사이클 4·5단계(A6-U14): `experiment_cycle` 설정이 있으면 worker tick 뒤마다 `cycle.advance()` 로 완료된 기획 업무의 후보를 비교해 strategy_version 을
 // `proposed` 로 만든다(추천이 없으면 사람 검토 목록). 같은 advance 가 사람이 승인한 실험(6단계, A6-U15)을 한 번만 켠다(루틴 enabled=1, 일회성 업무 생성).
 // 승인 직후 종료되어도 재시작 후 advance 가 이어서 켠다. 설정이 없으면 부르지 않는다(이전 동작).
+// 결과 검토(A6-U16): 실험 주가 끝나면 같은 advance 가 결과 검토 업무를 만들고(팩 템플릿 `experiment-result-review@1`), 평가가 정해지면 결과(measurement·strategy_record 기억, 실험 총비용)를
+// 기록한다. fail 은 시스템이 거절하고, pass 의 승격은 사람이 승인 CLI `promote` 로 한다.
 // `inputs[kind=measurement]` 업무는 값이 입력될 때까지 집히지 않는다. 출처 조회기는 `research_agent` 가 없으면 연결되지 않아 그 경우 validating 업무는 검증되지 않고 남는다(자동 완료 없음).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -123,6 +125,12 @@ async function main(): Promise<void> {
           if (a.activated) console.log(`experiment ${a.strategyVersionId} activated at ${a.activatedAt}: routines [${a.routineIds.join(', ')}], tasks [${a.taskIds.join(', ')}]`);
         }
         for (const f of report.activationFailed) console.error(`experiment activation failed ${f.strategyVersionId}${f.code === null ? '' : ` (${f.code})`}: ${f.error}`);
+        for (const r of report.reviewsCreated) console.log(`experiment ${r.strategyVersionId}: week ${r.experimentWeek} ended; result review task ${r.reviewTaskId} created (routines off: [${r.routineIds.join(', ')}])`);
+        for (const f of report.reviewFailed) console.error(`experiment review failed ${f.strategyVersionId}${f.code === null ? '' : ` (${f.code})`}: ${f.error}`);
+        for (const r of report.resultsRecorded) {
+          if (r.recorded) console.log(`experiment ${r.strategyVersionId}: result ${r.conclusion} recorded (evaluation ${r.evaluationId}, cost ${r.totalCostUsd} USD)${r.rejected ? ' -> rejected by the system' : r.conclusion === 'pass' ? ' (waiting for a person to promote)' : ''}`);
+        }
+        for (const f of report.resultFailed) console.error(`experiment result failed ${f.strategyVersionId}: ${f.error}`);
       },
     }),
     onError: (error) => console.error('tick failed:', error),

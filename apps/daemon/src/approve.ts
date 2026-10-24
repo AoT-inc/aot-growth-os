@@ -9,6 +9,9 @@
 //     cancel  <task|publication|policy_version|strategy> <id> [--comment 글]   (cooldown 중 취소. strategy 는 활성화 전에만)
 //     reject  <task|publication|policy_version|strategy> <id> [--comment 글]
 //     totp-enroll [--totp-dir DIR]   (이 기기에서 실행. 비밀을 instance/totp/<actor> 에 0600 으로 만들고 등록 URI 를 한 번 보여 준다)
+//     promote strategy <id> --comment 사유     (A6-U16. 결과가 pass 로 기록된 실험을 experiment → active 로 올린다. 사람만, 이전 active 는 retired. 사유 필수)
+//     reject  strategy <id> --comment 사유     (proposed 는 승인 엔진이, experiment 는 결과 채널이 처리한다: experiment → rejected. experiment 는 사유 필수)
+//     reviews                       (A6-U16. 실험 결과 검토 현황: 결과 대기, 승격 대기(pass), 사람 검토 필요(inconclusive 등))
 //     measure <신호 id> <값> --observations N --quality good|poor --attach <파일> [--attach <파일> ...] [--week YYYY-Www] [--minutes M]
 //             (A6-U13. 첨부 파일은 이 CLI 가 읽어 sha256 과 로컬 참조 `file:<절대 경로>` 만 보낸다. 주를 생략하면 데몬 시계 기준 지난주)
 //     measurements                   (측정 값을 기다리는 업무와 사유, 정의된 신호)
@@ -101,6 +104,7 @@ async function main(): Promise<void> {
     case 'whoami':
     case 'list':
     case 'measurements':
+    case 'reviews':
       request = { cmd, actor };
       break;
     case 'measure': {
@@ -142,8 +146,12 @@ async function main(): Promise<void> {
       needKind();
       request = { cmd, actor, kind, id, ...(comment ? { comment } : {}) };
       break;
+    case 'promote':
+      needKind();
+      request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
+      break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|totp-enroll|measure|measurements ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements ...');
   }
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
   process.stdout.write(`${JSON.stringify(response)}\n`);

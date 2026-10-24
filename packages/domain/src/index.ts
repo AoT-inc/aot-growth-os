@@ -20,7 +20,7 @@ export {
 } from './state/machines.ts';
 export {
   EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS,
-  MAX_TASK_RESULT_TOTAL_BYTES, resolveExpectedQuotes, SYSTEM_FILLED_FIELDS, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
+  MAX_MEMORY_INPUTS, MAX_TASK_RESULT_TOTAL_BYTES, MEMORY_INPUT_KIND, MEMORY_LATEST_SELECTOR, MEMORY_REF_PREFIX, parseMemoryRef, resolveExpectedQuotes, SYSTEM_FILLED_FIELDS, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type CostBudget, type ExpectedQuote, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
   type TaskSpecVersions, type TaskTrigger, type TaskValidation, type ToolRequest,
 } from './spec/task-spec.ts';
@@ -50,6 +50,10 @@ export {
   type StrategyTransitionRequest,
   EXPERIMENT_ACTIVATION_EVENT, EXPERIMENT_ACTIVATION_KEY_PREFIX, EXPERIMENT_END_EVENT, EXPERIMENT_END_KEY_PREFIX, experimentActivationKey, experimentEnded,
   experimentEndKey, experimentsInProgress, findExperimentActivation, latestRoutineActivation, pendingExperimentActivations, type ExperimentActivation,
+  EXPERIMENT_DECISION_EVENT, EXPERIMENT_DECISION_KEY_PREFIX, EXPERIMENT_RESULT_EVENT, EXPERIMENT_RESULT_KEY_PREFIX, EXPERIMENT_REVIEW_EVENT, EXPERIMENT_REVIEW_KEY_PREFIX,
+  experimentDecisionKey, experimentEventId, experimentResultKey, experimentReviewKey, findExperimentDecision, findExperimentResult, findExperimentReview,
+  findExperimentReviewByTask, promoteExperiment, recordExperimentReview, rejectExperiment,
+  type ExperimentDecision, type ExperimentResult, type ExperimentReview, type PromoteExperimentInput, type RecordExperimentReviewInput, type RejectExperimentInput,
 } from './strategy.ts';
 export {
   DENY_ALL_TASK_POLICY_GATE,

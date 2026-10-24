@@ -8,7 +8,7 @@
 | `department` / `role` | 조건부 | 책임 부서와 역할. 맞는 역할이 없으면 비워 `unassigned`로 생성 | 지정했는데 존재하지 않거나 `trial`/`active`가 아닌 role |
 | `product` | | 대상 상품 slug | 등록되지 않은 상품 |
 | `trigger` | ✔ | `{kind: event\|routine\|manual\|task, ref}` | ref 없음 |
-| `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]`. `kind='source_url'`은 조사 대상 URL, `kind='task_result'`는 선행 업무의 결과(아래 "선행 업무 결과 입력"), `kind='measurement'`는 사람이 입력할 주간 측정 값(아래 "측정 값 입력", 업무당 1개) | 출처 없는 입력, `task_result`의 잘못된 형식·중복·개수 초과, `task_result`의 선행 업무가 `dependencies`에 없음, `measurement`의 잘못된 형식(없는 주·상대 주 포함)·2개 이상 |
+| `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]`. `kind='source_url'`은 조사 대상 URL, `kind='task_result'`는 선행 업무의 결과(아래 "선행 업무 결과 입력"), `kind='measurement'`는 사람이 입력할 주간 측정 값(아래 "측정 값 입력", 업무당 1개), `kind='memory'`는 현재 사실인 기억 항목(아래 "기억 입력", 최대 3개) | 출처 없는 입력, `task_result`의 잘못된 형식·중복·개수 초과, `task_result`의 선행 업무가 `dependencies`에 없음, `measurement`의 잘못된 형식(없는 주·상대 주 포함)·2개 이상, `memory`의 잘못된 형식·이름 중복·3개 초과, 구체 `memory:<id>`가 없거나 현재 사실이 아님 |
 | `expected_quotes` | | 출처 원문에 있어야 하는 인용문 `[{source, text}]`. `source`는 `inputs[]`에서 `kind='source_url'`인 항목의 `name`(같은 이름의 `source_url` 입력이 정확히 하나여야 한다), `text`는 그 출처에 있어야 하는 문장. 상한: 전체 200건, 출처당 10건, 한 문장 500자(앞뒤 공백 제외). 조사 에이전트는 이 목록의 *모든* 문장에 대해 found/not found를 보고하고, 검증기(`quote_in_source`)가 출처 원문에서 다시 확인한다. 승인 대상 해시에 포함된다(실행 인자) | 알 수 없거나 모호한 `source`, 빈 `text`, 상한 초과, 같은 출처의 같은 문장(공백 차이 무시) 중복, `validation.deterministic`에 `quote_in_source`가 없음 |
 | `dependencies` | | 선행 업무 id 목록. 선행이 모두 `completed`가 되기 전에는 실행되지 않는다. `task_result` 입력의 선행 업무는 여기에도 있어야 한다 | 순환 |
 | `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target?}]`. `scope`·`impact`는 항목마다 필수(`target`만 선택). 최종 권한은 정책이 결정 | `scope`·`impact` 누락(스키마 검증 단계, 정책 판정 이전), 정책 판정이 deny |
@@ -104,6 +104,20 @@
 - **대기 조건.** 같은 문자열이 사람이 입력한 측정 이벤트의 `event.idempotency_key`다. 그 이벤트(`source='measurement'`, `type='measurement.recorded'`)가 없으면 스케줄러가 업무를 *집지 않는다*: `queued`로 남고 전이·시도 소모·run이 없으며, 후보 조건(SQL)이라 다른 업무의 선택을 막지 않는다. 값이 기록되면 다음 tick에 집힌다. 기다리는 업무는 승인 CLI `measurements`(`listMeasurementWaits`)로 사유(`measurement_pending: ...`)와 함께 본다.
 - **근거.** 값이 기록될 때 기다리던 업무에, 그 뒤에 만들어진 업무는 집힐 때 `evidence`(`measurement` 1줄 + 첨부 `document`, `trust_origin='internal'`)가 붙는다. 평가기는 이 근거와 이벤트를 원본 증거로 읽는다([evaluation §5.1](../operations/evaluation.md)).
 - **`task_result`와의 차이.** 선행 결과 미충족은 기다려도 바뀌지 않아 `needs_review`로 보내지만, 측정 값은 사람이 나중에 넣으므로 기다린다.
+
+## 기억 입력 (`inputs[kind=memory]`, A6-U16)
+
+이전 실험의 결과를 다음 업무의 입력으로 붙일 때 쓴다(다음 주 기획 업무가 직전 `strategy_record`를 보는 경우).
+
+```json
+{
+  "inputs": [{"name": "previous-experiment", "ref": "memory:latest#strategy_record", "kind": "memory"}]
+}
+```
+
+- **형식.** `ref`는 구체 참조 `memory:<memory_item id>` 또는 선택자 `memory:latest#strategy_record`다. 한 업무에 3개까지, 이름은 유일하다.
+- **해석(업무를 만드는 시점).** 선택자는 같은 상품(`product`가 없으면 상품 없는 항목)의 가장 최근 **현재 사실** `strategy_record`의 구체 참조로 바뀌고, 없으면 그 입력이 빠진다(선택 입력). 구체 참조는 항목이 있고 지금도 현재 사실이어야 한다 — 반증·만료·대체·미검증·외부 유래(`hypothesis`) 항목이면 생성을 거부한다(`memory_not_current`). 저장되는 명세에는 구체 참조만 남아 승인 해시·감사가 같은 항목을 가리킨다. 같은 트리거·같은 입력의 중복 판정(`dedupe_key`)은 작성자가 낸 입력(선택자 그대로)으로 한다.
+- **내용은 명세에 복사하지 않는다.** 참조만 남는다. 항목 내용을 모델 프롬프트에 어떻게 넣는지(데이터 구획 표시)는 실제 모델 어댑터(Q22 이후)의 몫이다([phase-a A6-U16 열린 항목](../plans/phase-a.md)).
 
 ## 결정론적 검사 id (`validation.deterministic`)
 

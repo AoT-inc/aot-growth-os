@@ -1,0 +1,52 @@
+{
+  "id": "experiment-result-review",
+  "version": 1,
+  "description": "주간 사이클 7단계 템플릿(결과 검토 업무 1건): 실험 1주가 끝난 뒤 데몬의 experiment_cycle 이 만든다. {{experiment_week}} = 실험 주(활성화 시각 이후 시작하는 첫 ISO 주, 해석할 때 채우는 예약 자리표시자), {{research_task}}·{{planning_task}} = 그 실험을 낳은 조사·기획 업무 id. 측정 입력은 사람이 그 주 값을 넣을 때까지 업무를 대기시키고, 평가기가 U13 측정 신호 조회기로 효과를 판정한다(합격선은 비교 기록의 것). 결과 기록·승격·거절은 코드와 승인 CLI 의 몫이다.",
+  "tasks": [
+    {
+      "name": "review",
+      "spec": {
+        "objective": "{{product}} 의 실험 주 측정 결과를 기준선·합격선과 비교해 정리한다",
+        "role": "generalist",
+        "product": "{{product}}",
+        "inputs": [
+          {
+            "name": "research",
+            "ref": "task:{{research_task}}",
+            "kind": "task_result"
+          },
+          {
+            "name": "plan",
+            "ref": "task:{{planning_task}}",
+            "kind": "task_result"
+          },
+          {
+            "name": "result",
+            "ref": "measurement:weekly-landing-conversions@{{experiment_week}}",
+            "kind": "measurement"
+          }
+        ],
+        "allowed_tools": [],
+        "constraints": {
+          "time_limit": "30m",
+          "publish_scope": "internal"
+        },
+        "acceptance_criteria": [
+          "실험 주의 측정 값과 기준선, 합격선이 함께 정리되어 있다",
+          "불확실성 항목이 명시되어 있다"
+        ],
+        "validation": {
+          "deterministic": [
+            "uncertainty_listed",
+            "budget"
+          ],
+          "llm": null,
+          "human": false
+        },
+        "cost_budget": {
+          "max_usd": 1.0
+        }
+      }
+    }
+  ]
+}

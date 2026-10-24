@@ -77,6 +77,8 @@
 | `policy_version` | 정책 내용의 정규화 해시 | 일반 변경은 사람 1인, 위험 변경은 *변경 전* 정책의 `risky_change` | 배포 시 |
 | `strategy_version` (A6-U15) | 제목·본문·근거 참조·부모·제안자 + `experiment_scope`(마케팅 업무 명세 또는 템플릿 참조, 측정 신호, 주, 비교 요약) + 승인 시점 정책 버전(id·내용 해시) | 사람 1인(cooldown·TOTP 없음), 자기 승인은 `min_approvers` 규칙, 진행 중인 실험이 있으면 거부. 승인과 같은 트랜잭션에서 `proposed → experiment` | 활성화(승인 트랜잭션 밖) 직전에 마지막 승인 기록이 사람의 `approved` 이고 해시가 지금 내용 + 배포된 어느 정책 버전과 맞는지 확인(취소·내용 변경이면 켜지 않음). 정책 변경만으로는 실험 승인을 무효로 하지 않는다 — 마케팅 업무가 생성·실행 직전에 새 정책으로 재판정되고, 외부 부작용은 그 업무가 `task` 승인(`risky_change`)을 따로 받는다 |
 
+실험 결과의 승격·거절(A6-U16)은 위 표의 승인 대상이 아니라 같은 소켓의 사람 명령이다: `promote`(`experiment → active`, 기록된 결과가 `pass`일 때만)와 `experiment` 상태 전략의 `reject`. 소켓 파일 권한 + `actor.kind='human'` 확인(채널과 domain 전이 함수가 각각 한 번)이며 사유가 필수이고 TOTP 재인증은 없다(외부 부작용이 아니라 전략 상태 기록이고, 실험은 사람 1인 승인으로 시작했다). 에이전트는 소켓이 보이지 않고 두 명령 모두 에이전트 actor 를 거부한다. 평가가 `fail`인 실험의 `experiment → rejected`만 시스템(평가기)이 한다. 근거: [evaluation §8](../operations/evaluation.md).
+
 ## 5. 위협 시나리오와 대응
 
 | 시나리오 | 대응 |

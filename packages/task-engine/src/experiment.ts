@@ -9,7 +9,8 @@
 //      - `task_spec`(일회성 명세): 업무를 만든다(정책 생성 게이트를 그대로 거친다). trigger = `{kind: 'event', ref: <활성화 event id>}`, `task.strategy_version_id` = 전략
 //   4. 활성화 event 를 쓴다. `occurred_at` = 활성화 시각 = 켠 루틴의 발화 기준점(routine.ts). routine 행에 켠 시각 열이 없어 새 열 대신 이 event 로 표현한다
 //   거부는 `ExperimentActivationError`(사유 코드). 업무 생성이 정책에 거부되면 트랜잭션은 되돌려지고 거부 판정만 새 트랜잭션에 남는다(createTask 와 같은 규칙).
-// endExperiment: 실험의 루틴을 끈다(`enabled=0`) + 종료 event(`experiment-end:<전략 id>`, 멱등). 전략 상태는 바꾸지 않는다(판정과 전이는 U16).
+// endExperiment: 실험의 루틴을 끈다(`enabled=0`) + 종료 event(`experiment-end:<전략 id>`, 멱등). 전략 상태는 바꾸지 않는다(상태 전이는 domain 의 promoteExperiment·rejectExperiment, A6-U16).
+//   `endExperimentInTx` 는 열린 쓰기 트랜잭션 안의 본문이며 사이클(결과 검토 업무를 만들 때)과 승인 CLI(승격·거절)가 상태 전이와 같은 트랜잭션에 묶어 부른다.
 // 마케팅 업무의 외부 부작용은 여기서 승인되지 않는다 — 업무가 실행 직전에 정책 게이트(beforeRun)의 판정과 업무 승인 절차를 따로 거친다.
 // 시각은 주입된 Clock 에서만 얻는다.
 import {
@@ -148,24 +149,31 @@ export interface EndExperimentResult {
 /** 실험을 끝낸다: 활성화가 켠 루틴을 끄고(`enabled=0`) 종료 기록을 남긴다 (멱등). 전략 상태 전이는 하지 않는다 */
 export function endExperiment(db: Db, clock: Clock, input: EndExperimentInput): EndExperimentResult {
   if (input.by === 'agent') throw new ExperimentActivationError('agent_forbidden', 'agents cannot end an experiment; they only submit results');
-  return db.writeTx((tx) => {
-    const id = input.strategyVersionId;
-    const key = experimentEndKey(id);
-    const existing = tx.get<{ id: string; payload: string }>('SELECT id, payload FROM event WHERE idempotency_key = ?', [key]);
-    if (existing) {
-      const payload = JSON.parse(existing.payload) as { routine_ids?: unknown };
-      return { ended: false, eventId: existing.id, routineIds: Array.isArray(payload.routine_ids) ? payload.routine_ids.map(String) : [] };
-    }
-    if (!tx.get('SELECT 1 AS one FROM strategy_version WHERE id = ?', [id])) throw new ExperimentActivationError('not_found', `strategy_version '${id}' does not exist`);
-    const routineIds = findExperimentActivation(tx, id)?.routineIds ?? [];
-    for (const routineId of routineIds) tx.run('UPDATE routine SET enabled = 0 WHERE id = ?', [routineId]);
-    const eventId = eventIdOf(key);
-    const now = clock.nowIso();
-    tx.run(
-      `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at)
-       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
-      [eventId, EXPERIMENT_END_EVENT.source, id, EXPERIMENT_END_EVENT.type, JSON.stringify({ strategy_version_id: id, routine_ids: routineIds, by: input.by, reason: input.reason ?? null }), key, now, now],
-    );
-    return { ended: true, eventId, routineIds };
-  });
+  return db.writeTx((tx) => endExperimentInTx(tx, clock, input));
+}
+
+/**
+ * `endExperiment` 의 본문. 이미 열린 쓰기 트랜잭션 안에서 부른다 — A6-U16 에서 전략 상태 전이(승격·거절)와 같은 트랜잭션에 묶으려고 나눴다.
+ * 종료 기록이 이미 있으면 아무것도 하지 않는다(멱등). 활성화된 적 없는 전략이면 끌 루틴이 없고 종료 기록만 남는다.
+ */
+export function endExperimentInTx(tx: Db, clock: Clock, input: EndExperimentInput): EndExperimentResult {
+  if (input.by === 'agent') throw new ExperimentActivationError('agent_forbidden', 'agents cannot end an experiment; they only submit results');
+  const id = input.strategyVersionId;
+  const key = experimentEndKey(id);
+  const existing = tx.get<{ id: string; payload: string }>('SELECT id, payload FROM event WHERE idempotency_key = ?', [key]);
+  if (existing) {
+    const payload = JSON.parse(existing.payload) as { routine_ids?: unknown };
+    return { ended: false, eventId: existing.id, routineIds: Array.isArray(payload.routine_ids) ? payload.routine_ids.map(String) : [] };
+  }
+  if (!tx.get('SELECT 1 AS one FROM strategy_version WHERE id = ?', [id])) throw new ExperimentActivationError('not_found', `strategy_version '${id}' does not exist`);
+  const routineIds = findExperimentActivation(tx, id)?.routineIds ?? [];
+  for (const routineId of routineIds) tx.run('UPDATE routine SET enabled = 0 WHERE id = ?', [routineId]);
+  const eventId = eventIdOf(key);
+  const now = clock.nowIso();
+  tx.run(
+    `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    [eventId, EXPERIMENT_END_EVENT.source, id, EXPERIMENT_END_EVENT.type, JSON.stringify({ strategy_version_id: id, routine_ids: routineIds, by: input.by, reason: input.reason ?? null }), key, now, now],
+  );
+  return { ended: true, eventId, routineIds };
 }

@@ -44,3 +44,7 @@
 
 ## Amendment (2026-10-24): 실험 후보 비교 (A6-U14)
 - 주간 사이클 5단계의 후보 비교기(`compareCandidates`)는 평가기와 같은 독립 원칙을 따른다: 에이전트가 낸 기대 효과·추정 비용은 *참고*로 순서를 정하는 데만 쓰고 비교 기록의 `agent_claim` 아래에만 둔다. 비교기가 스스로 확인한 사실(정책 위험 판정, 신호 정의·예산 대조, 기준선, 합격선)과 섞지 않으며, 기준선이 관측 수 부족·데이터 품질 불량·측정 불가면 평가와 같이 `inconclusive`(후보를 고르지 않음)다. 합격선은 기준선 대비로 비교기가 정한다. 위험 판정은 함수로 주입되므로 evaluation 은 policy 를 참조하지 않는다. 규칙의 정본은 [evaluation §7](../operations/evaluation.md).
+
+## Amendment (2026-10-24): 실험 결과 검토 (A6-U16)
+- 실험의 결과는 평가기 규칙을 바꾸지 않고 *평가기를 실험 주의 실제 측정 값으로 한 번 더 부르는* 방식으로 판정한다(결과 검토 업무). 합격선은 비교기가 기준선 대비로 정해 검토 기록에 고정한 값이며, 평가기는 그것을 `EffectSignal.passAtLeast`로 읽는다. `pass`·`fail`일 때만 학습 기록(`measurement`·`strategy_record`)을 남기고 `inconclusive`는 사람 검토로 넘긴다(기록하지 않음). 전략의 승격(`experiment → active`)은 평가가 `pass`일 때도 자동으로 하지 않고 사람만 한다 — 평가는 근거이지 승격 권한이 아니다. 규칙의 정본은 [evaluation §8](../operations/evaluation.md).
+

@@ -94,7 +94,7 @@ test('a planning task completed without a passing evaluation: the comparison is 
   assert.equal(review?.planningTaskId, planId);
   assert.match(review!.reasons.join(' '), /upstream_not_evaluated/);
   assert.equal(db.get<{ n: number }>('SELECT count(*) AS n FROM strategy_version')!.n, 0);
-  assert.deepEqual(await cycle.advance(), { compared: [], failed: [], activated: [], activationFailed: [] });
+  assert.deepEqual(await cycle.advance(), { compared: [], failed: [], activated: [], activationFailed: [], reviewsCreated: [], reviewFailed: [], resultsRecorded: [], resultFailed: [] });
 });
 
 test('runPolling: afterTick runs after every tick; its failure goes to onError and the loop goes on; without it nothing extra runs', async () => {

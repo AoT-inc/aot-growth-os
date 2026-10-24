@@ -1,5 +1,5 @@
 // @aot/evaluation 공개 API 진입점 (단계 A4). 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
-// 책임: 결정론적 검증기, 실험 후보 형식과 후보 비교기(A6-U14, 위험 판정은 주입), 컨텍스트 분리 LLM 검증 인터페이스(포트 + 모델 호출 없는 가짜 구현 createStubLlmVerifier), 평가기(pass/fail/inconclusive, 4축), 비용 원장 집계와 예산 초과 판정.
+// 책임: 실험 결과 기록(A6-U16: measurement·strategy_record 기억과 실험 총비용), 결정론적 검증기, 실험 후보 형식과 후보 비교기(A6-U14, 위험 판정은 주입), 컨텍스트 분리 LLM 검증 인터페이스(포트 + 모델 호출 없는 가짜 구현 createStubLlmVerifier), 평가기(pass/fail/inconclusive, 4축), 비용 원장 집계와 예산 초과 판정.
 // 의존: @aot/domain 만. task-engine 과는 domain 의 TaskValidator 포트로 연결되고, apps/daemon 이 조립한다.
 export {
   applyEvidenceVerification, defaultChecks, runDeterministicChecks, SourceReader,
@@ -26,6 +26,10 @@ export {
   assertEvaluationInvariants, assessEffect, decide, EVALUATOR_ID, EVALUATOR_REF, EVALUATOR_VERSION, EvaluationError, evaluateRun, findEvaluation, isSuccessCase,
   type Decision, type DecisionFacts, type EffectAssessment, type EvaluateRunRequest, type EvaluationReport, type EvaluatorDeps, type LlmState,
 } from './evaluator.ts';
+export {
+  decisiveReviewEvaluation, experimentCost, ExperimentResultError, recordExperimentResult,
+  type ExperimentCost, type ExperimentResultErrorCode, type RecordedExperimentResult, type RecordExperimentResultInput,
+} from './experiment-result.ts';
 export { createMeasurementSignalSource, MEASUREMENT_SOURCE_EVENT, type MeasurementSignalSourceOptions } from './measurement-source.ts';
 export { buildIsolatedInput, ISOLATED_INPUT_KEYS, IsolationError, MAX_CLAIMS, MAX_STATEMENT_CHARS, type IsolatedInputParts } from './isolation.ts';
 export type {

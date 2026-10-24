@@ -14,6 +14,8 @@
 // 완료된 기획 업무의 후보 비교 → strategy_version 제안)를 만든다. 위험 판정은 여기서 정책으로 만들어 주입한다(evaluation 은 policy 를 모른다).
 // A6 U15: 사이클에 6단계(승인된 실험 활성화)를 연결한다 — 일회성 마케팅 업무의 생성 게이트는 같은 정책 게이트, 활성화 직전 승인 확인은 policy `verifyStrategyApproval`.
 // 승인 자체(`strategy_version` 의 show/approve/reject/cancel)는 승인 엔진이 같은 소켓에서 받는다.
+// A6 U16: 사이클에 7단계(실험 주가 끝난 뒤 결과 검토 업무 생성 → 평가 → 결과 기록)를 연결한다 — 팩이 있으면 팩 템플릿 `experiment-result-review@1` 을 풀어 검토 업무를 만들고(생성 게이트는 같은 정책 게이트),
+// 결과 기억의 기본 만료는 현재 정책의 `memory.default_validity` 다. 승격(`promote`)·`experiment` 상태 전략의 `reject`·`reviews` 는 승인 소켓의 같은 인증 경계에서 experiment-review.ts 가 받는다.
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
@@ -23,12 +25,13 @@ import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type 
 import type { Clock, Db, MeasurementSignal, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createMeasurementSignalSource, createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import {
-  ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, verifyStrategyApproval, type ApprovalServer,
+  ApprovalEngine, createPolicyGate, createToolCallPolicy, memoryDefaultValidity, PolicyStore, startApprovalServer, TotpSecretStore, verifyStrategyApproval, type ApprovalServer,
 } from '@aot/policy';
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
+import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
 
@@ -174,14 +177,21 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
       : {}),
   };
   const measure = measurementSignals.length === 0 ? null : createMeasurementHandler({ db: options.db, clock: options.clock, signals: measurementSignals });
+  const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
   const handleChannelRequest = (request: unknown): unknown => {
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
+    if (isExperimentDecisionCommand(options.db, request)) return decide(request);
     return engine.handle(request);
   };
   const cycle = options.cycle === undefined ? null : createExperimentCycle({
     db: options.db, clock: options.clock, options: options.cycle, signals: measurementSignals,
     riskOf: createPolicyRiskJudge({ db: options.db, store, templates: pack?.templates ?? [] }),
     activation: { gate, verifyApproval: (tx, id) => verifyStrategyApproval(tx, id) },
+    ...(pack === null ? {} : { review: { gate, instantiate: (ref, instantiateOptions) => pack.templateSource.instantiate(ref, instantiateOptions) } }),
+    defaultValidity: () => {
+      const active = store.active(options.db);
+      return active === null || active.policy === null ? undefined : memoryDefaultValidity(active.policy.document);
+    },
   });
   const worker = new TaskWorker({
     db: options.db,

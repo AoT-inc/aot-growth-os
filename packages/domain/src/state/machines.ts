@@ -89,6 +89,8 @@ export const STRATEGY_MACHINE: StateMachine<StrategyStatus> = {
     rule('proposed', 'active', ['human'], { requires: ['approval'] }),
     rule('proposed', 'rejected', NON_AGENT_ACTORS),
     rule('experiment', 'active', NON_AGENT_ACTORS),
+    // A6-U16 (사용자 결정 2026-10-24): 판정 실패·활성화 거부·사람 거절로 끝난 실험이 `experiment` 에 남아 다음 실험 승인을 막지 않도록 한다.
+    rule('experiment', 'rejected', NON_AGENT_ACTORS, { requires: ['reason'], preconditions: '사람(CLI) 또는 평가가 fail 일 때 시스템(평가기). 에이전트 불가' }),
     rule('active', 'retired', NON_AGENT_ACTORS, { preconditions: '교체 시 이전 버전은 retired 로 두고 롤백 지점으로 유지' }),
   ],
 };

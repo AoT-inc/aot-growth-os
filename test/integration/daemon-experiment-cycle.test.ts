@@ -52,7 +52,7 @@ test('research -> planning completes -> one strategy_version proposed for the re
 
   for (let i = 0; i < 3; i += 1) {
     const again = await daemon.cycle!.advance();
-    assert.deepEqual(again, { compared: [], failed: [], activated: [], activationFailed: [] });
+    assert.deepEqual(again, { compared: [], failed: [], activated: [], activationFailed: [], reviewsCreated: [], reviewFailed: [], resultsRecorded: [], resultFailed: [] });
   }
   assert.equal(strategyRows(env.db).length, 1);
   assert.equal(comparisons(env.db).length, 1);
@@ -68,7 +68,7 @@ test('every candidate denied by the policy: no proposal, the comparison waits fo
   assert.deepEqual(report.compared.map((c) => [c.outcome, c.strategyVersionId, c.proposalCreated]), [['no_candidate', null, false]]);
   assert.equal(strategyRows(env.db).length, 0);
   assert.deepEqual(daemon.cycle!.pendingReviews().map((r) => [r.planningTaskId, r.outcome]), [[planId, 'no_candidate']]);
-  assert.deepEqual(await daemon.cycle!.advance(), { compared: [], failed: [], activated: [], activationFailed: [] });
+  assert.deepEqual(await daemon.cycle!.advance(), { compared: [], failed: [], activated: [], activationFailed: [], reviewsCreated: [], reviewFailed: [], resultsRecorded: [], resultFailed: [] });
   assert.equal(daemon.cycle!.pendingReviews().length, 1);
 });
 

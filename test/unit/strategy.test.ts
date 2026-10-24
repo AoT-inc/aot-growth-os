@@ -90,7 +90,7 @@ test('an agent can neither record a comparison, propose, nor transition a strate
   assert.equal(db.get<{ status: string }>('SELECT status FROM strategy_version WHERE id = ?', [id])!.status, 'proposed');
 });
 
-test('transitions follow the allow table: proposed -> experiment needs a human approval of this row and an experiment_scope; no transition was added', (t) => {
+test('transitions follow the allow table: proposed -> experiment needs a human approval of this row and an experiment_scope; only experiment -> rejected was added (A6-U16)', (t) => {
   const { db, clock, agent, planningTaskId } = rig(t);
   recordAndPropose(db, clock, planningTaskId, agent);
   const id = strategyProposalId(planningTaskId, 'a');
@@ -107,9 +107,9 @@ test('transitions follow the allow table: proposed -> experiment needs a human a
   const moved = move({ approvalId: 'approval-1' });
   assert.equal(moved.status, 'experiment');
   assert.throws(() => move({ approvalId: 'approval-1' }), (e: unknown) => e instanceof StrategyRuleError && e.code === 'stale_state');
-  // 허용표는 그대로다: (none) -> proposed 행은 없다(생성은 전이가 아니다)
+  // 허용표: (none) -> proposed 행은 없다(생성은 전이가 아니다). A6-U16 에서 experiment -> rejected 한 줄만 더해졌다(5 → 6)
   assert.equal(checkTransition(STRATEGY_MACHINE, { from: null, to: 'proposed', by: 'system' }).ok, false);
-  assert.equal(STRATEGY_MACHINE.rules.length, 5);
+  assert.equal(STRATEGY_MACHINE.rules.length, 6);
 });
 
 test('experiment needs an experiment_scope even with an approval', (t) => {

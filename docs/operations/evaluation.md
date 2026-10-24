@@ -94,3 +94,16 @@ Phase A의 사업 성과 신호는 랜딩 페이지 1개의 주간 목표 행동
 - **정렬.** ① 위험 `allow`가 `require_approval`보다 먼저 ② 비용당 상승(상승 ÷ max(추정 비용, 0.01 USD)) 큰 순 ③ 상승 큰 순 ④ 추정 비용 작은 순 ⑤ id 순. 상승 = 기대 효과 − 기준선. 1위가 추천이다. 남은 후보가 없으면 `no_candidate`.
 - **평가기 독립.** 기대 효과·추정 비용과 그로부터 계산한 상승·비용당 상승은 후보마다 `agent_claim` 아래에만 둔다. 비교기가 확인한 사실(위험 판정, 신호·예산 대조, 기준선, 합격선)과 섞지 않는다. 주장은 순서를 정하는 참고일 뿐이고, 효과는 실험 주의 실제 측정 값으로 따로 평가한다.
 - **기록과 제안.** 한 쓰기 트랜잭션에서 비교 기록(`event`, source `experiment-cycle`, type `experiment.compared`, 멱등 키 `experiment-comparison:<기획 업무 id>`)을 남기고, 추천이 있으면 `strategy_version`을 `proposed`로 만든다(id 는 (기획 업무 id, 후보 id)의 해시라 다시 돌려도 늘지 않는다, `created_by`는 기획 run 의 행위자). 추천이 없으면(`inconclusive`, `no_candidate`) 제안 없이 비교 기록의 `review_required`가 참이 되어 사람 검토 목록(`listStrategyReviews`)에 오른다. 새 상태는 없다.
+
+## 8. 실험 결과 검토와 기록 (A6-U16, 주간 사이클 7단계)
+
+실험(`strategy_version.status='experiment'`)의 실제 결과를 비용과 함께 기억에 남기고 다음 주 전략에 반영한다. 평가기의 판정 규칙(§1~§5)은 바뀌지 않는다 — 아래는 평가기를 *언제 어떤 입력으로 부르고*, 그 판정으로 *무엇을 기록하는가*다. 구현은 `apps/daemon/src/cycle.ts`(사이클), `packages/evaluation/src/experiment-result.ts`(기록), `packages/domain/src/strategy.ts`(승격·거절).
+
+- **실험 주.** 1주·관측 1(A6 결정 ②). 활성화 시각 *이후에 시작하는* 첫 ISO 주(신호의 `tz` 벽시계)다: 활성화가 월요일 00:00 정각이면 그 주, 아니면 다음 주. 측정 구간 전체가 활성화 뒤에 있어야 그 주의 값이 실험의 효과다. 그 주의 구간 끝이 지나면 사이클이 **결과 검토 업무**를 한 번 만든다(팩 템플릿 `experiment-result-review@1`; 입력은 조사·기획 업무의 결과(`task_result`)와 그 주의 측정 값(`measurement`, U13 대기 조건), `task.strategy_version_id`로 실험에 묶임). 같은 트랜잭션에서 검토 기록(event `experiment-review:<전략 id>`: 판정 대상 주, 기준선, **합격선**)을 고정하고 실험 루틴을 끈다(`endExperiment`).
+- **평가.** 검토 업무는 기존 평가기(`task-evaluator`)가 평가한다. 효과의 입력은 U13 측정 신호 조회기이고, 그 업무의 합격선은 신호 정의의 정적 `pass_threshold`가 아니라 U14 비교 기록이 기준선 대비로 정해 검토 기록에 고정해 둔 값(`pass_at_least`)이다. 값이 합격선 이상이면 `pass`, 미만이면 `fail`, 관측 수 부족·품질 불량·측정 불가는 `inconclusive`다(§5.1). 원본 증거 우선·`safety fail → fail`도 그대로다.
+- **결정되는 평가.** 가장 최근 평가가 `pass`이면 바로, `fail`이면 업무가 더 시도하지 않을 때(`needs_review`·`failed`·`cancelled`; 재시도가 남은 동안은 기다림)만 결과를 정한다. `inconclusive`는 결과를 정하지 않는다.
+- **기록(`pass` 또는 `fail`).** 한 쓰기 트랜잭션에서 `measurement`와 `strategy_record` 기억 항목, 결과 event(`experiment-result:<전략 id>`, 전략당 한 번이라 같은 평가로 두 번 기록하지 않는다). 절차와 필드는 [memory-item "실험 결과 기록"](../schema/memory-item.md). **실험 총비용**은 그 전략의 업무들(실험 업무와 검토 업무)의 `cost_entry` 합계(`tool`·`llm`·`human_time` 등 모든 범주, 사람 시간 분 포함)에, 업무에 붙지 못한 측정 입력의 사람 시간을 더한 값이고 원장 합계와 같다.
+- **`inconclusive`.** `lesson`/`strategy_record`/`measurement`를 만들지 않고(규칙 8, `inconclusive_not_learnable`) 사람 검토 목록에 남는다(승인 CLI `reviews`의 `needsHuman`). 승격은 불가이고, 사람은 사유와 함께 거절(`reject`)한다. 재검토(새 측정·새 업무)는 정의하지 않았다(열린 항목).
+- **전략 상태.** `fail` → 시스템(평가기)이 `experiment → rejected` + 종료를 같은 트랜잭션에서 한다(허용표 전이 `experiment → rejected`, 사유 필수). `pass` → **자동 승격 없음**: 사람이 승인 CLI `promote strategy <id> --comment <사유>`로 `experiment → active` 하며, 이전 `active`는 같은 트랜잭션에서 `retired`(롤백 지점). 에이전트는 어느 쪽도 못 한다. `inconclusive`·활성화가 거부된 실험·그 밖의 이유는 사람이 `reject strategy <id> --comment <사유>`(`experiment → rejected`). 승격·거절은 결정 기록(event `experiment-decision:<전략 id>`, 사유·주체)을 남긴다. 승격·거절·종료는 TOTP 재인증이 필요 없다(사람 1인, A6 결정 ③과 같은 신뢰 수준).
+- **다음 주 반영.** 다음 기획 업무에는 업무 생성이 현재 `active` 전략을 `task.strategy_version_id`로 붙이고, 템플릿의 기억 입력(`memory:latest#strategy_record`)이 같은 상품의 가장 최근 *현재 사실* `strategy_record`로 바뀐다. 반증·만료·대체·미검증·외부 유래 항목은 현재 사실이 아니므로 빠진다. 기준선 주는 `{{last_week}}`(루틴 발화 시각 기준 지난주, 신호 tz)로 채운다.
+

@@ -161,8 +161,10 @@ export async function makeFakeInstance(): Promise<FakeInstance> {
   }
   const hostPaths = [
     root, instance, socketPath, join(instance, 'run'), join(instance, 'totp'), join(instance, 'totp', 'owner.secret'),
-    join(instance, 'aot.db'), join(root, 'policies'), join(root, 'policies', 'default.yaml'), tmpdir(),
+    join(instance, 'aot.db'), join(root, 'policies'), join(root, 'policies', 'default.yaml'),
   ];
+  // 호스트 임시 디렉터리 루트(`tmpdir()`)는 넣지 않는다: Linux 에서는 `/tmp` 이고 컨테이너 이미지에도 자체 `/tmp` 가 있어 보이는 게 정상이다.
+  // 이 실행에서만 생긴 고유 경로(`root`)와 그 아래는 이미 위에서 점검한다.
   return {
     root, hostPaths,
     async close() {

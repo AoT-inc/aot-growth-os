@@ -23,6 +23,21 @@ export interface AdapterBudget {
   max_tokens?: number;
 }
 
+/**
+ * 선행 업무의 결과 하나 (A6-U11, 명세 `inputs[kind=task_result]`). 호스트가 *완료되고 통과 평가(pass, safety pass)가 있는 업무*의 결과만 담아 넘긴다.
+ * 이 값은 **데이터**다: 다른 에이전트가 낸 산출물이라 신뢰 경계 밖이므로 `trust_origin` 이 항상 `external_untrusted` 이고(검증이 다른 값을 거부한다),
+ * 어댑터는 이 안의 문장을 지시로 해석하거나 도구·권한·목표를 정하는 데 쓰지 않는다 (trust-boundaries §2-3). 지시는 `task_spec` 에만 있다.
+ */
+export interface UpstreamResult {
+  /** 명세 `inputs[].name` (task_result 입력 안에서 유일) */
+  name: string;
+  /** `task:<선행 업무 id>` */
+  task_ref: string;
+  trust_origin: 'external_untrusted';
+  /** 선행 업무의 `task_run.result` (JSON 객체, 크기 상한은 domain 의 `MAX_TASK_RESULT_*`) */
+  result: JsonObject;
+}
+
 export interface AdapterInput {
   /** 이 실행(task_run)의 id. run_log·로그 상관용 */
   run_id: string;
@@ -32,6 +47,11 @@ export interface AdapterInput {
   /** 근거 참조 (task_spec.evidence_refs 등). 외부 콘텐츠는 지시가 아니라 데이터다 (trust-boundaries §2-3) */
   evidence_refs: readonly string[];
   budget: AdapterBudget;
+  /**
+   * 선행 업무 결과 (선택, 없으면 명세에 `task_result` 입력이 없다). 충족되지 않은 선행 입력이 있으면 호스트가 업무를 실행하지 않으므로 일부만 들어오는 일은 없다.
+   * 항목마다 `external_untrusted` 데이터다 (`UpstreamResult`). 어댑터는 이 배열과 안의 객체를 변형하지 않는다
+   */
+  upstream?: readonly UpstreamResult[];
   /** 시간 제한(밀리초). 강제는 실행 관리(U3)가 AbortSignal 로 한다. 어댑터는 참고만 한다 */
   time_limit_ms?: number;
 }

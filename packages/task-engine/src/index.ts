@@ -24,9 +24,13 @@ export { EffectRefusedError, LeaseLostError, RunKilledError, StaleStateError, Ta
 export {
   assertLeaseHeld, claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun,
   takeOverExpiredRun,
-  type ClaimedTask, type ClaimOptions, type ClaimResult, type EffectLookups, type ExpiredRun, type FailRunOptions, type KillRunOptions, type Lease,
+  MAX_ADAPTER_NAME_CHARS, type AdapterSelector, type ClaimedTask, type ClaimOptions, type ClaimResult, type EffectLookups, type ExpiredRun, type FailRunOptions, type KillRunOptions, type Lease,
   type RunEnd, type RunEvidence, type RunOutputRecord, type TakeoverOptions, type TakeoverResult,
 } from './lease.ts';
+export {
+  hasTaskResultInputs, resolveUpstream, UPSTREAM_UNMET_CODES,
+  type UpstreamResolution, type UpstreamResult, type UpstreamUnmetCode,
+} from './upstream.ts';
 export { checkLeaseParams, DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, type LeaseParams } from './params.ts';
 export { runPolling, type PollingOptions } from './polling.ts';
 export { transitionEffect, transitionTask, type EffectTransitionRequest, type TaskTransitionRequest } from './transitions.ts';

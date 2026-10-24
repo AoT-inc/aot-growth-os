@@ -20,3 +20,6 @@
 
 ## Amendment (2026-10-23): 근거의 신뢰 출처는 호스트가 정한다
 어댑터 계약의 `EvidenceItem.trust_origin`은 필수이고 어휘만 검증하지만 *자기 신고*라서 저장 값으로 믿지 않는다. 호스트는 에이전트 출력을 `evidence` 행으로 저장할 때 어댑터가 밝힌 값과 무관하게 항상 `external_untrusted`로 쓴다(`AgentRunHost` 포트와 task-engine `recordRunOutput`이 신뢰 출처를 받지 않는다). 어댑터 출력은 신뢰 경계 밖이므로 자기 신고에 기대지 않는다: 거부 방식은 정상 어댑터의 작업을 잃게 하고, 강등은 판단 지점을 늘리며, 항상 덮어쓰기는 fail-closed이면서 가장 단순해서 택했다. 에이전트 출력이 아닌 경로가 쓰는 `internal` 근거는 영향이 없다. [trust-boundaries §2-3](../security/trust-boundaries.md), [memory-item](../schema/memory-item.md) 규칙 9.
+
+## Amendment (2026-10-24): 선행 업무 결과 입력과 업무별 어댑터
+어댑터 입력에 선택 필드 `upstream: [{name, task_ref, trust_origin, result}]`를 더했다. 호스트가 명세 `inputs[kind=task_result]`를 실행 직전에 읽어 *완료이고 통과 평가(pass, safety pass)가 있는 업무*의 결과만 넣는다. 항목은 항상 `trust_origin='external_untrusted'` 데이터이며(지시는 `task_spec`에만 있다) 계약 검증과 `start` 프레임 검증이 다른 값을 거부한다. 입력이 충족되지 않으면 어댑터를 시작하지 않고 업무를 `needs_review`로 보낸다. 컨테이너 안 에이전트는 `start` 프레임으로 같은 값을 받으며 모르는 필드는 무시한다(조사 에이전트는 읽지 않는다). 또 어댑터 선택은 워커의 포트(명세 → 어댑터 이름)가 하고 `task_run.adapter`에 실제 쓴 이름이 남는다. 어댑터 선택은 권한이 아니다: 도구는 어댑터와 무관하게 명세와 정책이 정한다. 상세는 [phase-a A6-U11 기록](../plans/phase-a.md).

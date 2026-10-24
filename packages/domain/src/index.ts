@@ -19,8 +19,8 @@ export {
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
 export {
-  EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, resolveExpectedQuotes,
-  SYSTEM_FILLED_FIELDS, validateTaskSpec,
+  EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS,
+  MAX_TASK_RESULT_TOTAL_BYTES, resolveExpectedQuotes, SYSTEM_FILLED_FIELDS, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type CostBudget, type ExpectedQuote, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
   type TaskSpecVersions, type TaskTrigger, type TaskValidation, type ToolRequest,
 } from './spec/task-spec.ts';

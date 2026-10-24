@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  checkTaskSpecReferences, currentPolicyVersionId, validateTaskSpec,
+  checkTaskSpecReferences, currentPolicyVersionId, isPlainObject, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type Clock, type Db, type Issue, type TaskPolicyGate, type TaskSpec, type TaskSpecDraft, type TaskStatus, type TriggerKind,
 } from '@aot/domain';
 
@@ -81,6 +81,18 @@ export function createTaskInTx(tx: Db, context: CreateContext, input: CreateTask
   if (tx.get('SELECT 1 AS one FROM task WHERE id = ?', [taskId])) {
     throw new TaskCreationError([{ path: 'id', code: 'duplicate', message: `task '${taskId}' already exists` }]);
   }
+  // 선행 업무의 결과를 입력으로 받으려면 그 업무가 dependencies 에도 있어야 한다: 실행 순서(선행이 completed 가 된 뒤에야 집힌다)가 dependencies 로 보장된다.
+  // 자동으로 더하지 않고 거부한다 — 의존 관계는 작성자가 밝힌 것만 믿는다.
+  const dependencySet = new Set(draft.dependencies ?? []);
+  const upstreamIssues: Issue[] = [];
+  draft.inputs.forEach((input, index) => {
+    if (input.kind !== TASK_RESULT_INPUT_KIND) return;
+    const upstreamId = taskIdOfResultRef(input.ref);
+    if (upstreamId !== null && !dependencySet.has(upstreamId)) {
+      upstreamIssues.push({ path: `inputs[${index}].ref`, code: 'upstream_not_a_dependency', message: `'${input.ref}' must also be listed in dependencies` });
+    }
+  });
+  if (upstreamIssues.length > 0) throw new TaskCreationError(upstreamIssues);
   const cycle = findDependencyCycle(tx, taskId, draft.dependencies ?? []);
   if (cycle) {
     throw new TaskCreationError([{ path: 'dependencies', code: 'cycle', message: `dependency cycle: ${cycle.join(' -> ')}` }]);
@@ -322,19 +334,43 @@ export function fireRoutineTasks(db: Db, context: CreateContext, firing: Routine
     recordFiring(tx, context, firing);
     const trigger = { kind: 'routine', ref };
     const idByName = new Map<string, string>();
+    const templateNames = new Set(ordered.map((task) => task.name));
     for (const task of ordered) {
       const own = task.spec['dependencies'];
       const dependencies = own === undefined || Array.isArray(own)
         ? [...(own ?? []), ...(task.dependsOn ?? []).map((name) => idByName.get(name)!)]
         : own;
       const created = createTaskInTx(tx, context, {
-        spec: { ...task.spec, trigger, dependencies },
+        spec: { ...task.spec, trigger, dependencies, ...bindTemplateResultRefs(task, templateNames, idByName) },
         dedupeKey: sha256(canonicalJson({ trigger, inputs: task.spec['inputs'] ?? null, template_task: task.name })),
       });
       idByName.set(task.name, created.taskId);
     }
     return { created: true, taskIds: ordered.map((task) => idByName.get(task.name)!) };
   }));
+}
+
+/**
+ * 템플릿 업무의 `task_result` 입력 중 `task:<템플릿 업무 name>` 을 방금 만든 업무 id 로 바꾼다 (A6-U11). 템플릿 업무 이름이 아닌 참조는 그대로 둔다
+ * (이미 있는 업무 id 로 보고 `createTaskInTx` 가 dependencies 에 있는지 확인한다). 이름은 가리키는데 `dependsOn` 에 없으면 거부한다.
+ */
+function bindTemplateResultRefs(task: RoutineTemplateTask, templateNames: ReadonlySet<string>, idByName: ReadonlyMap<string, string>): { inputs?: unknown[] } {
+  const inputs = task.spec['inputs'];
+  if (!Array.isArray(inputs)) return {};
+  const issues: Issue[] = [];
+  const bound = inputs.map((item: unknown, index) => {
+    if (!isPlainObject(item) || item['kind'] !== TASK_RESULT_INPUT_KIND || typeof item['ref'] !== 'string' || !item['ref'].startsWith(TASK_RESULT_REF_PREFIX)) return item;
+    const name = item['ref'].slice(TASK_RESULT_REF_PREFIX.length);
+    if (!templateNames.has(name)) return item;
+    const id = idByName.get(name);
+    if (id === undefined || !(task.dependsOn ?? []).includes(name)) {
+      issues.push({ path: `template.tasks['${task.name}'].spec.inputs[${index}].ref`, code: 'upstream_not_a_dependency', message: `template task '${task.name}' reads the result of '${name}', which must be listed in its dependsOn` });
+      return item;
+    }
+    return { ...item, ref: `${TASK_RESULT_REF_PREFIX}${id}` };
+  });
+  if (issues.length > 0) throw new TaskCreationError(issues);
+  return { inputs: bound };
 }
 
 /** 이름 중복·알 수 없는 선행·자기 의존·순환을 거부하고, 선행 업무가 먼저 오는 순서(입력 순서 유지)로 돌려준다 */

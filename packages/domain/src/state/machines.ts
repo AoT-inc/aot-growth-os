@@ -25,7 +25,7 @@ export const TASK_MACHINE: StateMachine<TaskStatus> = {
     rule(null, 'unassigned', ['task_creator'], { preconditions: '맞는 역할 없음 (조직 관리팀의 재편 신호)' }),
     rule('unassigned', 'queued', ['scheduler'], { preconditions: '역할 배정됨' }),
     rule('queued', 'running', ['scheduler'], { preconditions: '선행 업무 completed, 예산 잔여, 정책 허용, 실행 인자 = approved_hash, lease 획득(같은 트랜잭션에서 task_run 생성)' }),
-    rule('queued', 'needs_review', ['scheduler', 'policy'], { preconditions: 'approved_hash 불일치(재승인 요청) 또는 실행 직전 재검증에서 승인 범위 이탈' }),
+    rule('queued', 'needs_review', ['scheduler', 'policy'], { preconditions: 'approved_hash 불일치(재승인 요청), 실행 직전 재검증에서 승인 범위 이탈, 또는 선행 결과 입력(task_result) 미충족·어댑터 선택 불가(A6-U11)' }),
     rule('running', 'validating', ['scheduler'], { preconditions: "task_run.outcome='submitted'" }),
     rule('running', 'queued', ['scheduler'], { preconditions: "lease 만료로 run 을 'lease_expired' 로 닫음, 미확정 부작용 없음 (recovery §4)" }),
     rule('running', 'needs_review', ['scheduler'], { preconditions: "run 'effect_unknown', 또는 실행 중 재검증에서 정책 거부/승인 범위 이탈" }),

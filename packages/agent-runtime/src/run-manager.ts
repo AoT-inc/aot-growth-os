@@ -19,7 +19,7 @@ import type {
 import { realGatewayTimers, type GatewayTimers } from './gateway.ts';
 import { maskString } from './mask.ts';
 import type { RunLogStore } from './run-log-store.ts';
-import { validateAdapterOutput } from './validate.ts';
+import { validateAdapterOutput, validateUpstream } from './validate.ts';
 
 /** 명세에 `time_limit` 이 없을 때의 시간 제한 */
 export const DEFAULT_TIME_LIMIT_MS = 30 * 60_000;
@@ -110,6 +110,15 @@ export async function runAgentTask(options: RunAgentTaskOptions): Promise<AgentT
   if (limitMs === null || !(Number.isFinite(limitMs) && limitMs > 0)) {
     note(`not started: time_limit '${String(limitText)}' cannot be interpreted`);
     return finish({ kind: 'failed', code: 'invalid_time_limit', message: `constraints.time_limit '${String(limitText)}' is not a valid time limit; the agent was not started` });
+  }
+  if (input.upstream !== undefined) {
+    // 선행 결과는 호스트가 만든 값이지만 어댑터(컨테이너 안의 에이전트 포함)에 닿기 전에 한 번 더 확인한다: 신뢰 표시가 빠졌거나 상한을 넘은 입력으로는 시작하지 않는다
+    const checked = validateUpstream(input.upstream);
+    if (!checked.ok) {
+      const why = checked.errors.slice(0, 3).map((issue) => `${issue.path}: ${issue.message}`).join('; ');
+      note(`not started: invalid upstream (${why})`);
+      return finish({ kind: 'failed', code: 'invalid_upstream', message: `the upstream results are invalid; the agent was not started (${why})` });
+    }
   }
   if (options.signal?.aborted === true) {
     note('not started: the run was already cancelled');

@@ -12,6 +12,7 @@ import type { Clock, Db, EvidenceRow, ExternalEffectRow, TaskPolicyGate, TaskRow
 import { LeaseLostError } from './errors.ts';
 import { isoAfter } from './params.ts';
 import { transitionEffect, transitionTask } from './transitions.ts';
+import { hasTaskResultInputs, resolveUpstream, type UpstreamResult } from './upstream.ts';
 
 /** 워커가 쥔 실행 소유권. `runId` 가 펜싱 토큰이다. */
 export interface Lease {
@@ -57,12 +58,25 @@ export function saveCheckpoint(db: Db, clock: Clock, lease: Lease, checkpoint: u
 
 // ===== 선택과 lease 획득 =====
 
+/**
+ * 명세 → 어댑터 이름 해석 포트 (A6-U11). 이름만 돌려준다: task-engine 은 어댑터를 모른다(agent-runtime 을 참조하지 않는다). null 이면 기본 어댑터.
+ * 어댑터 선택은 권한이 아니다 — 어떤 어댑터가 실행하든 도구는 명세 `allowed_tools` 와 정책 게이트웨이가 정한다.
+ * 던지거나 이름 형식이 틀리면 그 업무는 실행하지 않고 `needs_review` 로 간다(다른 어댑터로 조용히 바꿔 실행하지 않는다).
+ */
+export type AdapterSelector = (spec: TaskSpec) => string | null;
+
+/** 어댑터 이름의 최대 길이 */
+export const MAX_ADAPTER_NAME_CHARS = 100;
+
 export interface ClaimOptions {
   clock: Clock;
   gate: TaskPolicyGate;
   workerId: string;
   actorId: string;
+  /** task_run.adapter 의 기본값 */
   adapter: string;
+  /** 업무마다 어댑터를 고른다. 생략하면 모든 업무가 `adapter` */
+  adapterFor?: AdapterSelector;
   leaseMs: number;
   /** 특정 업무만 (시험·진단용) */
   taskId?: string;
@@ -73,6 +87,10 @@ export interface ClaimedTask {
   lease: Lease;
   task: TaskRow;
   spec: TaskSpec;
+  /** `task_run.adapter` 에 기록한 이름 (실행기가 이 이름으로 어댑터를 고른다) */
+  adapter: string;
+  /** 명세의 `task_result` 입력을 읽은 결과 (통과 평가가 있는 완료 업무의 결과만). 입력이 없으면 빈 목록 */
+  upstream: UpstreamResult[];
   /** 직전 run 의 checkpoint (인수한 run 은 여기서 이어 간다, 규칙 4) */
   checkpoint: unknown;
 }
@@ -89,6 +107,8 @@ const CANDIDATES_PER_CLAIM = 20;
  * 실행할 수 있는 `queued` 업무 하나를 골라 lease 를 획득한다 (한 쓰기 트랜잭션).
  * 선행 업무가 모두 completed 인 업무만 고른다. 정책 재검증(gate.beforeRun)이 needs_review 를 내면 그 업무는
  * queued → needs_review 로 보내고 다음 후보를 본다.
+ * A6-U11: 명세의 `task_result` 입력이 충족되지 않았거나(통과 평가가 있는 완료 업무의 결과만 인정, upstream.ts) 어댑터를 고를 수 없는 업무도
+ * 같은 방식으로 `needs_review` 로 보낸다(run 을 만들지 않고 시도도 소모하지 않는다).
  */
 export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
   return db.writeTx((tx) => {
@@ -104,6 +124,36 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
     );
     for (const task of candidates) {
       const spec = JSON.parse(task.spec) as TaskSpec;
+      const toReview = (reason: string): void => {
+        transitionTask(tx, { taskId: task.id, from: 'queued', to: 'needs_review', by: 'scheduler', reason: reason.slice(0, 500), now });
+        sentToReview.push(task.id);
+      };
+      let upstream: UpstreamResult[] = [];
+      if (hasTaskResultInputs(spec)) {
+        const resolved = resolveUpstream(tx, spec);
+        if (!resolved.ok) {
+          toReview(`upstream_unmet: ${resolved.code}: input '${resolved.input}': ${resolved.detail}`);
+          continue;
+        }
+        upstream = resolved.upstream;
+      }
+      let adapter = options.adapter;
+      if (options.adapterFor !== undefined) {
+        let picked: unknown;
+        try {
+          picked = options.adapterFor(spec);
+        } catch (error) {
+          toReview(`adapter_unresolved: ${error instanceof Error ? error.message : 'the adapter selector threw'}`);
+          continue;
+        }
+        if (picked !== null) {
+          if (typeof picked !== 'string' || picked.trim() === '' || picked.length > MAX_ADAPTER_NAME_CHARS) {
+            toReview('adapter_unresolved: the adapter selector returned an invalid adapter name');
+            continue;
+          }
+          adapter = picked;
+        }
+      }
       const previous = tx.get<{ attempt: number; checkpoint: string | null }>(
         'SELECT attempt, checkpoint FROM task_run WHERE task_id = ? ORDER BY attempt DESC LIMIT 1', [task.id],
       );
@@ -122,7 +172,7 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
       tx.run(
         `INSERT INTO task_run (id, task_id, attempt, actor_id, adapter, started_at, lease_owner, lease_expires_at, heartbeat_at, checkpoint)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [runId, task.id, attempt, options.actorId, options.adapter, now, options.workerId,
+        [runId, task.id, attempt, options.actorId, adapter, now, options.workerId,
           isoAfter(options.clock.nowMs(), options.leaseMs), now, previous?.checkpoint ?? null],
       );
       return {
@@ -130,6 +180,8 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
           lease: { runId, taskId: task.id, owner: options.workerId, attempt, leaseMs: options.leaseMs },
           task: { ...task, status: 'running' },
           spec,
+          adapter,
+          upstream,
           checkpoint: previous?.checkpoint == null ? null : JSON.parse(previous.checkpoint),
         },
         sentToReview,

@@ -19,7 +19,7 @@ import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import {
-  isNonBlankString, isPlainObject, validateMeasurementSignal, validatePackManifest, validateTaskSpec,
+  isNonBlankString, isPlainObject, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, validateMeasurementSignal, validatePackManifest, validateTaskSpec,
   type CatchUpMode, type Db, type Issue, type MeasurementSignal, type PackContentKey, type PackManifest, type PlainObject,
 } from '@aot/domain';
 import { parseSchedule, ScheduleError, TaskCreationError, type RoutineTemplateRequest, type RoutineTemplateSource, type RoutineTemplateTask } from '@aot/task-engine';
@@ -301,8 +301,28 @@ function loadTemplate(file: string, raw: unknown, values: Readonly<Record<string
     });
   });
   checkTaskGraph(parsed, file, add);
+  checkResultInputs(parsed, file, add);
   if (add.count > before) return undefined;
   return { id: id as string, version: version as number, description: typeof description === 'string' ? description : null, tasks: parsed };
+}
+
+/**
+ * `task_result` 입력(A6-U11): 템플릿 안에서는 `task:<같은 템플릿의 업무 name>` 으로만 쓴다(업무 id 는 발화할 때 생기므로 이미 있는 id 를 적을 수 없다).
+ * 그 업무는 `depends_on` 에도 있어야 한다. 형식(`task:<id>`, 중복, 개수)은 `validateTaskSpec` 이 본다.
+ */
+function checkResultInputs(tasks: readonly PackTemplateTask[], file: string, add: Collect): void {
+  const names = new Set(tasks.map((task) => task.name));
+  tasks.forEach((task, index) => {
+    const inputs = task.spec['inputs'];
+    if (!Array.isArray(inputs)) return;
+    inputs.forEach((item: unknown, inputIndex) => {
+      if (!isPlainObject(item) || item['kind'] !== TASK_RESULT_INPUT_KIND || typeof item['ref'] !== 'string' || !item['ref'].startsWith(TASK_RESULT_REF_PREFIX)) return;
+      const name = item['ref'].slice(TASK_RESULT_REF_PREFIX.length);
+      const path = `tasks[${index}].spec.inputs[${inputIndex}].ref`;
+      if (!names.has(name)) add(file, path, 'not_found', `a template can read the result of a task of the same template only; '${name}' is not one`);
+      else if (!task.dependsOn.includes(name)) add(file, path, 'upstream_not_a_dependency', `task '${task.name}' reads the result of '${name}', which must be in its depends_on`);
+    });
+  });
 }
 
 /** 알 수 없는 선행, 자기 의존, 순환 */

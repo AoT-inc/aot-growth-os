@@ -2,7 +2,7 @@
 //   에이전트 → 호스트  {"type":"tool_call","id":1,"tool":"fetch_url","args":{...}}
 //                      {"type":"cost_progress","cumulative":0.02,"unit":"usd"}
 //                      {"type":"result","status":"submitted","result":{...},"evidence":[...],"run_log":[...],"cost":{"usd":0.03}}
-//   호스트 → 에이전트  {"type":"start","run_id":"…","task_spec":{...},"allowed_tools":[...],"evidence_refs":[...],"budget":{...}}   (첫 프레임, 한 번)
+//   호스트 → 에이전트  {"type":"start","run_id":"…","task_spec":{...},"allowed_tools":[...],"evidence_refs":[...],"budget":{...},"upstream":[...]?}   (첫 프레임, 한 번)
 //                      {"type":"tool_result","id":1,"result":{...}}  또는  {"type":"tool_result","id":1,"error":"tool_not_allowed"}
 // `start` 는 U3(컨테이너 러너)가 더했다: 컨테이너에는 환경 변수·마운트·인자로 업무를 줄 수 없으므로 입력(task_spec·허용 도구·근거·예산)을 stdin 첫 줄로 준다.
 // 비밀값은 싣지 않는다(`startFrameOf` 는 비밀로 보이는 값이 있으면 거부한다).
@@ -13,9 +13,9 @@ import { Buffer } from 'node:buffer';
 
 import { IssueCollector, isNonBlankString, isPlainObject, type Issue, type PlainObject } from '@aot/domain';
 
-import type { AdapterBudget, AdapterInput, AdapterOutput, AllowedTool, CostProgressEvent, JsonObject, JsonValue } from './contract.ts';
+import type { AdapterBudget, AdapterInput, AdapterOutput, AllowedTool, CostProgressEvent, JsonObject, JsonValue, UpstreamResult } from './contract.ts';
 import { maskSecrets } from './mask.ts';
-import { checkAdapterOutput, checkCostProgress, isJsonObject, isJsonValue, rejectUnknown } from './validate.ts';
+import { checkAdapterOutput, checkCostProgress, checkUpstream, isJsonObject, isJsonValue, rejectUnknown } from './validate.ts';
 import { AGENT_TO_HOST_FRAME_TYPES, HOST_TO_AGENT_FRAME_TYPES, MAX_FRAME_BYTES } from './wire.ts';
 
 // 상한과 프레임 종류 이름은 의존성 없는 wire.ts 에 있다(컨테이너 안 에이전트와 공유). 공개 API 는 그대로다.
@@ -30,6 +30,8 @@ export interface StartFrame {
   allowed_tools: AllowedTool[];
   evidence_refs: string[];
   budget: AdapterBudget;
+  /** 선행 업무 결과 (선택). 항목마다 `trust_origin: 'external_untrusted'` 인 데이터이며 지시가 아니다 (contract.ts `UpstreamResult`) */
+  upstream?: UpstreamResult[];
   time_limit_ms?: number;
 }
 export interface ToolCallFrame { type: 'tool_call'; id: number; tool: string; args: JsonObject }
@@ -124,6 +126,7 @@ export function startFrameOf(input: AdapterInput): { ok: true; frame: StartFrame
     allowed_tools: input.allowed_tools.map((t) => ({ tool: t.tool, operations: [...t.operations] })),
     evidence_refs: [...input.evidence_refs],
     budget: { ...input.budget },
+    ...(input.upstream === undefined ? {} : { upstream: input.upstream.map((entry) => ({ ...entry })) }),
     ...(input.time_limit_ms === undefined ? {} : { time_limit_ms: input.time_limit_ms }),
   };
   const encoded = encodeFrame(frame);
@@ -154,7 +157,7 @@ function checkToolResult(frame: PlainObject, out: IssueCollector): void {
 }
 
 function checkStart(frame: PlainObject, out: IssueCollector): void {
-  rejectUnknown(frame, ['type', 'run_id', 'task_spec', 'allowed_tools', 'evidence_refs', 'budget', 'time_limit_ms'], '', out);
+  rejectUnknown(frame, ['type', 'run_id', 'task_spec', 'allowed_tools', 'evidence_refs', 'budget', 'upstream', 'time_limit_ms'], '', out);
   if (!isNonBlankString(frame['run_id'])) out.add('run_id', 'required', 'run_id must be a non-empty string');
   if (!isJsonObject(frame['task_spec'])) out.add('task_spec', 'type', 'task_spec must be a JSON object');
   const tools = frame['allowed_tools'];
@@ -180,6 +183,7 @@ function checkStart(frame: PlainObject, out: IssueCollector): void {
     const tokens = budget['max_tokens'];
     if ('max_tokens' in budget && !(typeof tokens === 'number' && Number.isInteger(tokens) && tokens >= 0)) out.add('budget.max_tokens', 'type', 'max_tokens must be a non-negative integer');
   }
+  if ('upstream' in frame) checkUpstream(frame['upstream'], 'upstream', out);
   const limit = frame['time_limit_ms'];
   if ('time_limit_ms' in frame && !(typeof limit === 'number' && Number.isFinite(limit) && limit > 0)) out.add('time_limit_ms', 'type', 'time_limit_ms must be a positive number');
 }

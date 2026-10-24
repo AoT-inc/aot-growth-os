@@ -58,6 +58,10 @@ export function createFakeAgentAdapter(config: FakeAdapterConfig): AgentAdapter 
 
       const finish = (status: AdapterStatus): AdapterOutput => {
         const base: JsonObject = status === 'submitted' ? { ...(config.result ?? { summary: 'fake result' }) } : {};
+        // 선행 결과는 내용을 되풀이하지 않고 받았다는 사실(참조·신뢰 표시)만 남긴다: 이 결과가 다시 다음 업무의 입력이 될 때 문장이 퍼지지 않게 한다
+        if (status === 'submitted' && input.upstream !== undefined && input.upstream.length > 0) {
+          base['upstream_seen'] = input.upstream.map((entry) => ({ name: entry.name, task_ref: entry.task_ref, trust_origin: entry.trust_origin }));
+        }
         if (toolResults.length > 0) base['tool_results'] = toolResults;
         if (toolErrors.length > 0) base['tool_errors'] = toolErrors;
         const evidence: EvidenceItem[] = (config.evidence ?? [{ kind: 'run_log', ref: `run-log:${input.run_id}` }])

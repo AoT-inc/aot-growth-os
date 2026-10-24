@@ -17,6 +17,24 @@ import { parseTimeLimit } from './time-limit.ts';
 export interface TaskTrigger { kind: TriggerKind; ref: string }
 export interface TaskInput { name: string; ref: string; kind: string }
 
+/**
+ * 선행 업무의 결과를 입력으로 받는 `inputs[]` 종류 (A6-U11). `ref` = `task:<선행 업무 id>`.
+ * 선행 업무는 `dependencies` 에도 있어야 하고(생성 단계가 확인한다), 실행 시점에 호스트가 *통과 평가가 있는 완료 업무*의 결과만 읽어 넘긴다.
+ * 루틴 템플릿 안에서는 `task:<템플릿 업무 name>` 으로 쓰며 업무가 만들어질 때 생성된 id 로 바뀐다.
+ */
+export const TASK_RESULT_INPUT_KIND = 'task_result';
+export const TASK_RESULT_REF_PREFIX = 'task:';
+const TASK_RESULT_REF = /^task:([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+/** 한 업무가 받을 수 있는 선행 결과 입력의 수와 크기(결과 JSON 의 UTF-8 바이트) 상한. 어댑터 계약(`validateUpstream`)과 같은 값이다 */
+export const MAX_TASK_RESULT_INPUTS = 8;
+export const MAX_TASK_RESULT_BYTES = 64 * 1024;
+export const MAX_TASK_RESULT_TOTAL_BYTES = 256 * 1024;
+
+/** `task:<id>` 에서 id 를 꺼낸다. 형식이 아니면 null */
+export function taskIdOfResultRef(ref: string): string | null {
+  return TASK_RESULT_REF.exec(ref)?.[1] ?? null;
+}
+
 /** 기대 인용문: `source` 는 `inputs[]` 의 `kind='source_url'` 항목의 `name`, `text` 는 그 출처 원문에 있어야 하는 문장 */
 export interface ExpectedQuote { source: string; text: string }
 
@@ -175,6 +193,31 @@ function checkInputs(value: unknown, out: IssueCollector): void {
     requiredText(item, 'name', path, out);
     requiredText(item, 'ref', path, out, 'an input without a source (ref) is rejected');
     requiredText(item, 'kind', path, out);
+  });
+  checkTaskResultInputs(value, out);
+}
+
+/** `task_result` 입력의 형식: `task:<id>` 참조, 이름·참조 중복 없음, 개수 상한. 선행 업무가 `dependencies` 에 있는지는 업무 id 가 생기는 생성 단계가 본다 */
+function checkTaskResultInputs(inputs: unknown[], out: IssueCollector): void {
+  const names = new Set<string>();
+  const refs = new Set<string>();
+  let count = 0;
+  inputs.forEach((item: unknown, index) => {
+    if (!isPlainObject(item) || item['kind'] !== TASK_RESULT_INPUT_KIND) return;
+    const path = joinPath('inputs', index);
+    count += 1;
+    if (count === MAX_TASK_RESULT_INPUTS + 1) out.add(path, 'too_many', `more than ${MAX_TASK_RESULT_INPUTS} '${TASK_RESULT_INPUT_KIND}' inputs`);
+    const ref = item['ref'];
+    if (isNonBlankString(ref)) {
+      if (taskIdOfResultRef(ref) === null) out.add(joinPath(path, 'ref'), 'format', `a '${TASK_RESULT_INPUT_KIND}' input ref must be '${TASK_RESULT_REF_PREFIX}<task id>'`);
+      else if (refs.has(ref)) out.add(joinPath(path, 'ref'), 'duplicate', `'${ref}' is given more than once`);
+      refs.add(ref);
+    }
+    const name = item['name'];
+    if (isNonBlankString(name)) {
+      if (names.has(name)) out.add(joinPath(path, 'name'), 'duplicate', `more than one '${TASK_RESULT_INPUT_KIND}' input is named '${name}'`);
+      names.add(name);
+    }
   });
 }
 

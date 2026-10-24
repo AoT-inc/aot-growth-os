@@ -6,6 +6,8 @@
 // `aot.instance=<instanceId>`)를 한다(`prepareAgentRuntime`). 설정 → 조립(조사 에이전트 도구·출처 조회기 포함)은 runtime-config.ts, 엔트리포인트는 main.ts.
 // A6 U10: `pack` 옵션이 있으면 팩(packs/<name>/, 데이터)을 읽고 검증해(pack-loader.ts) 루틴을 DB 에 `enabled=0` 으로 멱등 반영하고, 팩의 템플릿 포트를
 // TaskWorker 의 `routines` 옵션에 연결한다. 루틴이 모두 꺼져 있으므로 켜기 전(U15)에는 발화가 일어나지 않는다. 팩이 잘못되었거나 반영할 수 없으면 조립이 던진다.
+// A6 U11: `agent.adapters`/`agent.selectAdapter` 가 있으면 업무마다 어댑터를 고른다(이름만 task-engine 의 워커로 넘기고 `task_run.adapter` 에 남는다. 등록되지 않은 이름은 그 업무를 needs_review 로 보낸다).
+// 선행 업무 결과(`inputs[kind=task_result]`)는 task-engine 이 읽고 agent-executor.ts 가 `external_untrusted` 로 표시해 어댑터 입력에 넣는다.
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
@@ -15,9 +17,9 @@ import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type 
 import type { Clock, Db, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import { ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
-import { TaskWorker, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
+import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
-import { createAgentExecutor, type AgentOptions } from './agent-executor.ts';
+import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
 
 /** 저장소의 기본 정책 템플릿 (시드의 policy-v1 내용) */
@@ -77,6 +79,22 @@ export interface AssembleOptions {
   pack?: PackOptions;
 }
 
+/**
+ * 업무별 어댑터 선택 (A6-U11). `agent.selectAdapter` 가 있을 때만 워커에 연결한다. 등록된 이름(기본 어댑터 + `agent.adapters`)이 아닌 이름은 던진다 —
+ * 워커가 그 업무를 실행하지 않고 `needs_review` 로 보낸다(없는 어댑터 대신 다른 어댑터로 조용히 실행하지 않는다). 등록 검사는 조립할 때 한 번 한다.
+ */
+function adapterSelectorOf(agent: NonNullable<AssembleOptions['agent']>, defaultAdapter: string): AdapterSelector | undefined {
+  const registered = registeredAdapterNames(agent);
+  const select = agent.selectAdapter;
+  if (select === undefined) return undefined;
+  return (spec) => {
+    const name = select(spec);
+    if (name === null) return null;
+    if (name !== defaultAdapter && !registered.has(name)) throw new Error(`adapter '${String(name)}' is not registered`);
+    return name;
+  };
+}
+
 export interface AgentRuntimeReadiness {
   dockerVersion: string;
   orphans: OrphanCleanupResult;
@@ -113,6 +131,8 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     ? undefined
     : createAgentExecutor({ db: options.db, clock: options.clock, agent: options.agent, toolCallPolicy }));
   if (executor === undefined) throw new Error('assembleDaemon needs an executor or an agent');
+  const defaultAdapter = options.adapter ?? options.agent?.adapter.name ?? 'unconfigured';
+  const adapterFor = options.agent === undefined ? undefined : adapterSelectorOf(options.agent, defaultAdapter);
   const pack = options.pack === undefined ? null : loadPack(options.pack);
   const packSync = pack === null ? null : syncPackRoutines(options.db, pack);
   const worker = new TaskWorker({
@@ -120,7 +140,8 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     clock: options.clock,
     workerId: options.workerId,
     actorId: options.actorId,
-    adapter: options.adapter ?? options.agent?.adapter.name ?? 'unconfigured',
+    adapter: defaultAdapter,
+    ...(adapterFor === undefined ? {} : { adapterFor }),
     executor,
     gate,
     ...(options.evaluation === undefined ? {} : { validator: createTaskValidator({ db: options.db, clock: options.clock, ...options.evaluation }) }),

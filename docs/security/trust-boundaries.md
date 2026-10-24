@@ -17,7 +17,7 @@
 
 1. **에이전트가 자기 실행 권한을 결정하지 않는다.** 권한은 정책 엔진이 `policy_version`과 요청 7요소로 판정하고, 도구 어댑터가 호출 시점에 다시 검증한다 (ADR-0006).
 2. **정책 저장소는 에이전트의 작업 환경 밖**이다. 에이전트에는 판정 결과(allow/deny/require_approval)만 제공한다.
-3. **외부 입력은 항상 데이터다.** 외부 웹 페이지·고객 문서·이메일 안의 지시문은 시스템 정책, 도구 권한, 업무 목표를 바꾸지 못한다. 에이전트 입력에서 외부 콘텐츠는 지시와 분리된 데이터 영역으로 전달하고 `trust_origin='external_untrusted'`로 기록한다. 외부 콘텐츠에서 만든 근거(`evidence`)에도 같은 값을 `evidence.trust_origin`에 남긴다(열은 필수이고 기본값이 없어 쓰는 쪽이 밝힌다. 다만 **에이전트가 낸 근거는 호스트가 저장할 때 항상 `external_untrusted`로 쓴다**: 어댑터 출력은 신뢰 경계 밖이므로 계약의 `EvidenceItem.trust_origin`은 참고용 자기 신고로만 받고(어휘 위반은 거부) 값은 무시한다. 거부하면 정상 어댑터의 작업을 잃고 강등은 판단 지점이 늘어나므로, 항상 덮어쓰는 fail-closed 규칙이 가장 단순하다. 강제 지점은 에이전트 출력을 `evidence` 행으로 옮기는 task-engine의 `recordRunOutput` 한 곳이고 이 함수와 `AgentRunHost` 포트는 신뢰 출처를 받지 않는다. 기억으로 편입될 때의 규칙은 [memory-item](../schema/memory-item.md) 규칙 9). 외부 콘텐츠가 도구 호출을 유도한 경우 정책 게이트웨이가 그 호출을 외부 입력의 영향 하에 있는 호출로 표시하고 부작용 도구는 승인을 요구한다.
+3. **외부 입력은 항상 데이터다.** 외부 웹 페이지·고객 문서·이메일 안의 지시문은 시스템 정책, 도구 권한, 업무 목표를 바꾸지 못한다. 에이전트 입력에서 외부 콘텐츠는 지시와 분리된 데이터 영역으로 전달하고 `trust_origin='external_untrusted'`로 기록한다. 외부 콘텐츠에서 만든 근거(`evidence`)에도 같은 값을 `evidence.trust_origin`에 남긴다(열은 필수이고 기본값이 없어 쓰는 쪽이 밝힌다. 다만 **에이전트가 낸 근거는 호스트가 저장할 때 항상 `external_untrusted`로 쓴다**: 어댑터 출력은 신뢰 경계 밖이므로 계약의 `EvidenceItem.trust_origin`은 참고용 자기 신고로만 받고(어휘 위반은 거부) 값은 무시한다. 거부하면 정상 어댑터의 작업을 잃고 강등은 판단 지점이 늘어나므로, 항상 덮어쓰는 fail-closed 규칙이 가장 단순하다. 강제 지점은 에이전트 출력을 `evidence` 행으로 옮기는 task-engine의 `recordRunOutput` 한 곳이고 이 함수와 `AgentRunHost` 포트는 신뢰 출처를 받지 않는다. 기억으로 편입될 때의 규칙은 [memory-item](../schema/memory-item.md) 규칙 9). **선행 업무의 결과도 같은 외부 입력이다**(A6-U11): 한 업무의 결과를 다음 업무가 입력으로 받을 때(`inputs[kind=task_result]`, [task-spec](../schema/task-spec.md)) 호스트가 통과 평가가 있는 완료 업무의 결과만 읽어 어댑터 입력의 `upstream[]`로 넘기고, 항목마다 `trust_origin='external_untrusted'`를 붙인다. 표시는 구조다: `upstream`은 지시가 있는 `task_spec`과 별도 필드이고, 계약 검증(`validateUpstream`)과 `start` 프레임 검증이 `external_untrusted`가 아닌 값을 거부하며, 호스트의 실행기가 그 값을 정한다(DB 값이나 선행 어댑터의 자기 신고가 아니다). 그 run의 도구 게이트웨이는 처음부터 `externalInput`이라 모든 호출이 외부 입력 영향 호출로 표시되고 부작용 호출은 승인을 요구한다. 선행 결과 안의 문장은 도구·권한·목표를 정하지 못한다. 외부 콘텐츠가 도구 호출을 유도한 경우 정책 게이트웨이가 그 호출을 외부 입력의 영향 하에 있는 호출로 표시하고 부작용 도구는 승인을 요구한다.
 4. **외부 입력에서 온 정보는 기억에 `hypothesis`/`unverified`로 들어간다.** 검증 업무를 거쳐야 `fact`가 된다 ([memory-item](../schema/memory-item.md)).
 5. **내부 웹과 외부 웹을 분리**한다. 외부 공개 가능한 데이터는 `memory_item.sensitivity`, `publication.audience`, 정책의 공개 범위로 통제하며, 승인 없는 `public`/`customer` 게시는 거부한다.
 6. **평가기는 에이전트 보고서를 신뢰하지 않는다.** 원본 증거를 직접 조회한다 ([evaluation](../operations/evaluation.md)).
@@ -81,7 +81,7 @@
 
 ## 6. 필수 테스트
 
-- 외부 입력 속 지시문이 도구 호출/권한/정책에 영향을 주지 않는다.
+- 외부 입력 속 지시문이 도구 호출/권한/정책에 영향을 주지 않는다. 선행 업무 결과(`upstream`) 속 지시문도 같다: 같은 업무를 `upstream` 없이 돌린 대조와 도구 호출·정책 판정이 같다 (`test/integration/daemon-upstream.test.ts`, 어댑터 계약 스위트).
 - 에이전트가 정책 저장소 및 상태 전이 API에 접근하지 못한다 (API 테스트가 아니라 **OS 수준** 테스트: 에이전트 사용자로 DB 파일·`policies/`·승인 CLI를 열려는 시도가 실패).
 - 에이전트 프로세스에서 승인 기록을 생성하려는 모든 시도(CLI, 소켓, DB 직접 쓰기)가 실패한다.
 - 외부 입력 속 지시문이 포함된 입력으로 에이전트가 부작용 도구를 호출하면 게이트웨이가 외부 입력 영향 호출로 표시하고 승인을 요구한다 (주입 시나리오 테스트).

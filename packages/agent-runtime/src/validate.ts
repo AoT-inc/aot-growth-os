@@ -1,8 +1,13 @@
 // 어댑터 출력·비용 진행 보고의 형태 검증. 어댑터가 낸 값은 신뢰하지 않는다 (trust-boundaries §1: 실행 에이전트 = 낮음).
 // 예외 대신 모든 문제를 모아 돌려준다 (domain 의 IssueCollector 와 같은 방식). 프레임 검증(frames.ts)도 이 함수를 쓴다.
-import { EVIDENCE_KINDS, IssueCollector, isNonBlankString, isPlainObject, TRUST_ORIGINS, type PlainObject, type ValidationResult } from '@aot/domain';
+import { Buffer } from 'node:buffer';
 
-import { ADAPTER_STATUSES, COST_UNITS, type AdapterOutput, type CostProgressEvent, type JsonObject } from './contract.ts';
+import {
+  EVIDENCE_KINDS, IssueCollector, isNonBlankString, isPlainObject, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS, MAX_TASK_RESULT_TOTAL_BYTES, taskIdOfResultRef,
+  TRUST_ORIGINS, type PlainObject, type ValidationResult,
+} from '@aot/domain';
+
+import { ADAPTER_STATUSES, COST_UNITS, type AdapterOutput, type CostProgressEvent, type JsonObject, type UpstreamResult } from './contract.ts';
 
 /** Clock.nowIso() 가 만드는 형식. 문자열 비교가 시간순과 같도록 이 형식만 받는다 */
 const ISO_UTC_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -29,6 +34,47 @@ export function rejectUnknown(obj: PlainObject, allowed: readonly string[], path
   for (const key of Object.keys(obj)) {
     if (!allowed.includes(key)) out.add(path === '' ? key : `${path}.${key}`, 'unknown_field', `unknown field '${key}'`);
   }
+}
+
+const MAX_UPSTREAM_NAME_CHARS = 200;
+
+/**
+ * 선행 업무 결과 `upstream`(A6-U11) 검증: 배열(개수 상한), 항목은 `{name, task_ref, trust_origin, result}` 뿐이고, `trust_origin` 은 정확히 `external_untrusted`
+ * (선행 결과를 신뢰된 입력으로 표시한 입력을 거부한다), `task_ref` 는 `task:<id>`, 이름·참조는 유일, `result` 는 JSON 객체이며 항목당·전체 크기 상한(자르지 않고 거부).
+ * 호스트가 어댑터를 띄우기 전과 `start` 프레임을 받는 쪽이 같은 검사를 쓴다.
+ */
+export function validateUpstream(input: unknown): ValidationResult<UpstreamResult[]> {
+  const out = new IssueCollector();
+  checkUpstream(input, 'upstream', out);
+  return out.result(input as UpstreamResult[]);
+}
+
+export function checkUpstream(value: unknown, path: string, out: IssueCollector): void {
+  if (!Array.isArray(value)) return void out.add(path, 'type', 'upstream must be an array');
+  if (value.length > MAX_TASK_RESULT_INPUTS) out.add(path, 'too_many', `upstream has more than ${MAX_TASK_RESULT_INPUTS} entries`);
+  const names = new Set<string>();
+  const refs = new Set<string>();
+  let total = 0;
+  value.forEach((item: unknown, index) => {
+    const base = `${path}[${index}]`;
+    if (!isPlainObject(item)) return void out.add(base, 'type', 'upstream entry must be an object');
+    rejectUnknown(item, ['name', 'task_ref', 'trust_origin', 'result'], base, out);
+    const name = item['name'];
+    if (!isNonBlankString(name) || name.length > MAX_UPSTREAM_NAME_CHARS) out.add(`${base}.name`, 'required', `name must be a non-empty string of at most ${MAX_UPSTREAM_NAME_CHARS} characters`);
+    else if (names.has(name)) out.add(`${base}.name`, 'duplicate', `upstream name '${name}' is used more than once`);
+    else names.add(name);
+    const ref = item['task_ref'];
+    if (typeof ref !== 'string' || taskIdOfResultRef(ref) === null) out.add(`${base}.task_ref`, 'format', "task_ref must be 'task:<task id>'");
+    else if (refs.has(ref)) out.add(`${base}.task_ref`, 'duplicate', `${ref} is given more than once`);
+    else refs.add(ref);
+    if (item['trust_origin'] !== 'external_untrusted') out.add(`${base}.trust_origin`, 'enum', "trust_origin must be 'external_untrusted': a result from another agent is data, never trusted input");
+    const result = item['result'];
+    if (!isJsonObject(result)) return void out.add(`${base}.result`, 'type', 'result must be a JSON object');
+    const bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+    if (bytes > MAX_TASK_RESULT_BYTES) out.add(`${base}.result`, 'too_large', `result is ${bytes} bytes (limit ${MAX_TASK_RESULT_BYTES}); it is never truncated`);
+    total += bytes;
+  });
+  if (total > MAX_TASK_RESULT_TOTAL_BYTES) out.add(path, 'too_large', `the upstream results together are ${total} bytes (limit ${MAX_TASK_RESULT_TOTAL_BYTES})`);
 }
 
 const nonNegativeFinite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;

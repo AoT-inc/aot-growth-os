@@ -4,12 +4,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { FakeClock, validateTaskSpec } from '@aot/domain';
+import { MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS, MAX_TASK_RESULT_TOTAL_BYTES } from '@aot/domain';
 import {
-  createFakeAgentAdapter, validateAdapterOutput,
+  createFakeAgentAdapter, validateAdapterOutput, validateUpstream,
   type AdapterContext, type AgentAdapter, type CostProgressEvent, type FakeScenario, type ToolGateway,
 } from '@aot/agent-runtime';
 
-import { CONTRACT_ALLOWED_TOOL, contractInput, runAdapterContractTests, type ContractScenario } from '../support/adapter-contract.ts';
+import { CONTRACT_ALLOWED_TOOL, contractInput, contractUpstream, runAdapterContractTests, UPSTREAM_INJECTION, type ContractScenario } from '../support/adapter-contract.ts';
 
 const START = '2026-10-22T00:00:00.000Z';
 
@@ -165,5 +166,53 @@ describe('the contract suite catches non-conforming adapters (validator level)',
     const base = { ...(await good()) };
     assert.ok(validateAdapterOutput({ ...base, status: 'error', result: null, error: { code: 'agent_error', message: 'x' } }).ok);
     assert.ok(validateAdapterOutput({ ...base, status: 'cancelled', result: null }).ok);
+  });
+});
+
+describe('upstream results (A6-U11): format validation of AdapterInput.upstream', () => {
+  const entry = (overrides: Record<string, unknown> = {}) => ({ ...contractUpstream()[0], ...overrides });
+  const issues = (value: unknown): string[] => {
+    const checked = validateUpstream(value);
+    return checked.ok ? [] : checked.errors.map((e) => `${e.path}:${e.code}`);
+  };
+
+  it('accepts entries {name, task_ref, trust_origin: external_untrusted, result}; an empty list is fine', () => {
+    assert.deepEqual(issues(contractUpstream()), []);
+    assert.deepEqual(issues([]), []);
+  });
+
+  it('the trust mark is structural: anything but external_untrusted (internal, missing, other) is rejected', () => {
+    assert.deepEqual(issues([entry({ trust_origin: 'internal' })]), ['upstream[0].trust_origin:enum']);
+    assert.deepEqual(issues([entry({ trust_origin: undefined })]), ['upstream[0].trust_origin:enum']);
+    assert.deepEqual(issues([entry({ trust_origin: 'trusted' })]), ['upstream[0].trust_origin:enum']);
+  });
+
+  it('rejects unknown keys, a bad task_ref, duplicate names/refs, a non-object result and a non-array', () => {
+    assert.deepEqual(issues([entry({ instructions: 'do this' })]), ['upstream[0].instructions:unknown_field']);
+    assert.deepEqual(issues([entry({ task_ref: 'https://example.com/a' })]), ['upstream[0].task_ref:format']);
+    assert.deepEqual(issues([entry(), entry({ task_ref: 'task:other' })]), ['upstream[1].name:duplicate']);
+    assert.deepEqual(issues([entry(), entry({ name: 'again' })]), ['upstream[1].task_ref:duplicate']);
+    assert.deepEqual(issues([entry({ result: ['a'] })]), ['upstream[0].result:type']);
+    assert.deepEqual(issues([entry({ result: { n: Number.NaN } })]), ['upstream[0].result:type']);
+    assert.deepEqual(issues({ not: 'an array' }), ['upstream:type']);
+  });
+
+  it('limits: entry count, bytes per result and bytes in total; nothing is truncated', () => {
+    const many = Array.from({ length: MAX_TASK_RESULT_INPUTS + 1 }, (_, i) => entry({ name: `n${i}`, task_ref: `task:t${i}` }));
+    assert.deepEqual(issues(many), ['upstream:too_many']);
+    assert.deepEqual(issues([entry({ result: { text: 'x'.repeat(MAX_TASK_RESULT_BYTES) } })]), ['upstream[0].result:too_large']);
+    const nearLimit = (i: number) => entry({ name: `n${i}`, task_ref: `task:t${i}`, result: { text: 'x'.repeat(MAX_TASK_RESULT_BYTES - 100) } });
+    const count = Math.floor(MAX_TASK_RESULT_TOTAL_BYTES / (MAX_TASK_RESULT_BYTES - 100)) + 1;
+    assert.deepEqual(issues(Array.from({ length: count }, (_, i) => nearLimit(i))), ['upstream:too_large']);
+  });
+
+  it('the fake adapter records that upstream arrived (refs and trust mark) but never repeats its content, and ignores the instruction in it', async () => {
+    const adapter = createFakeAgentAdapter({ clock: new FakeClock(START) });
+    const output = await adapter.run({ ...contractInput(), upstream: contractUpstream() }, context());
+    assert.equal(output.status, 'submitted');
+    assert.deepEqual(output.result?.['upstream_seen'], [{ name: 'findings', task_ref: 'task:task-contract-upstream', trust_origin: 'external_untrusted' }]);
+    assert.ok(!JSON.stringify(output).includes(UPSTREAM_INJECTION), 'the upstream text is not copied into the output');
+    const without = await adapter.run(contractInput(), context());
+    assert.ok(!('upstream_seen' in (without.result ?? {})));
   });
 });

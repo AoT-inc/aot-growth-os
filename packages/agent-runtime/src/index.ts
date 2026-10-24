@@ -5,9 +5,9 @@ export {
   ADAPTER_STATUSES, COST_UNITS,
   type AdapterBudget, type AdapterContext, type AdapterCost, type AdapterError, type AdapterInput, type AdapterOutput, type AdapterStatus,
   type AgentAdapter, type AllowedTool, type CostProgressEvent, type CostUnit, type EvidenceItem, type JsonObject, type JsonValue,
-  type RunLogEntry, type ToolGateway, type ToolGatewayResponse,
+  type RunLogEntry, type ToolGateway, type ToolGatewayResponse, type UpstreamResult,
 } from './contract.ts';
-export { isClockIso, isJsonObject, isJsonValue, validateAdapterOutput, validateCostProgress } from './validate.ts';
+export { isClockIso, isJsonObject, isJsonValue, validateAdapterOutput, validateCostProgress, validateUpstream } from './validate.ts';
 export {
   AGENT_TO_HOST_FRAME_TYPES, encodeFrame, HOST_TO_AGENT_FRAME_TYPES, MAX_FRAME_BYTES, parseFrame,
   type CostProgressFrame, type Frame, type FrameDirection, type FrameEncode, type FrameParse, type FrameRejectCode, type FrameRejection,

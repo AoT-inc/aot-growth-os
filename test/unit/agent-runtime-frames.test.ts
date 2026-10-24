@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { encodeFrame, MAX_FRAME_BYTES, parseFrame, validateCostProgress, type Frame, type FrameRejectCode } from '@aot/agent-runtime';
+import { encodeFrame, MAX_FRAME_BYTES, parseFrame, startFrameOf, validateCostProgress, type Frame, type FrameRejectCode } from '@aot/agent-runtime';
+
+import { contractInput, contractUpstream } from '../support/adapter-contract.ts';
 
 const AT = '2026-10-22T00:00:00.000Z';
 const resultFrame = {
@@ -119,5 +121,39 @@ describe('cost_progress validation', () => {
     assert.equal(validateCostProgress({ cumulative: 1.5, unit: 'tokens' }).ok, false);
     assert.equal(validateCostProgress({ cumulative: 1, unit: 'usd', extra: 1 }).ok, false);
     assert.equal(validateCostProgress(null).ok, false);
+  });
+});
+
+describe('start frame with upstream results (A6-U11)', () => {
+  it('startFrameOf carries upstream as external_untrusted data and the line parses on the agent side; without upstream there is no upstream key', () => {
+    const withUpstream = startFrameOf({ ...contractInput(), upstream: contractUpstream() });
+    assert.ok(withUpstream.ok);
+    assert.deepEqual(withUpstream.frame.upstream, contractUpstream());
+    const line = encodeFrame(withUpstream.frame);
+    assert.ok(line.ok);
+    const parsed = parseFrame(line.line, 'host_to_agent');
+    assert.ok(parsed.ok && parsed.frame.type === 'start');
+    assert.deepEqual(parsed.frame.upstream, contractUpstream());
+    const plain = startFrameOf(contractInput());
+    assert.ok(plain.ok);
+    assert.ok(!('upstream' in plain.frame));
+  });
+
+  it('a start frame whose upstream is not marked external_untrusted, or has unknown keys, is rejected on both sides', () => {
+    const bad = { ...contractUpstream()[0]!, trust_origin: 'internal' };
+    const rejected = startFrameOf({ ...contractInput(), upstream: [bad as never] });
+    assert.ok(!rejected.ok);
+    assert.equal(rejected.rejection.code, 'invalid_frame');
+    assert.match(rejected.rejection.message, /upstream\[0\]\.trust_origin/);
+    const base = startFrameOf(contractInput());
+    assert.ok(base.ok);
+    const line = JSON.stringify({ ...base.frame, upstream: [{ ...contractUpstream()[0], extra: 1 }] });
+    assert.equal(rejectCode(line, 'host_to_agent'), 'invalid_frame');
+  });
+
+  it('the start frame refuses a secret-looking value inside an upstream result: secrets never enter the container', () => {
+    const upstream = [{ ...contractUpstream()[0]!, result: { api_key: 'sk-this-looks-like-a-secret-0123456789abcdef' } }];
+    const rejected = startFrameOf({ ...contractInput(), upstream });
+    assert.ok(!rejected.ok);
   });
 });

@@ -12,7 +12,7 @@ import {
   type AdapterInput, type AdapterOutput, type AgentAdapter, type AgentTaskReport, type CostProgressEvent, type GatewayToolSpec, type RunLogEntry, type RunLogStore,
 } from '@aot/agent-runtime';
 
-import { contractInput } from '../support/adapter-contract.ts';
+import { contractInput, contractUpstream } from '../support/adapter-contract.ts';
 import { deferred, ManualGatewayTimers, tick } from '../support/gateway-contract.ts';
 import { makeTempDir } from '../support/temp.ts';
 
@@ -459,5 +459,33 @@ describe('file run log store', () => {
     assert.equal(statSync(join(dir, 'run-1.jsonl')).mode & 0o777, 0o600);
     assert.equal(statSync(dir).mode & 0o777, 0o700);
     await assert.rejects(async () => store.save('../escape', []), /file name/);
+  });
+});
+
+describe('upstream results (A6-U11)', () => {
+  it('valid upstream reaches the adapter unchanged', async () => {
+    const e = env();
+    let seen: AdapterInput | null = null;
+    const adapter: AgentAdapter = { name: 'spy-agent', run: (input) => { seen = input; return Promise.resolve(submitted({ usd: 0 })); } };
+    const { time_limit_ms: _ignored, ...base } = contractInput();
+    void _ignored;
+    const report = await e.start(adapter, { input: { ...base, upstream: contractUpstream() } });
+    assert.equal(report.end.kind, 'submitted');
+    assert.deepEqual((seen as AdapterInput | null)?.upstream, contractUpstream());
+  });
+
+  it('upstream that is not marked external_untrusted does not start the adapter: failed invalid_upstream, nothing recorded', async () => {
+    const e = env();
+    let started = 0;
+    const adapter: AgentAdapter = { name: 'spy-agent', run: () => { started += 1; return Promise.resolve(submitted({ usd: 0 })); } };
+    const { time_limit_ms: _ignored, ...base } = contractInput();
+    void _ignored;
+    const trusted = [{ ...contractUpstream()[0]!, trust_origin: 'internal' as never }];
+    const report = await e.start(adapter, { input: { ...base, upstream: trusted } });
+    assert.equal(started, 0);
+    assert.equal(report.end.kind, 'failed');
+    assert.equal(report.end.kind === 'failed' && report.end.code, 'invalid_upstream');
+    assert.deepEqual(e.host.outputs, []);
+    assert.deepEqual(e.host.costCalls, []);
   });
 });

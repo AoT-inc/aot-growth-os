@@ -19,7 +19,7 @@ queued ──► running ──► validating ──► completed
 | (none) | unassigned | 업무 생성 엔진 | 맞는 역할 없음 → 조직 관리팀의 재편 신호 |
 | unassigned | queued | 스케줄러 | 역할 배정됨(기존 역할 확장 또는 새 역할 `trial` 시작) |
 | queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용, 실행 인자 = `approved_hash`, lease 획득 |
-| queued | needs_review | 스케줄러/정책 | `approved_hash` 불일치(재승인 요청) 또는 실행 직전 재검증에서 승인 범위 이탈 |
+| queued | needs_review | 스케줄러/정책 | `approved_hash` 불일치(재승인 요청), 실행 직전 재검증에서 승인 범위 이탈, 또는 (A6-U11) 명세의 선행 결과 입력(`inputs[kind=task_result]`)이 충족되지 않았거나(통과 평가가 있는 완료 업무가 아님) 업무별 어댑터를 고를 수 없음. run 을 만들지 않고 시도도 소모하지 않는다. 사유는 `upstream_unmet: <code>` / `adapter_unresolved` |
 | running | validating | 스케줄러 | `task_run.outcome='submitted'` |
 | running | queued | 스케줄러 | lease 만료로 run을 `lease_expired`로 닫음, 미확정 부작용 없음 ([recovery §4](../operations/recovery.md)) |
 | running | needs_review | 스케줄러 | run `effect_unknown`, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈 |

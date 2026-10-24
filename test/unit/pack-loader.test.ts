@@ -189,6 +189,24 @@ describe('pack file validation', () => {
     assert.ok(has(issuesOf({ dir: mutate(t, file, (r) => { r['task_template'] = 'weekly-market-research'; }), values: VALUES }), file, 'format', 'task_template'));
   });
 
+  it('task_result inputs (A6-U11): only a task of the same template that is also in depends_on; a chained template loads', (t) => {
+    const file = 'workflows/weekly-market-research.json';
+    const withPlan = (input: Record<string, unknown>, dependsOn: string[]) => (j: Record<string, unknown>): void => {
+      const tasks = j['tasks'] as Record<string, unknown>[];
+      const research = tasks[0]!['spec'] as Record<string, unknown>;
+      tasks.push({ name: 'plan', depends_on: dependsOn, spec: { ...research, inputs: [input], validation: { deterministic: ['budget'], llm: null, human: false }, allowed_tools: [] } });
+    };
+    const findings = { name: 'findings', ref: 'task:research', kind: 'task_result' };
+    const dir = mutate(t, file, withPlan(findings, ['research']));
+    const pack = loadPack({ dir, values: VALUES });
+    assert.deepEqual(pack.templates.find((template) => template.id === 'weekly-market-research')?.tasks.map((task) => [task.name, task.dependsOn]), [['research', []], ['plan', ['research']]]);
+
+    assert.ok(has(issuesOf({ dir: mutate(t, file, withPlan(findings, [])), values: VALUES }), file, 'upstream_not_a_dependency'), 'reads the result of a task it does not depend on');
+    assert.ok(has(issuesOf({ dir: mutate(t, file, withPlan({ ...findings, ref: 'task:ghost' }, ['research'])), values: VALUES }), file, 'not_found'), 'no such task in the template');
+    assert.ok(has(issuesOf({ dir: mutate(t, file, withPlan({ ...findings, ref: 'task:task-0123' }, ['research'])), values: VALUES }), file, 'not_found'), 'a template cannot name an existing task id');
+    assert.ok(has(issuesOf({ dir: mutate(t, file, withPlan({ ...findings, ref: 'https://docs.example.com/a' }, ['research'])), values: VALUES }), file, 'format'), 'not task:<id>');
+  });
+
   it('a template that sets trigger/dependencies, has duplicate or cyclic tasks, or an invalid spec is rejected', (t) => {
     const file = 'workflows/weekly-market-research.json';
     const task = (json: Record<string, unknown>) => (json['tasks'] as Record<string, unknown>[])[0]!;

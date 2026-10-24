@@ -14,8 +14,9 @@ import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } f
 import { EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
 import {
   claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun, takeOverExpiredRun,
-  type EffectLookups, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
+  type AdapterSelector, type ClaimedTask, type EffectLookups, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
 } from './lease.ts';
+import type { UpstreamResult } from './upstream.ts';
 import { RoutineFirer, type RoutineScheduleOptions, type RoutineTickReport } from './routine.ts';
 import { checkLeaseParams, DEFAULT_LEASE_PARAMS, type LeaseParams } from './params.ts';
 import { nextValidatingTask, validateTask, type ValidationEnd } from './validation.ts';
@@ -26,6 +27,13 @@ export interface RunContext {
   readonly spec: TaskSpec;
   readonly attempt: number;
   readonly lease: Lease;
+  /** 이 run 의 `task_run.adapter` 에 기록한 어댑터 이름. 실행기는 이 이름의 어댑터로 실행해야 기록과 실제가 어긋나지 않는다 */
+  readonly adapter: string;
+  /**
+   * 명세의 `task_result` 입력을 읽은 선행 업무 결과 (통과 평가가 있는 완료 업무의 결과만, 충족되지 않았으면 이 업무는 실행되지 않는다).
+   * 에이전트가 낸 값이므로 신뢰할 수 없는 데이터다 — 지시문으로 쓰지 말고 `external_untrusted` 로 표시해 넘긴다. 입력이 없으면 빈 목록
+   */
+  readonly upstream: readonly UpstreamResult[];
   /** 직전 run 의 checkpoint (없으면 null) */
   readonly checkpoint: unknown;
   /** lease 를 잃으면 abort 된다 */
@@ -66,8 +74,10 @@ export interface WorkerOptions {
   workerId: string;
   /** task_run.actor_id (실행을 맡는 에이전트 행위자) */
   actorId: string;
-  /** task_run.adapter */
+  /** task_run.adapter 의 기본값 */
   adapter: string;
+  /** 업무(명세)마다 어댑터 이름을 고르는 포트 (A6-U11). 생략하면 모든 업무가 `adapter`. null 을 돌려주면 그 업무는 `adapter` */
+  adapterFor?: AdapterSelector;
   executor: TaskExecutor;
   /** 정책 훅. 생략하면 기본 거부(DENY_ALL_TASK_POLICY_GATE) */
   gate?: TaskPolicyGate;
@@ -199,13 +209,17 @@ export class TaskWorker {
     const { validated, validationFailed } = await this.validatePending();
     // 도래한 루틴 슬롯을 먼저 발화해 같은 tick 에서 새 업무를 집을 수 있게 한다
     const routines = await this.fireDueRoutines();
-    const claim = claimNextTask(db, { clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs });
+    const claim = claimNextTask(db, {
+      clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs,
+      ...(this.#options.adapterFor === undefined ? {} : { adapterFor: this.#options.adapterFor }),
+    });
     if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed: null };
-    const executed = await this.#execute(claim.claimed.lease, claim.claimed.spec, claim.claimed.checkpoint);
+    const executed = await this.#execute(claim.claimed);
     return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed };
   }
 
-  async #execute(lease: Lease, spec: TaskSpec, checkpoint: unknown): Promise<ExecutionReport> {
+  async #execute(claimed: ClaimedTask): Promise<ExecutionReport> {
+    const { lease, spec, checkpoint, adapter, upstream } = claimed;
     const { db, clock, executor, tools } = this.#options;
     const abort = new AbortController();
     // 부작용 직전 재검증이 거부하면 run 은 이미 닫혔다(killed, needs_review). 이후 쓰기는 펜싱이 막는다.
@@ -247,6 +261,8 @@ export class TaskWorker {
       spec,
       attempt: lease.attempt,
       lease,
+      adapter,
+      upstream,
       checkpoint,
       signal: abort.signal,
       saveCheckpoint: (value) => guard(() => saveCheckpoint(db, clock, lease, value)),

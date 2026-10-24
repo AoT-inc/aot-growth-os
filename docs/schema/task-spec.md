@@ -8,9 +8,9 @@
 | `department` / `role` | 조건부 | 책임 부서와 역할. 맞는 역할이 없으면 비워 `unassigned`로 생성 | 지정했는데 존재하지 않거나 `trial`/`active`가 아닌 role |
 | `product` | | 대상 상품 slug | 등록되지 않은 상품 |
 | `trigger` | ✔ | `{kind: event\|routine\|manual\|task, ref}` | ref 없음 |
-| `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]` | 출처 없는 입력 |
+| `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]`. `kind='source_url'`은 조사 대상 URL, `kind='task_result'`는 선행 업무의 결과(아래 "선행 업무 결과 입력") | 출처 없는 입력, `task_result`의 잘못된 형식·중복·개수 초과, `task_result`의 선행 업무가 `dependencies`에 없음 |
 | `expected_quotes` | | 출처 원문에 있어야 하는 인용문 `[{source, text}]`. `source`는 `inputs[]`에서 `kind='source_url'`인 항목의 `name`(같은 이름의 `source_url` 입력이 정확히 하나여야 한다), `text`는 그 출처에 있어야 하는 문장. 상한: 전체 200건, 출처당 10건, 한 문장 500자(앞뒤 공백 제외). 조사 에이전트는 이 목록의 *모든* 문장에 대해 found/not found를 보고하고, 검증기(`quote_in_source`)가 출처 원문에서 다시 확인한다. 승인 대상 해시에 포함된다(실행 인자) | 알 수 없거나 모호한 `source`, 빈 `text`, 상한 초과, 같은 출처의 같은 문장(공백 차이 무시) 중복, `validation.deterministic`에 `quote_in_source`가 없음 |
-| `dependencies` | | 선행 업무 id 목록 | 순환 |
+| `dependencies` | | 선행 업무 id 목록. 선행이 모두 `completed`가 되기 전에는 실행되지 않는다. `task_result` 입력의 선행 업무는 여기에도 있어야 한다 | 순환 |
 | `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target?}]`. `scope`·`impact`는 항목마다 필수(`target`만 선택). 최종 권한은 정책이 결정 | `scope`·`impact` 누락(스키마 검증 단계, 정책 판정 이전), 정책 판정이 deny |
 | `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `time_limit`은 정수 + 단위 하나(`s`·`m`·`h`·`d`, 예 `"30m"`, 최대 `7d`)이며 해석할 수 없으면 생성 거부. 실행 관리가 초과 시 run을 취소하고 `killed`로 닫는다(없으면 데몬 기본 `default_time_limit`, 30분). `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
 | `acceptance_criteria` | ✔ | 완료 조건 목록 (검증 가능한 문장 또는 체크 id) | 비어 있음 |
@@ -72,6 +72,23 @@
   "cost_budget": {"max_usd": 1.0}
 }
 ```
+
+## 선행 업무 결과 입력 (`inputs[kind=task_result]`, A6-U11)
+
+한 업무의 결과를 다음 업무의 입력으로 쓰는 방법이다. 예: 조사 업무의 결과를 받아 기획 업무가 실험안을 만든다.
+
+```json
+{
+  "inputs": [{"name": "findings", "ref": "task:task-1234", "kind": "task_result"}],
+  "dependencies": ["task-1234"]
+}
+```
+
+- **형식.** `ref`는 `task:<선행 업무 id>`이다. 한 업무에 최대 8개, `name`·`ref`는 `task_result` 입력 안에서 유일해야 한다.
+- **`dependencies`와의 관계.** 선행 업무는 `dependencies`에도 있어야 한다. 순서는 `dependencies`가 보장하고(선행이 `completed`가 된 뒤에야 집힌다), `task_result`는 그 결과를 *읽는다*는 뜻이다. 엔진이 자동으로 `dependencies`에 더하지 않고 생성 단계에서 거부한다(`upstream_not_a_dependency`). 루틴 템플릿에서는 `ref`를 `task:<템플릿 업무 name>`으로 쓰고 그 업무가 `depends_on`에 있어야 하며, 업무가 만들어질 때 생성된 id로 바뀐다.
+- **무엇을 넘기는가.** 실행 시점(lease 획득 직전)에 호스트가 *선행 업무가 `completed`이고, 그 업무에 통과 평가(`outcome='pass'` AND `safety='pass'`)가 있을 때*, 그 평가가 대상으로 한 run의 `task_run.result`만 읽는다. 사람이 `completed`로 끝냈더라도 통과 평가가 없으면 넘기지 않는다. 결과는 JSON 객체여야 하고 항목당 64 KiB, 전체 256 KiB를 넘으면 자르지 않고 거부한다.
+- **필수 입력이다.** 하나라도 충족되지 않으면(`upstream_not_found`·`upstream_not_completed`·`upstream_not_evaluated`·`upstream_not_passed`·`upstream_result_missing`·`upstream_result_not_object`·`upstream_result_too_large`·`upstream_total_too_large`) 업무는 실행되지 않고 `queued → needs_review`로 간다. run도 시도 소모도 없다. 사유는 `task_transition.reason`에 `upstream_unmet: <코드>: input '<name>': ...`로 남는다. 기다리지 않는 이유: 선행이 `completed`가 된 뒤에는 상태가 더 바뀌지 않으므로 기다려도 충족되지 않는다(선행이 아직 끝나지 않은 경우는 `dependencies`가 이미 막는다). 일부만 넘기고 실행하지 않는다.
+- **신뢰.** 선행 결과는 다른 에이전트가 낸 산출물이므로 항상 `external_untrusted` 데이터다 ([trust-boundaries §2-3](../security/trust-boundaries.md)). 어댑터 입력의 `upstream[]` 항목은 `{name, task_ref, trust_origin: 'external_untrusted', result}`이고 `task_spec`(지시)과 분리되어 있다.
 
 ## 결정론적 검사 id (`validation.deterministic`)
 

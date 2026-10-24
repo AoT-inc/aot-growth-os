@@ -19,7 +19,7 @@ import {
 } from '@aot/agent-runtime';
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
-import { dockerOut, labeledContainers, TEST_INSTANCE, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
+import { dockerOut, TEST_INSTANCE, testContainers, waitUntilNoTestContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
 import { manualTimers, runsOf, taskStatus } from '../support/engine.ts';
 import { html, startPageServer, text, type PageHandler } from '../support/page-server.ts';
 import { AGENT, createWithGate, decisionsOf, policyEnv, readOnlyDraft } from '../support/policy.ts';
@@ -53,7 +53,7 @@ if (!prepared.ok) {
   const canary = await startPageServer(manual, { '/secret': text('INTERNAL-CANARY-CONTENT'), '/pixel': text('x'), '/latest/meta-data/': text('metadata') });
   after(async () => {
     await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE });
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), [], 'docker ps -a --filter label=aot.run shows nothing');
+    assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), [], 'docker ps -a --filter label=aot.run shows nothing of this test');
     await web.close();
     await canary.close();
   });
@@ -105,8 +105,8 @@ if (!prepared.ok) {
   /** 요청이 서버에 도착하면(컨테이너가 도구 응답을 기다리는 중) 컨테이너를 들여다보고 게이트를 연다 */
   async function inspectWhileBlocked(requestsBefore: number, release: () => void) {
     await waitFor(() => web.requests.length > requestsBefore, 'the fetch to reach the page server');
-    await waitFor(async () => (await labeledContainers(sandbox.docker, 'aot.run')).length === 1, 'the agent container to be listed');
-    const [id] = await labeledContainers(sandbox.docker, 'aot.run');
+    await waitFor(async () => (await testContainers(sandbox.docker)).length === 1, 'the agent container to be listed');
+    const [id] = await testContainers(sandbox.docker);
     interface Inspected {
       Mounts: unknown[];
       HostConfig: { Binds: string[] | null; NetworkMode: string; ReadonlyRootfs: boolean; Privileged: boolean; CapDrop: string[] };
@@ -202,7 +202,7 @@ if (!prepared.ok) {
       runId, taskId: null, subject: 'researcher@v1', tools: [fetchTool.spec, SEND_EMAIL], executors, policy, clock: new FakeClock('2026-10-23T00:00:00.000Z'),
       constraints: toolCallConstraintsOf(base), toolTimeoutMs: 30_000,
     });
-    const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: 'aot-test-research' });
+    const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research` });
     const running = adapter.run(base, { gateway, signal: new AbortController().signal, onCostProgress: () => undefined });
     const facts = await inspectWhileBlocked(requestsBefore, release);
     const output = await running;
@@ -378,7 +378,7 @@ if (!prepared.ok) {
       db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
       paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
       agent: {
-        adapter: createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `aot-test-research-d${daemonCounter}` }),
+        adapter: createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research-d${daemonCounter}` }),
         docker: sandbox.docker, instanceId: TEST_INSTANCE, tools: [fetchTool.spec], executors, runLogStore,
       },
     });

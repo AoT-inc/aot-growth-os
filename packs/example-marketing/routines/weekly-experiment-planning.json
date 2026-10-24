@@ -1,0 +1,9 @@
+{
+  "slug": "weekly-experiment-planning",
+  "description": "주간 사이클 1~5단계의 입구: 매주 월요일 09:00(Asia/Seoul) 슬롯 하나에서 템플릿 weekly-experiment-planning@1 의 조사 업무와 기획 업무(조사에 의존, 지난주 기준선 측정을 기다림)를 함께 낸다. 루틴은 enabled=0 으로 만들어진다. 이 루틴을 켜는 운영 경로(승인 CLI 명령)는 아직 없다(phase-a A6 완료 기록의 열린 항목).",
+  "schedule": "0 9 * * 1 Asia/Seoul",
+  "catch_up": "skip",
+  "task_template": "weekly-experiment-planning@1",
+  "org_unit": "{{org_unit}}",
+  "product": "{{product}}"
+}

@@ -15,7 +15,7 @@ import {
 } from '@aot/agent-runtime';
 
 import { contractInput, runAdapterContractTests, type ContractScenario } from '../support/adapter-contract.ts';
-import { labeledContainers, TEST_INSTANCE, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
+import { TEST_INSTANCE, testContainers, waitUntilNoTestContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
 import { prepareResearchAgent } from '../support/research-agent.ts';
 
 const prepared = await prepareResearchAgent();
@@ -81,7 +81,7 @@ function factory(scenario: ContractScenario): AgentAdapter | null {
     console.log('[research-agent-contract] scenario denied_tool is not supported: the agent has no code path that calls a tool outside the allowed list (only fetch_url exists)');
     return null;
   }
-  const inner = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: 'aot-test-research' });
+  const inner = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research` });
   return scenario === 'tool_call' ? scripted(inner, 'canned') : scenario === 'wait_for_cancel' ? scripted(inner, 'slow') : inner;
 }
 
@@ -90,8 +90,8 @@ if (!prepared.ok) {
 } else {
   after(async () => {
     await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE });
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), [], 'no aot.run container is left behind by this file');
-    assert.deepEqual(await labeledContainers(sandbox.docker, 'aot.run'), []);
+    assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), [], 'no aot.run container is left behind by this file');
+    assert.deepEqual(await testContainers(sandbox.docker), []);
   });
 
   describe('research agent inputs', () => {
@@ -112,7 +112,7 @@ if (!prepared.ok) {
 
   describe('research agent adapter: beyond the shared contract', () => {
     it('is named research-agent, submits a structured report with source_url evidence, and reports the fetched quotation', async () => {
-      const adapter = scripted(createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: 'aot-test-research' }), 'canned');
+      const adapter = scripted(createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research` }), 'canned');
       assert.equal(adapter.name, RESEARCH_AGENT_NAME);
       const calls: { tool: string; args: JsonObject }[] = [];
       const progress: number[] = [];
@@ -138,7 +138,7 @@ if (!prepared.ok) {
     });
 
     it('cancelling while the agent is blocked waiting for a tool answer kills the container: cancelled, nothing left behind', async () => {
-      const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: 'aot-test-research' });
+      const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research` });
       const controller = new AbortController();
       let arrived!: () => void;
       const called = new Promise<void>((resolve) => { arrived = resolve; });
@@ -148,16 +148,16 @@ if (!prepared.ok) {
         onCostProgress: () => undefined,
       });
       await called;
-      assert.equal((await labeledContainers(sandbox.docker, 'aot.run')).length, 1, 'the container is running while it waits for the tool');
+      assert.equal((await testContainers(sandbox.docker)).length, 1, 'the container is running while it waits for the tool');
       controller.abort(new Error('cancel while waiting'));
       const output = await running;
       assert.ok(validateAdapterOutput(output).ok);
       assert.equal(output.status, 'cancelled');
-      assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+      assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), []);
     });
 
     it('refuses to call anything when fetch_url is not in the allowed tools: error result, zero gateway calls', async () => {
-      const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: 'aot-test-research' });
+      const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research` });
       const calls: string[] = [];
       const input: AdapterInput = { ...researchInput(true), allowed_tools: [{ tool: 'example_search', operations: ['search'] }] };
       const output = await adapter.run(input, {
@@ -172,7 +172,7 @@ if (!prepared.ok) {
     });
 
     it('a gateway that refuses the fetch (policy_denied) is reported per source; the run still submits and nothing leaks into evidence', async () => {
-      const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: 'aot-test-research' });
+      const adapter = createResearchAgentAdapter({ docker: sandbox.docker, image: sandbox.imageId, instance: TEST_INSTANCE, clock: systemClock, namePrefix: `${TEST_INSTANCE}-research` });
       const output = await adapter.run(researchInput(true), {
         gateway: { call: () => Promise.resolve({ ok: false, error: 'policy_denied' }) },
         signal: new AbortController().signal,

@@ -30,8 +30,14 @@ export function locateDocker(): string | null {
   return null;
 }
 
-/** 시험이 띄우는 컨테이너의 `aot.instance` 라벨 값. 시험의 정리는 이 인스턴스 것만 지운다 */
-export const TEST_INSTANCE = 'aot-test';
+/**
+ * 시험이 띄우는 컨테이너의 `aot.instance` 라벨 값. 시험의 정리는 이 인스턴스 것만 지운다.
+ * 시험 프로세스(= 시험 파일)마다 다르다(A6-U17): 같은 Docker 호스트에서 다른 세션·병렬 실행이 같은 값을 쓰면 서로의 컨테이너를 세고, 시작 때 고아 정리
+ * (`aot.run` AND `aot.instance`)가 남의 실행 중 컨테이너를 지운다. 개수 검사는 이 값으로 좁힌다(`testContainers`).
+ */
+export const TEST_INSTANCE = `aot-test-${randomUUID().slice(0, 8)}`;
+/** 인스턴스 라벨 *없는* 컨테이너를 시험이 일부러 만들 때 붙이는 소유 표시 (그 컨테이너도 이 시험의 개수 검사에 들어가게) */
+export const TEST_OWNER_LABEL = 'aot.test-owner';
 
 export interface SandboxEnvironment {
   docker: DockerCli;
@@ -113,6 +119,28 @@ export async function waitUntilNoContainers(docker: DockerCli, label: string, ti
   while (left.length > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     left = await labeledContainers(docker, label);
+  }
+  return left;
+}
+
+/**
+ * 이 시험 프로세스의 컨테이너 id: 라벨 `label`(기본 `aot.run`)이 있고 인스턴스 라벨이 `TEST_INSTANCE` 이거나 그 파생(`<TEST_INSTANCE>-…`, 다른 인스턴스 흉내),
+ * 또는 소유 표시가 `TEST_INSTANCE` 인 것. 같은 호스트의 다른 실행이 만든 `aot.run` 컨테이너는 세지 않는다.
+ */
+export async function testContainers(docker: DockerCli, label = 'aot.run'): Promise<string[]> {
+  const out = await dockerOut(docker, ['ps', '-a', '--filter', `label=${label}`, '--format', `{{.ID}}\t{{.Label "aot.instance"}}\t{{.Label "${TEST_OWNER_LABEL}"}}`]);
+  return out.split('\n').map((line) => line.trim()).filter((line) => line !== '').map((line) => line.split('\t'))
+    .filter(([, instance = '', owner = '']) => instance === TEST_INSTANCE || instance.startsWith(`${TEST_INSTANCE}-`) || owner === TEST_INSTANCE)
+    .map(([id]) => id!);
+}
+
+/** 이 시험 프로세스의 컨테이너가 없어질 때까지 기다린다. 끝내 남으면 남은 id 를 돌려준다 */
+export async function waitUntilNoTestContainers(docker: DockerCli, label = 'aot.run', timeoutMs = 10_000): Promise<string[]> {
+  const deadline = Date.now() + timeoutMs;
+  let left = await testContainers(docker, label);
+  while (left.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    left = await testContainers(docker, label);
   }
   return left;
 }

@@ -17,7 +17,7 @@ import { createStubLlmVerifier, type IsolatedVerificationInput, type LlmVerifier
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
 import { buildAgentRuntime, type AgentRuntimeBuild, type AgentRuntimeConfig, type AgentRuntimeOverrides } from '../../apps/daemon/src/runtime-config.ts';
 import { createFetchUrlToolWithHooks, createSourceFetcherWithHooks, type FetchUrlHooks } from '../../packages/agent-runtime/src/fetch-url.ts';
-import { dockerOut, labeledContainers, TEST_INSTANCE, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
+import { dockerOut, labeledContainers, TEST_INSTANCE, testContainers, waitUntilNoTestContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
 import { manualTimers, runsOf, taskStatus } from '../support/engine.ts';
 import { evaluationsOf, submittedRun, transitionsOf } from '../support/evaluation.ts';
 import { html, startPageServer, text, type PageHandler } from '../support/page-server.ts';
@@ -52,7 +52,7 @@ if (!prepared.ok) {
   const canary = await startPageServer(manual, { '/secret': text('INTERNAL-CANARY-CONTENT') });
   after(async () => {
     await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE });
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), [], 'docker ps -a --filter label=aot.run shows nothing');
+    assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), [], 'docker ps -a --filter label=aot.run shows nothing of this test');
     await web.close();
     await canary.close();
   });
@@ -107,8 +107,8 @@ if (!prepared.ok) {
   // ----- 실행 중 컨테이너 들여다보기 -----
   async function inspectWhileBlocked(requestsBefore: number, release: () => void) {
     await waitFor(() => web.requests.length > requestsBefore, 'the fetch to reach the page server');
-    await waitFor(async () => (await labeledContainers(sandbox.docker, 'aot.run')).length === 1, 'the agent container to be listed');
-    const [id] = await labeledContainers(sandbox.docker, 'aot.run');
+    await waitFor(async () => (await testContainers(sandbox.docker)).length === 1, 'the agent container to be listed');
+    const [id] = await testContainers(sandbox.docker);
     interface Inspected {
       Mounts: unknown[];
       HostConfig: { Binds: string[] | null; NetworkMode: string; ReadonlyRootfs: boolean; Privileged: boolean };
@@ -359,8 +359,8 @@ if (!prepared.ok) {
       });
     });
 
-    it('the container is gone after the run: no aot.run container is left on the host', async () => {
-      assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+    it('the container is gone after the run: no aot.run container of this test is left on the host', async () => {
+      assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), []);
     });
 
     it('injected pages (instructions hidden in HTML, frame look-alike lines in text/plain) leave the daemon path identical to the control: same records, same judgements, same outcome', async (t) => {
@@ -502,17 +502,17 @@ if (!prepared.ok) {
     it("daemon start (prepareAgentRuntime) removes this instance's orphan containers only: a container left by another daemon instance on the same Docker host survives", async (t) => {
       const env = policyEnv(t);
       const rig = makeRig(env);
-      const mine = 'aot-test-orphan-mine';
-      const foreign = 'aot-test-orphan-foreign';
-      await dockerOut(sandbox.docker, ['create', '--name', mine, '--label', 'aot.run=orphan-mine', '--label', `aot.instance=${TEST_INSTANCE}`, sandbox.imageId]);
-      await dockerOut(sandbox.docker, ['create', '--name', foreign, '--label', 'aot.run=orphan-foreign', '--label', 'aot.instance=somebody-else-9', sandbox.imageId]);
+      const mine = `aot-test-orphan-mine-${TEST_INSTANCE}`;
+      const foreign = `aot-test-orphan-foreign-${TEST_INSTANCE}`;
+      await dockerOut(sandbox.docker, ['create', '--name', mine, '--label', `aot.run=${mine}`, '--label', `aot.instance=${TEST_INSTANCE}`, sandbox.imageId]);
+      await dockerOut(sandbox.docker, ['create', '--name', foreign, '--label', `aot.run=${foreign}`, '--label', `aot.instance=${TEST_INSTANCE}-somebody-else`, sandbox.imageId]);
       try {
         const readiness = await rig.daemon.prepareAgentRuntime();
         assert.equal(readiness?.orphans.found.length, 1);
         assert.equal(readiness?.orphans.removed, 1);
         assert.deepEqual(readiness?.orphans.failures, []);
-        assert.deepEqual(await labeledContainers(sandbox.docker, 'aot.run=orphan-mine'), [], 'this instance\'s orphan is gone');
-        assert.equal((await labeledContainers(sandbox.docker, 'aot.run=orphan-foreign')).length, 1, 'the other instance\'s container is still there');
+        assert.deepEqual(await labeledContainers(sandbox.docker, `aot.run=${mine}`), [], 'this instance\'s orphan is gone');
+        assert.equal((await labeledContainers(sandbox.docker, `aot.run=${foreign}`)).length, 1, 'the other instance\'s container is still there');
       } finally {
         await dockerOut(sandbox.docker, ['rm', '-f', mine]).catch(() => undefined);
         await dockerOut(sandbox.docker, ['rm', '-f', foreign]).catch(() => undefined);

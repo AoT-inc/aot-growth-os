@@ -13,7 +13,7 @@ import { systemClock } from '@aot/domain';
 import { costForTask } from '@aot/evaluation';
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
-import { dockerOut, labeledContainers, prepareSandbox, TEST_INSTANCE, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
+import { dockerOut, prepareSandbox, TEST_INSTANCE, testContainers, waitUntilNoTestContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
 import { manualTimers, runsOf, taskStatus } from '../support/engine.ts';
 import { AGENT, createWithGate, policyEnv, readOnlyDraft, type PolicyEnv } from '../support/policy.ts';
 
@@ -40,7 +40,7 @@ describe('agent run management with the container sandbox (real docker)', { skip
     await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE });
   });
   after(async () => {
-    assert.deepEqual(await labeledContainers(sandbox.docker, 'aot.run'), [], 'no aot.run container is left behind by this file');
+    assert.deepEqual(await testContainers(sandbox.docker), [], 'no aot.run container is left behind by this file');
   });
 
   it('(a) a hung container is killed at constraints.time_limit: run killed, task retry_wait, no container remains', async (t) => {
@@ -63,8 +63,8 @@ describe('agent run management with the container sandbox (real docker)', { skip
     assert.equal(run?.lease_owner, 'w1');
     const reason = env.db.get<{ reason: string }>('SELECT reason FROM task_transition WHERE task_id = ? ORDER BY id DESC LIMIT 1', [taskId])!.reason;
     assert.match(reason, /killed: time_limit: time limit 3s exceeded/);
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), [], 'docker ps -a shows no aot.run container');
-    assert.equal(await dockerOut(sandbox.docker, ['ps', '-aq', '--filter', 'label=aot.run']), '');
+    assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), [], 'docker ps -a shows no aot.run container of this test');
+    assert.equal(await dockerOut(sandbox.docker, ['ps', '-aq', '--filter', 'label=aot.run', '--filter', `label=aot.instance=${TEST_INSTANCE}`]), '');
   });
 
   it('(b) cost_progress from the container over the budget: killed(budget_exceeded), needs_review, the cost up to that point is kept', async (t) => {
@@ -77,22 +77,22 @@ describe('agent run management with the container sandbox (real docker)', { skip
     assert.equal(runsOf(env.db, taskId)[0]?.outcome, 'killed');
     assert.ok(costForTask(env.db, taskId).totalUsd >= 0.005, 'the 0.005 USD reported before the kill is in the ledger');
     assert.match(env.db.get<{ reason: string }>('SELECT reason FROM task_transition WHERE task_id = ? ORDER BY id DESC LIMIT 1', [taskId])!.reason, /budget_exceeded/);
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+    assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), []);
   });
 
   it('(c) starting up removes containers left behind by an earlier daemon of this instance (labels aot.run and aot.instance)', async (t) => {
     const env = policyEnv(t);
     const orphan = (await dockerOut(sandbox.docker, [
-      'run', '-d', '--rm', '--network', 'none', '--label', 'aot.run=orphan-test', '--label', `aot.instance=${TEST_INSTANCE}`,
+      'run', '-d', '--rm', '--network', 'none', '--label', `aot.run=orphan-${TEST_INSTANCE}`, '--label', `aot.instance=${TEST_INSTANCE}`,
       '--entrypoint', '/nodejs/bin/node', sandbox.imageId, '-e', 'setInterval(() => {}, 1 << 30)',
     ])).trim();
     try {
       assert.ok(orphan !== '');
-      assert.deepEqual((await labeledContainers(sandbox.docker, 'aot.run')).length, 1);
+      assert.deepEqual((await testContainers(sandbox.docker)).length, 1);
       const readiness = await daemonWith(env, ['hang']).prepareAgentRuntime();
       assert.equal(readiness?.orphans.found.length, 1);
       assert.deepEqual(readiness?.orphans.failures, []);
-      assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+      assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), []);
     } finally {
       await dockerOut(sandbox.docker, ['rm', '-f', orphan]).catch(() => undefined); // 실패해도 컨테이너를 남기지 않는다
     }

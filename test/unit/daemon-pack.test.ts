@@ -59,9 +59,9 @@ describe('assembleDaemon with a pack', () => {
     const { db, daemon } = rig(t, { pack: { dir: PACK_DIR, values: VALUES } });
     const d = daemon();
     assert.equal(d.pack?.manifest.name, 'example-marketing');
-    assert.deepEqual(d.packSync, { created: ['weekly-market-research'], updated: [], unchanged: [] });
+    assert.deepEqual(d.packSync, { created: ['weekly-experiment-planning', 'weekly-market-research'], updated: [], unchanged: [] });
     assert.deepEqual(d.pack?.signals.map((s) => s.id), ['weekly-landing-conversions']);
-    assert.deepEqual(db.all('SELECT slug, enabled FROM routine').map((r) => ({ ...r })), [{ slug: 'weekly-market-research', enabled: 0 }]);
+    assert.deepEqual(db.all('SELECT slug, enabled FROM routine ORDER BY slug').map((r) => ({ ...r })), [{ slug: 'weekly-experiment-planning', enabled: 0 }, { slug: 'weekly-market-research', enabled: 0 }]);
   });
 
   it('assembling again (a daemon restart) changes nothing in the database', (t) => {
@@ -69,7 +69,7 @@ describe('assembleDaemon with a pack', () => {
     daemon();
     const snapshot = JSON.stringify(db.all('SELECT * FROM routine'));
     const again = daemon();
-    assert.deepEqual(again.packSync, { created: [], updated: [], unchanged: ['weekly-market-research'] });
+    assert.deepEqual(again.packSync, { created: [], updated: [], unchanged: ['weekly-experiment-planning', 'weekly-market-research'] });
     assert.equal(JSON.stringify(db.all('SELECT * FROM routine')), snapshot);
   });
 

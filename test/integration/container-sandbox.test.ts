@@ -20,7 +20,8 @@ import {
 
 import { contractInput } from '../support/adapter-contract.ts';
 import {
-  dockerOut, inspectContainer, labeledContainers, makeFakeInstance, prepareSandbox, TEST_INSTANCE, uniqueRunId, waitUntilNoContainers, type SandboxEnvironment,
+  dockerOut, inspectContainer, labeledContainers, makeFakeInstance, prepareSandbox, TEST_INSTANCE, TEST_OWNER_LABEL, testContainers, uniqueRunId, waitUntilNoContainers,
+  waitUntilNoTestContainers, type SandboxEnvironment,
 } from '../support/container-sandbox.ts';
 
 const prepared = await prepareSandbox();
@@ -106,7 +107,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
     }
   });
   after(async () => {
-    const left = await labeledContainers(sandbox.docker, 'aot.run');
+    const left = await testContainers(sandbox.docker);
     assert.deepEqual(left, [], 'no aot.run container is left behind by this file');
   });
 
@@ -230,7 +231,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
 
   it('(f) if only the runner process is SIGKILLed the container survives; cleanupOrphanContainers then leaves none', async () => {
     const runId = newRunId();
-    const worker = fork(fileURLToPath(new URL('./workers/container-run-worker.ts', import.meta.url)), [sandbox.docker.path, sandbox.imageId, runId], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    const worker = fork(fileURLToPath(new URL('./workers/container-run-worker.ts', import.meta.url)), [sandbox.docker.path, sandbox.imageId, runId, TEST_INSTANCE], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     try {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('the worker never reached its first tool call')), 30_000);
@@ -263,7 +264,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
   });
 
   it('(i) orphan cleanup is scoped to one daemon instance: another instance\'s running container and a container without an instance label survive; only this instance\'s container is removed', async () => {
-    const [instanceA, instanceB] = ['aot-test-a', 'aot-test-b'];
+    const [instanceA, instanceB] = [`${TEST_INSTANCE}-a`, `${TEST_INSTANCE}-b`]; // 이 프로세스에서만 쓰는 두 인스턴스 (다른 실행과 겹치지 않는다)
     const [runA, runB, runLegacy] = [newRunId(), newRunId(), newRunId()];
     const runnerFor = (instance: string) => createContainerRunner({ docker: sandbox.docker, image: sandbox.imageId, instance, limits: LIMITS, namePrefix: 'aot-test', clock: systemClock, agentArgs: ['hostile'] });
     const controllers = { a: new AbortController(), b: new AbortController() };
@@ -271,7 +272,8 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
     const runningA = runnerFor(instanceA).run(sandboxInput(runA), hang(controllers.a));
     const runningB = runnerFor(instanceB).run(sandboxInput(runB), hang(controllers.b));
     // 라벨만 같은 "옛" 컨테이너: 인스턴스 라벨이 없다(이 변경 전에 만들어졌거나 다른 도구가 만든 것). aot.run 하나로 고르면 이것까지 지워진다
-    await dockerOut(sandbox.docker, ['create', '--name', `aot-test-legacy-${runLegacy}`, '--label', `aot.run=${runLegacy}`, sandbox.imageId]);
+    // 소유 표시(`aot.test-owner`)는 이 시험의 개수 검사용일 뿐 `aot.instance` 가 아니다: 정리 대상 선택에는 쓰이지 않는다
+    await dockerOut(sandbox.docker, ['create', '--name', `aot-test-legacy-${runLegacy}`, '--label', `aot.run=${runLegacy}`, '--label', `${TEST_OWNER_LABEL}=${TEST_INSTANCE}`, sandbox.imageId]);
     try {
       for (const id of [runA, runB]) {
         const deadline = Date.now() + 20_000;
@@ -287,7 +289,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
 
       // 아무 컨테이너도 없는 인스턴스의 정리는 아무것도 지우지 않는다
       assert.deepEqual(await cleanupOrphanContainers({ docker: sandbox.docker, instance: TEST_INSTANCE }), { found: [], removed: 0, failures: [] });
-      assert.equal((await labeledContainers(sandbox.docker, 'aot.run')).length, 3, 'all three are still there');
+      assert.equal((await testContainers(sandbox.docker)).length, 3, 'all three are still there');
 
       const cleaned = await cleanupOrphanContainers({ docker: sandbox.docker, instance: instanceA });
       assert.equal(cleaned.found.length, 1);
@@ -305,7 +307,7 @@ describe('container sandbox (OS level, real docker)', { skip }, () => {
       await cleanupOrphanContainers({ docker: sandbox.docker, instance: instanceB });
       await dockerOut(sandbox.docker, ['rm', '-f', `aot-test-legacy-${runLegacy}`]).catch(() => undefined);
     }
-    assert.deepEqual(await waitUntilNoContainers(sandbox.docker, 'aot.run'), []);
+    assert.deepEqual(await waitUntilNoTestContainers(sandbox.docker), []);
   });
 
   it('(h) output that is not a frame, or a flood without newlines, makes the runner kill the container at once', async () => {

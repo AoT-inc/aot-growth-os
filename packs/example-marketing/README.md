@@ -7,11 +7,13 @@
 | 위치 | 내용 | 상태 |
 |---|---|---|
 | `manifest.json` | 이름, 버전, 요구 코어 버전, 필요한 도구, 구성 디렉터리 | 형식 검증 있음 (`validatePackManifest`) |
-| `workflows/` | 업무 템플릿 `<id>.json` (`id`, `version`, `tasks[{name, depends_on?, spec}]`; `spec` 은 [task-spec](../../docs/schema/task-spec.md) 초안 형식) | 주간 시장 조사 1개, 주간 실험 기획 1개(조사 → 기획: 조사 결과와 지난주 기준선 측정과 직전 `strategy_record` 를 받아 `candidates` 를 낸다, 검사 `experiment_candidates`. 루틴은 아직 가리키지 않는다), 실험 결과 검토 1개(`experiment-result-review`: 데몬 사이클이 실험 주가 끝난 뒤 만든다) |
-| `routines/` | 루틴 선언 `<slug>.json` (`schedule`, `catch_up`, `task_template` = `<템플릿 id>@<version>`, `org_unit`, 선택 `product`) | 주간 시장 조사 1개 (월 09:00 `Asia/Seoul`, `catch_up: skip`) |
+| `workflows/` | 업무 템플릿 `<id>.json` (`id`, `version`, `tasks[{name, depends_on?, spec}]`; `spec` 은 [task-spec](../../docs/schema/task-spec.md) 초안 형식) | 주간 시장 조사 1개, 주간 실험 기획 1개(조사 → 기획: 조사 결과와 지난주 기준선 측정과 직전 `strategy_record` 를 받아 `candidates` 를 낸다, 검사 `experiment_candidates`. 루틴 `weekly-experiment-planning` 이 가리킨다), 실험 결과 검토 1개(`experiment-result-review`: 데몬 사이클이 실험 주가 끝난 뒤 만든다) |
+| `routines/` | 루틴 선언 `<slug>.json` (`schedule`, `catch_up`, `task_template` = `<템플릿 id>@<version>`, `org_unit`, 선택 `product`) | 주간 실험 기획 1개(`weekly-experiment-planning`: 한 슬롯에서 조사 → 기획 업무, 주간 사이클의 입구), 주간 시장 조사 1개(조사 업무만, 템플릿 실험의 대상). 둘 다 월 09:00 `Asia/Seoul`, `catch_up: skip` |
 | `measurement-signals/` | 측정 신호 정의 `<id>.json` ([D2](../../docs/plans/a0-decisions.md), `validateMeasurementSignal`) | 주간 랜딩 전환 수 1개 |
 | `evaluations/` | 결정론적 검사 id, LLM 검증 프롬프트 | 비어 있음 |
 | `policy-examples/` | 정책 **예시** (채택은 코어의 승인 경로) | 비어 있음 |
+
+조사 업무 명세에는 `expected_quotes` 가 없고 `validation.llm` 은 `null` 이다. 읽기 전용 실제 조사 에이전트(컨테이너)는 기대 인용문만 확인해 주장을 만들므로, 이 템플릿 그대로 실제 에이전트로 돌리면 주장이 없어 평가가 `inconclusive` → `needs_review` 가 된다(자동 완료는 없다). 통합 시험은 팩 사본에 두 필드를 더해 돈다 ([phase-a A6 완료 기록](../../docs/plans/phase-a.md) 열린 항목 ①).
 
 ## 자리표시자
 
@@ -38,6 +40,6 @@
 
 ## 루틴 반영 규칙
 
-루틴은 `enabled=0` 으로 DB 에 만들어진다(켜는 일은 실험 승인 경로의 몫). 이미 있으면 바꾸지 않고, 팩 선언이 DB 행과 다르면 `enabled=0` 인 행만 선언에 맞춰 갱신하며 켜진 행은 거부한다 ([phase-a A6-U10 기록](../../docs/plans/phase-a.md)).
+루틴은 `enabled=0` 으로 DB 에 만들어진다(켜는 일은 실험 승인 경로의 몫. 주간 기획 루틴처럼 실험 밖에서 켤 루틴의 운영 경로는 아직 없다 — [phase-a A6 완료 기록](../../docs/plans/phase-a.md) 열린 항목 ②). 이미 있으면 바꾸지 않고, 팩 선언이 DB 행과 다르면 `enabled=0` 인 행만 선언에 맞춰 갱신하며 켜진 행은 거부한다 ([phase-a A6-U10 기록](../../docs/plans/phase-a.md)).
 
 팩은 정책·스키마·검증기를 바꿀 수 없고, 코어 내부 모듈을 import 하지 않는다 (`npm run lint:boundaries`가 검사).

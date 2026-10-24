@@ -60,6 +60,7 @@ describe('the example pack', () => {
     const pack = loadPack({ dir: PACK_DIR, values: VALUES });
     assert.equal(pack.manifest.name, 'example-marketing');
     assert.deepEqual(pack.routines.map((r) => [r.slug, r.schedule, r.catchUp, r.taskTemplate, r.orgUnit, r.product]), [
+      ['weekly-experiment-planning', '0 9 * * 1 Asia/Seoul', 'skip', 'weekly-experiment-planning@1', 'core', 'example-product'],
       ['weekly-market-research', '0 9 * * 1 Asia/Seoul', 'skip', 'weekly-market-research@1', 'core', 'example-product'],
     ]);
     assert.deepEqual(pack.templates.map((t) => [t.id, t.version, t.tasks.map((task) => task.name)]), [
@@ -74,7 +75,7 @@ describe('the example pack', () => {
 
   it('holds no real value: every instance value is a placeholder, the files carry no secret-looking text', () => {
     const files = [
-      'manifest.json', 'routines/weekly-market-research.json', 'workflows/weekly-market-research.json', 'workflows/weekly-experiment-planning.json',
+      'manifest.json', 'routines/weekly-market-research.json', 'routines/weekly-experiment-planning.json', 'workflows/weekly-market-research.json', 'workflows/weekly-experiment-planning.json',
       'measurement-signals/weekly-landing-conversions.json',
     ];
     for (const file of files) {
@@ -373,12 +374,17 @@ describe('syncPackRoutines: routines reach the database disabled, and idempotent
     const { db } = seededDb(t);
     addProduct(db);
     const pack = loadPack({ dir: PACK_DIR, values: VALUES });
-    assert.deepEqual(syncPackRoutines(db, pack), { created: ['weekly-market-research'], updated: [], unchanged: [] });
-    const [row] = routineRows(db);
-    assert.deepEqual({ ...row }, {
-      id: 'routine-weekly-market-research', slug: 'weekly-market-research', org_unit_id: 'org-unit-core', schedule: '0 9 * * 1 Asia/Seoul',
-      task_template: 'weekly-market-research@1', catch_up: 'skip', enabled: 0, product_id: 'product-example-product',
-    });
+    assert.deepEqual(syncPackRoutines(db, pack), { created: ['weekly-experiment-planning', 'weekly-market-research'], updated: [], unchanged: [] });
+    assert.deepEqual(routineRows(db).map((row) => ({ ...row })), [
+      {
+        id: 'routine-weekly-experiment-planning', slug: 'weekly-experiment-planning', org_unit_id: 'org-unit-core', schedule: '0 9 * * 1 Asia/Seoul',
+        task_template: 'weekly-experiment-planning@1', catch_up: 'skip', enabled: 0, product_id: 'product-example-product',
+      },
+      {
+        id: 'routine-weekly-market-research', slug: 'weekly-market-research', org_unit_id: 'org-unit-core', schedule: '0 9 * * 1 Asia/Seoul',
+        task_template: 'weekly-market-research@1', catch_up: 'skip', enabled: 0, product_id: 'product-example-product',
+      },
+    ]);
   });
 
   it('running the loader twice leaves the database exactly as it was', (t) => {
@@ -387,7 +393,7 @@ describe('syncPackRoutines: routines reach the database disabled, and idempotent
     const pack = loadPack({ dir: PACK_DIR, values: VALUES });
     syncPackRoutines(db, pack);
     const snapshot = JSON.stringify(routineRows(db));
-    assert.deepEqual(syncPackRoutines(db, loadPack({ dir: PACK_DIR, values: VALUES })), { created: [], updated: [], unchanged: ['weekly-market-research'] });
+    assert.deepEqual(syncPackRoutines(db, loadPack({ dir: PACK_DIR, values: VALUES })), { created: [], updated: [], unchanged: ['weekly-experiment-planning', 'weekly-market-research'] });
     assert.equal(JSON.stringify(routineRows(db)), snapshot);
     assert.equal(db.get('SELECT count(*) AS n FROM routine_firing')?.['n'], 0);
     assert.equal(db.get('SELECT count(*) AS n FROM task')?.['n'], 0, 'loading never creates tasks');
@@ -399,8 +405,8 @@ describe('syncPackRoutines: routines reach the database disabled, and idempotent
     const pack = loadPack({ dir: PACK_DIR, values: VALUES });
     syncPackRoutines(db, pack);
     db.writeTx((tx) => tx.run("UPDATE routine SET enabled = 1 WHERE slug = 'weekly-market-research'"));
-    assert.deepEqual(syncPackRoutines(db, pack).unchanged, ['weekly-market-research']);
-    assert.equal(routineRows(db)[0]?.['enabled'], 1);
+    assert.deepEqual(syncPackRoutines(db, pack).unchanged, ['weekly-experiment-planning', 'weekly-market-research']);
+    assert.equal(routineRows(db).find((row) => row['slug'] === 'weekly-market-research')?.['enabled'], 1);
   });
 
   it('a changed pack updates a routine that is still disabled', (t) => {
@@ -410,8 +416,9 @@ describe('syncPackRoutines: routines reach the database disabled, and idempotent
     const dir = copyPack(t);
     const file = 'routines/weekly-market-research.json';
     writeJson(dir, file, { ...readJson(dir, file), schedule: '30 8 * * 2 Asia/Seoul', catch_up: 'run_once' });
-    assert.deepEqual(syncPackRoutines(db, loadPack({ dir, values: VALUES })), { created: [], updated: ['weekly-market-research'], unchanged: [] });
-    assert.deepEqual([routineRows(db)[0]?.['schedule'], routineRows(db)[0]?.['catch_up'], routineRows(db)[0]?.['enabled']], ['30 8 * * 2 Asia/Seoul', 'run_once', 0]);
+    assert.deepEqual(syncPackRoutines(db, loadPack({ dir, values: VALUES })), { created: [], updated: ['weekly-market-research'], unchanged: ['weekly-experiment-planning'] });
+    const updated = routineRows(db).find((row) => row['slug'] === 'weekly-market-research');
+    assert.deepEqual([updated?.['schedule'], updated?.['catch_up'], updated?.['enabled']], ['30 8 * * 2 Asia/Seoul', 'run_once', 0]);
   });
 
   it('a changed pack is refused for an enabled routine and nothing is written (no pack edit can bypass the approval of an active routine)', (t) => {

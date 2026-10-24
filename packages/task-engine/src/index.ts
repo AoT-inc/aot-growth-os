@@ -1,6 +1,6 @@
 // @aot/task-engine 공개 API 진입점 (단계 A2). 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
 // 책임: 업무 생성(멱등), 스케줄러·폴링, task_run lease·heartbeat·펜싱, external_effect 원장, 재시작 복구, 검증 판정 → validating 전이(A4),
-// 사람의 측정 값 입력과 측정 대기 조건(A6-U13).
+// 사람의 측정 값 입력과 측정 대기 조건(A6-U13), 승인된 실험의 활성화(루틴 켜기·일회성 업무)와 종료(A6-U15).
 // 의존: @aot/domain 만. 정책 훅은 domain 의 TaskPolicyGate 포트, 검증은 domain 의 TaskValidator 포트(evaluation 이 구현), 실행은 이 패키지의 TaskExecutor 포트(A5 가 구현).
 export { canonicalJson } from './canonical.ts';
 export {
@@ -21,6 +21,10 @@ export {
   beginDispatch, confirmByLookup, effectKeyOf, performEffect, planEffect, recordDispatchResult,
   type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
 } from './effects.ts';
+export {
+  activateExperiment, endExperiment, EXPERIMENT_TASK_CAUSE, ExperimentActivationError,
+  type ActivateExperimentInput, type ActivateExperimentResult, type ApprovalCheck, type EndExperimentInput, type EndExperimentResult, type ExperimentRefusalCode,
+} from './experiment.ts';
 export { EffectRefusedError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError } from './errors.ts';
 export {
   DATA_QUALITIES, findMeasurement, isoWeekKeyAt, isoWeekPeriod, listMeasurementWaits, MAX_ATTACHMENT_REF_CHARS, MAX_MEASUREMENT_ATTACHMENTS,

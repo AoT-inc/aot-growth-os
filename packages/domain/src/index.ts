@@ -1,5 +1,5 @@
 // @aot/domain 공개 API 진입점. 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
-// 시계 주입(Clock), SQLite 접근 계층(Db), 엔터티 타입, 상태 전이 허용표, task_spec·팩 manifest 검증, 실험 전략 제안(strategy_version, A6-U14).
+// 시계 주입(Clock), SQLite 접근 계층(Db), 엔터티 타입, 상태 전이 허용표, task_spec·팩 manifest 검증, 실험 전략 제안(strategy_version, A6-U14)과 실험 활성화·종료 기록의 키·조회(A6-U15).
 export { canonicalJson, contentHash, sha256Hex } from './canonical.ts';
 export { FakeClock, systemClock, type Clock } from './clock.ts';
 export { createDb } from './db/create-db.ts';
@@ -48,6 +48,8 @@ export {
   STRATEGY_COMPARISON_EVENT, STRATEGY_COMPARISON_KEY_PREFIX, strategyProposalId, StrategyRuleError, transitionStrategyVersion,
   type StrategyComparisonInput, type StrategyComparisonResult, type StrategyProposalInput, type StrategyProposalResult, type StrategyReview, type StrategyRuleCode,
   type StrategyTransitionRequest,
+  EXPERIMENT_ACTIVATION_EVENT, EXPERIMENT_ACTIVATION_KEY_PREFIX, EXPERIMENT_END_EVENT, EXPERIMENT_END_KEY_PREFIX, experimentActivationKey, experimentEnded,
+  experimentEndKey, experimentsInProgress, findExperimentActivation, latestRoutineActivation, pendingExperimentActivations, type ExperimentActivation,
 } from './strategy.ts';
 export {
   DENY_ALL_TASK_POLICY_GATE,

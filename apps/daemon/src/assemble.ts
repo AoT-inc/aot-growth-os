@@ -12,6 +12,8 @@
 // 평가 포트가 있으면 효과 측정 조회기(`createMeasurementSignalSource`)를 연결한다. 측정 대기 조건 자체는 task-engine 의 claim 이 본다.
 // A6 U14: 측정 신호 정의를 평가기에도 넘겨 검사 `experiment_candidates` 가 후보의 신호를 대조한다. `cycle` 옵션이 있으면 주간 사이클 4·5단계(cycle.ts:
 // 완료된 기획 업무의 후보 비교 → strategy_version 제안)를 만든다. 위험 판정은 여기서 정책으로 만들어 주입한다(evaluation 은 policy 를 모른다).
+// A6 U15: 사이클에 6단계(승인된 실험 활성화)를 연결한다 — 일회성 마케팅 업무의 생성 게이트는 같은 정책 게이트, 활성화 직전 승인 확인은 policy `verifyStrategyApproval`.
+// 승인 자체(`strategy_version` 의 show/approve/reject/cancel)는 승인 엔진이 같은 소켓에서 받는다.
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
@@ -20,7 +22,9 @@ import { fileURLToPath } from 'node:url';
 import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type DockerCli, type OrphanCleanupResult } from '@aot/agent-runtime';
 import type { Clock, Db, MeasurementSignal, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createMeasurementSignalSource, createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
-import { ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
+import {
+  ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, verifyStrategyApproval, type ApprovalServer,
+} from '@aot/policy';
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
@@ -177,6 +181,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const cycle = options.cycle === undefined ? null : createExperimentCycle({
     db: options.db, clock: options.clock, options: options.cycle, signals: measurementSignals,
     riskOf: createPolicyRiskJudge({ db: options.db, store, templates: pack?.templates ?? [] }),
+    activation: { gate, verifyApproval: (tx, id) => verifyStrategyApproval(tx, id) },
   });
   const worker = new TaskWorker({
     db: options.db,

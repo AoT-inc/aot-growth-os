@@ -5,7 +5,7 @@
 //  - 'approved' 가 아닌 행(rejected 등)은 그 앞의 승인을 모두 무효로 한다 (거절, 대기 중 취소)
 //  - 남은 'approved' 중 subject_hash 가 지금 해시와 같고, 사람(actor.kind='human')이며, 자기 승인이 금지(min_approvers ≥ 2)면 요청자가 아닌 것만 센다
 //  - 서로 다른 승인자 수가 min_approvers 에 닿은 시각 + cooldown 이 지나야 하고, reauth_before_effect 면 그 뒤의 재인증 기록이 있어야 한다
-import type { ApprovalSubjectKind, Db, PublicationRow, TaskRow, TaskSpec } from '@aot/domain';
+import type { ApprovalSubjectKind, Db, PublicationRow, StrategyVersionRow, TaskRow, TaskSpec } from '@aot/domain';
 import { contentHash } from '@aot/domain';
 
 import { type ApprovalParams } from './document.ts';
@@ -141,6 +141,73 @@ export function publicationSubject(row: Pick<PublicationRow, 'id' | 'task_id' | 
     content_ref: row.content_ref,
     policy_version_id: policyVersionId,
   };
+}
+
+/**
+ * 실험 전략 승인 대상 (A6-U15): 제안 본문(제목·가설·근거 참조·부모) + `experiment_scope`(마케팅 업무 명세 또는 템플릿 참조, 측정 신호, 주, 비교 요약)
+ * + 승인 시점 정책 버전(id 와 내용 해시). 상태(status)는 승인으로 바뀌므로 넣지 않는다. 업무 승인 대상(`taskSubject`)과 같은 구성이다.
+ */
+export function strategySubject(
+  row: Pick<StrategyVersionRow, 'id' | 'parent_id' | 'title' | 'body' | 'rationale_refs' | 'experiment_scope' | 'created_by'>,
+  policy: { versionId: string; hash: string },
+) {
+  const parse = (text: string | null): unknown => {
+    if (text === null) return null;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return text; // 형식이 깨진 값도 그대로 해시에 묶는다 (내용이 바뀌면 해시가 바뀐다)
+    }
+  };
+  return {
+    kind: 'strategy_version' as const,
+    strategy_version_id: row.id,
+    parent_id: row.parent_id,
+    title: row.title,
+    body: row.body,
+    rationale_refs: parse(row.rationale_refs),
+    experiment_scope: parse(row.experiment_scope),
+    created_by: row.created_by,
+    policy_version_id: policy.versionId,
+    policy_hash: policy.hash,
+  };
+}
+
+export type StrategySubject = ReturnType<typeof strategySubject>;
+
+export const strategySubjectHash = (subject: StrategySubject): string => contentHash(subject);
+
+export interface StrategyApprovalCheck {
+  ok: boolean;
+  reason: string;
+  /** 유효한 승인 행 (없으면 null) */
+  approvalId: string | null;
+  approvedBy: string | null;
+}
+
+/**
+ * 활성화 직전 재확인 (A6-U15): 이 전략의 승인이 아직 유효한가. 승인 트랜잭션 밖(주간 사이클)에서 부른다.
+ *  - 마지막 승인 기록이 사람(actor.kind='human')의 `approved` 여야 한다 (뒤에 취소·거절 행이 있으면 무효)
+ *  - 그 승인의 해시가 지금 내용 + *어떤* 배포된 정책 버전의 해시와 같아야 한다 = 승인 뒤 본문·범위가 바뀌지 않았다.
+ *    승인 시점 정책 버전은 승인 해시에 묶여 있으므로 다른 버전으로는 맞지 않는다. 정책이 승인 뒤 바뀐 것만으로는 무효로 하지 않는다:
+ *    실험 승인은 내용에 대한 것이고, 마케팅 업무 자체는 만들 때(생성 게이트)와 실행 직전(beforeRun)에 *새* 정책으로 다시 판정된다.
+ */
+export function verifyStrategyApproval(db: Db, strategyVersionId: string): StrategyApprovalCheck {
+  const fail = (reason: string): StrategyApprovalCheck => ({ ok: false, reason, approvalId: null, approvedBy: null });
+  const row = db.get<StrategyVersionRow>('SELECT * FROM strategy_version WHERE id = ?', [strategyVersionId]);
+  if (!row) return fail(`strategy_version '${strategyVersionId}' does not exist`);
+  const latest = db.get<{ id: string; decision: string; subject_hash: string | null; decided_by: string; actor_kind: string | null }>(
+    `SELECT a.id, a.decision, a.subject_hash, a.decided_by, actor.kind AS actor_kind FROM approval a LEFT JOIN actor ON actor.id = a.decided_by
+     WHERE a.subject_kind = 'strategy_version' AND a.subject_id = ? ORDER BY a.at DESC, a.rowid DESC LIMIT 1`,
+    [strategyVersionId],
+  );
+  if (!latest) return fail('no approval recorded');
+  if (latest.decision !== 'approved') return fail('the approval was rejected or cancelled');
+  if (latest.actor_kind !== 'human') return fail('the approval is not from a human actor');
+  const versions = db.all<{ id: string; content_hash: string }>('SELECT id, content_hash FROM policy_version ORDER BY deployed_at, rowid');
+  const matches = versions.some((version) => strategySubjectHash(strategySubject(row, { versionId: version.id, hash: version.content_hash })) === latest.subject_hash);
+  if (!matches) return fail('the strategy changed since it was approved (approved_hash mismatch); it cannot be activated');
+  return { ok: true, reason: `approved by ${latest.decided_by}`, approvalId: latest.id, approvedBy: latest.decided_by };
 }
 
 /**

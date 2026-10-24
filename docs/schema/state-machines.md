@@ -103,6 +103,9 @@ approved ──► trial ──► active ──► retired
 - `proposed → experiment/active`: 사람 승인 필수. `experiment`는 범위·기간 제한 필수.
 - `active` 교체 시 이전 버전은 `retired`로 두고 롤백 지점으로 유지한다.
 - (A6-U14) `proposed` 행의 *생성*은 전이가 아니다(허용표에 `(none) → proposed` 행이 없고 더하지 않았다). 주간 사이클의 비교 단계가 비교 기록이 추천한 후보로만 만들며, 쓰는 주체는 시스템이고 에이전트가 아니다(`created_by`는 후보를 낸 기획 run 의 행위자). 전이는 domain `transitionStrategyVersion`이 이 표를 따르고, `human` 주체는 행위자가 실제 사람이어야 하며 승인이 필요한 전이는 그 행을 가리키는 `approved` 승인 기록이 있어야 한다.
+- (A6-U15) `proposed → experiment`는 policy 승인 엔진이 사람 1인 승인(cooldown·TOTP 없음)과 **같은 트랜잭션**에서 일으킨다. 승인 해시 = 본문 + `experiment_scope` + 승인 시점 정책 버전. `experiment` 상태이고 승인이 취소되지 않은 전략이 있으면 두 번째 승인은 거부한다(한 번에 실험 하나). `proposed → rejected`는 승인 채널의 `reject`(사람). 허용표에 전이를 더하지 않았다.
+- (A6-U15) 활성화·종료는 상태 전이가 아니라 기록이다. 활성화(task-engine `activateExperiment`, 승인 트랜잭션 밖, 주간 사이클)는 event `experiment-activate:<id>`(멱등, `occurred_at` = 활성화 시각 = 켠 루틴의 발화 기준점)와 함께 실험 루틴을 `enabled=1`로 켜거나 일회성 마케팅 업무(`task.strategy_version_id`)를 만든다. 활성화 직전에 승인을 다시 확인해, 활성화 전에 `cancel`된 승인이나 승인 뒤 바뀐 내용이면 켜지 않는다(상태는 `experiment`로 남는다 — 아래 열린 문제). 종료(`endExperiment`)는 루틴을 `enabled=0`으로 끄고 event `experiment-end:<id>`를 남기며 상태는 바꾸지 않는다(판정과 `experiment → active` 등은 A6-U16).
+- (A6-U15, 열린 문제) `experiment`에서 나가는 전이는 `experiment → active`뿐이다. 판정이 실패한 실험, 활성화 전에 취소된 실험, 활성화가 거부된 실험은 갈 곳이 없어 `experiment`로 남는다(취소된 것은 진행 중으로 세지 않는다). `experiment → rejected/retired`를 더할지는 U16 에서 정한다.
 
 ## 게시 (`publication.status`)
 

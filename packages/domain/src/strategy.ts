@@ -9,7 +9,7 @@
 //    시스템(비교 단계)이며 에이전트가 아니다. `created_by` 는 후보를 낸 기획 run 의 행위자(제안자)다.
 // 3. 전이 (`transitionStrategyVersion`): STRATEGY_MACHINE 허용표(`checkTransition`)를 따른다. 에이전트는 어떤 전이도 일으킬 수 없다.
 //    `human` 주체면 행위자가 실제로 `actor.kind='human'` 이어야 하고, 승인이 필요한 전이는 이 행을 가리키는 `approved` 승인 기록이 있어야 한다.
-//    `experiment` 로 가려면 `experiment_scope` 가 있어야 한다. 승인 절차 자체(해시 확인, 루틴 활성화)는 U15 의 몫이다.
+//    `experiment` 로 가려면 `experiment_scope` 가 있어야 한다. 승인 절차(해시 확인, 사람 1인)는 policy 승인 엔진이, 루틴 활성화는 task-engine 이 한다(A6-U15, 아래 기록 키).
 // 시각은 주입된 Clock 에서만 얻고, 쓰기 함수는 Db.writeTx 안에서만 동작한다.
 import { canonicalJson, sha256Hex } from './canonical.ts';
 import type { Clock } from './clock.ts';
@@ -215,4 +215,87 @@ export function transitionStrategyVersion(tx: Db, request: StrategyTransitionReq
   const changed = tx.run('UPDATE strategy_version SET status = ? WHERE id = ? AND status = ?', [request.to, row.id, request.from]);
   if (changed.changes !== 1) throw new StrategyRuleError('stale_state', `strategy_version '${row.id}' changed concurrently`);
   return tx.get<StrategyVersionRow>('SELECT * FROM strategy_version WHERE id = ?', [row.id])!;
+}
+
+// ===== 실험 활성화·종료 기록 (A6-U15) =====
+// 승인(policy)은 같은 트랜잭션에서 `proposed → experiment` 까지만 한다. 루틴을 켜고 일회성 업무를 만드는 활성화는 승인 트랜잭션 밖에서
+// task-engine 의 `activateExperiment` 가 한 번만 한다: 그 기록이 `event`(멱등 키 `experiment-activate:<전략 id>`)이고, `occurred_at` 이 활성화 시각이다
+// (routine 행에 켠 시각 열이 없으므로 새 열 대신 이 event 가 루틴 발화의 기준점이 된다). 종료는 `experiment-end:<전략 id>` event 다.
+// 키와 조회는 policy(취소·목록)와 task-engine(활성화·발화) 모두가 읽으므로 여기에 둔다.
+
+export const EXPERIMENT_ACTIVATION_EVENT = { source: 'experiment-cycle', type: 'experiment.activated' } as const;
+export const EXPERIMENT_END_EVENT = { source: 'experiment-cycle', type: 'experiment.ended' } as const;
+export const EXPERIMENT_ACTIVATION_KEY_PREFIX = 'experiment-activate:';
+export const EXPERIMENT_END_KEY_PREFIX = 'experiment-end:';
+
+export const experimentActivationKey = (strategyVersionId: string): string => `${EXPERIMENT_ACTIVATION_KEY_PREFIX}${strategyVersionId}`;
+export const experimentEndKey = (strategyVersionId: string): string => `${EXPERIMENT_END_KEY_PREFIX}${strategyVersionId}`;
+
+export interface ExperimentActivation {
+  eventId: string;
+  strategyVersionId: string;
+  /** 활성화 시각 (event.occurred_at) — 켠 루틴의 발화 기준점 */
+  activatedAt: string;
+  approvalId: string | null;
+  routineIds: string[];
+  taskIds: string[];
+}
+
+const stringList = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
+
+function activationOf(row: { id: string; external_id: string; payload: string; occurred_at: string }): ExperimentActivation {
+  const payload = JSON.parse(row.payload) as Record<string, unknown>;
+  return {
+    eventId: row.id, strategyVersionId: row.external_id, activatedAt: row.occurred_at,
+    approvalId: typeof payload['approval_id'] === 'string' ? payload['approval_id'] : null,
+    routineIds: stringList(payload['routine_ids']), taskIds: stringList(payload['task_ids']),
+  };
+}
+
+/** 전략의 활성화 기록 (없으면 null) */
+export function findExperimentActivation(db: Db, strategyVersionId: string): ExperimentActivation | null {
+  const row = db.get<{ id: string; external_id: string; payload: string; occurred_at: string }>(
+    'SELECT id, external_id, payload, occurred_at FROM event WHERE idempotency_key = ? AND source = ? AND type = ?',
+    [experimentActivationKey(strategyVersionId), EXPERIMENT_ACTIVATION_EVENT.source, EXPERIMENT_ACTIVATION_EVENT.type],
+  );
+  return row ? activationOf(row) : null;
+}
+
+/** 루틴을 켠 가장 최근 활성화 기록 (없으면 null). 루틴 발화의 기준점과 업무의 전략 연결에 쓴다 */
+export function latestRoutineActivation(db: Db, routineId: string): ExperimentActivation | null {
+  const row = db.get<{ id: string; external_id: string; payload: string; occurred_at: string }>(
+    `SELECT e.id, e.external_id, e.payload, e.occurred_at FROM event e
+     WHERE e.source = ? AND e.type = ? AND EXISTS (SELECT 1 FROM json_each(e.payload, '$.routine_ids') r WHERE r.value = ?)
+     ORDER BY e.occurred_at DESC, e.rowid DESC LIMIT 1`,
+    [EXPERIMENT_ACTIVATION_EVENT.source, EXPERIMENT_ACTIVATION_EVENT.type, routineId],
+  );
+  return row ? activationOf(row) : null;
+}
+
+/** 전략의 종료 기록이 있는가 */
+export const experimentEnded = (db: Db, strategyVersionId: string): boolean =>
+  db.get('SELECT 1 AS one FROM event WHERE idempotency_key = ?', [experimentEndKey(strategyVersionId)]) !== undefined;
+
+/** 그 전략의 가장 최근 승인 기록 결정 (`approved` 가 아니면 취소·거절된 것) */
+const LATEST_DECISION_SQL = `(SELECT a.decision FROM approval a WHERE a.subject_kind = 'strategy_version' AND a.subject_id = s.id ORDER BY a.at DESC, a.rowid DESC LIMIT 1)`;
+
+/**
+ * 진행 중인 실험: `experiment` 상태이고 승인이 취소되지 않은 전략 (활성화 전후 모두, 종료 기록이 있어도 상태가 바뀌기 전까지는 진행 중이다).
+ * 활성화 전에 승인이 취소된 전략은 실험이 시작되지 않았으므로 세지 않는다. 한 번에 실험 하나만 승인한다(두 번째 승인 거부)는 규칙이 이것을 본다.
+ */
+export function experimentsInProgress(db: Db): string[] {
+  return db.all<{ id: string }>(
+    `SELECT s.id FROM strategy_version s WHERE s.status = 'experiment' AND ${LATEST_DECISION_SQL} = 'approved' ORDER BY s.created_at, s.rowid`,
+  ).map((row) => row.id);
+}
+
+/** 승인되어 `experiment` 이지만 아직 활성화 기록이 없는 전략 (승인이 취소된 것은 뺀다). 오래된 것부터 */
+export function pendingExperimentActivations(db: Db, limit = 20): string[] {
+  return db.all<{ id: string }>(
+    `SELECT s.id FROM strategy_version s
+     WHERE s.status = 'experiment' AND ${LATEST_DECISION_SQL} = 'approved'
+       AND NOT EXISTS (SELECT 1 FROM event e WHERE e.idempotency_key = ? || s.id)
+     ORDER BY s.created_at, s.rowid LIMIT ?`,
+    [EXPERIMENT_ACTIVATION_KEY_PREFIX, limit],
+  ).map((row) => row.id);
 }

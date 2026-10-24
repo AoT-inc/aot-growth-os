@@ -1,12 +1,13 @@
 // 사람용 승인 CLI (trust-boundaries §3.1). 데몬의 승인 엔진과 Unix 도메인 소켓으로만 통신한다. DB 를 직접 열지 않는다.
 //   node apps/daemon/src/approve.ts [--socket PATH] [--actor ID] <명령>
-//     whoami | list
-//     show    <task|publication|policy_version> <id>
-//     approve <task|publication> <id> --hash <show 가 보여 준 해시> [--comment 글]
+//     whoami | list                  (list: 승인 대기 업무·게시·정책 제안, 승인을 기다리는 실험 전략 제안, 추천 없이 끝나 검토할 비교 기록, 진행 중인 실험)
+//     show    <task|publication|policy_version|strategy> <id>      (strategy = strategy_version)
+//     approve <task|publication|strategy> <id> --hash <show 가 보여 준 해시> [--comment 글]
+//             (strategy: 사람 1인 승인으로 바로 proposed → experiment. 루틴 활성화는 데몬의 주간 사이클이 한다)
 //     approve policy --file <정책.yaml> [--comment 글]          (배포 승인. 위험 변경이면 cooldown 뒤 release)
 //     release <task|publication|policy_version> <id> [--totp-stdin]   (TOTP 코드는 표준 입력 한 줄로 받는다)
-//     cancel  <task|publication|policy_version> <id> [--comment 글]   (cooldown 중 취소)
-//     reject  <task|publication|policy_version> <id> [--comment 글]
+//     cancel  <task|publication|policy_version|strategy> <id> [--comment 글]   (cooldown 중 취소. strategy 는 활성화 전에만)
+//     reject  <task|publication|policy_version|strategy> <id> [--comment 글]
 //     totp-enroll [--totp-dir DIR]   (이 기기에서 실행. 비밀을 instance/totp/<actor> 에 0600 으로 만들고 등록 URI 를 한 번 보여 준다)
 //     measure <신호 id> <값> --observations N --quality good|poor --attach <파일> [--attach <파일> ...] [--week YYYY-Www] [--minutes M]
 //             (A6-U13. 첨부 파일은 이 CLI 가 읽어 sha256 과 로컬 참조 `file:<절대 경로>` 만 보낸다. 주를 생략하면 데몬 시계 기준 지난주)
@@ -19,7 +20,8 @@ import { join } from 'node:path';
 
 import { otpauthUri, sendApprovalRequest, TotpSecretStore } from '@aot/policy';
 
-const KINDS = ['task', 'publication', 'policy_version'] as const;
+const KINDS = ['task', 'publication', 'policy_version', 'strategy_version'] as const;
+const KIND_ALIASES: Readonly<Record<string, string>> = { policy: 'policy_version', strategy: 'strategy_version' };
 
 function fail(message: string): never {
   console.error(`aot-approve: ${message}`);
@@ -80,7 +82,7 @@ async function main(): Promise<void> {
   const actor = flag('actor') ?? process.env['AOT_ACTOR'] ?? fail('--actor (or AOT_ACTOR) is required');
   const socket = flag('socket') ?? process.env['AOT_APPROVAL_SOCKET'] ?? join(instance, 'run', 'approval.sock');
   const [cmd, kindArg, id] = positional;
-  const kind = kindArg === 'policy' ? 'policy_version' : kindArg;
+  const kind = kindArg === undefined ? undefined : KIND_ALIASES[kindArg] ?? kindArg;
   const needKind = () => {
     if (!(KINDS as readonly (string | undefined)[]).includes(kind)) fail(`kind must be one of ${KINDS.join('|')}`);
     if (!id) fail('an id is required');

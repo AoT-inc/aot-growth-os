@@ -34,6 +34,11 @@ export interface CreateTaskInput {
   /** 기본은 스키마 기본값 3 */
   maxAttempts?: number;
   causedBy?: string;
+  /**
+   * 이 업무가 속한 전략 (A6-U15: 실험 활성화가 만든 업무·실험 루틴이 발화한 업무). 주면 `task.strategy_version_id` 와 `versions.strategy_version` 이 이 값이다.
+   * 생략하면 이전과 같이 `active` 전략(없으면 null)이다.
+   */
+  strategyVersionId?: string;
 }
 
 export interface CreateTaskResult {
@@ -51,7 +56,7 @@ export function createTask(db: Db, context: CreateContext, input: CreateTaskInpu
  * 정책이 생성을 거부하면 생성 트랜잭션은 되돌려진다. 거부 판정도 policy_decision 에 남아야 하므로(ADR-0006)
  * 롤백 뒤 새 쓰기 트랜잭션에서 기록하고 원래 오류를 다시 던진다.
  */
-function withRefusalRecord<T>(db: Db, fn: () => T): T {
+export function withRefusalRecord<T>(db: Db, fn: () => T): T {
   try {
     return fn();
   } catch (error) {
@@ -100,7 +105,10 @@ export function createTaskInTx(tx: Db, context: CreateContext, input: CreateTask
   const referenceIssues = checkTaskSpecReferences(tx, draft);
   if (referenceIssues.length > 0) throw new TaskCreationError(referenceIssues);
 
-  const filled = fillSystemFields(tx, draft, input.taskSpecVersion ?? 1);
+  if (input.strategyVersionId !== undefined && !tx.get('SELECT 1 AS one FROM strategy_version WHERE id = ?', [input.strategyVersionId])) {
+    throw new TaskCreationError([{ path: 'strategy_version', code: 'not_found', message: `strategy_version '${input.strategyVersionId}' does not exist` }]);
+  }
+  const filled = fillSystemFields(tx, draft, input.taskSpecVersion ?? 1, input.strategyVersionId);
   const stored = validateTaskSpec(filled.spec, 'stored');
   if (!stored.ok) throw new TaskCreationError(stored.errors);
 
@@ -145,7 +153,7 @@ interface FilledSpec {
 }
 
 /** policy_version 과 versions 는 시스템만 채운다 (task-spec.md). */
-function fillSystemFields(tx: Db, draft: TaskSpecDraft, taskSpecVersion: number): FilledSpec {
+function fillSystemFields(tx: Db, draft: TaskSpecDraft, taskSpecVersion: number, strategyVersionId?: string): FilledSpec {
   const policyVersion = currentPolicyVersionId(tx);
   if (policyVersion === null) {
     throw new TaskCreationError([{ path: 'policy_version', code: 'missing', message: 'no policy_version is deployed; seed the instance first' }]);
@@ -155,7 +163,9 @@ function fillSystemFields(tx: Db, draft: TaskSpecDraft, taskSpecVersion: number)
     : tx.get<{ id: string; version: number; org_unit_id: string }>('SELECT id, version, org_unit_id FROM role WHERE slug = ?', [draft.role]);
   const unit = draft.department === undefined ? undefined : tx.get<{ id: string }>('SELECT id FROM org_unit WHERE slug = ?', [draft.department]);
   const orgVersion = tx.get<{ id: string }>("SELECT id FROM org_version WHERE status = 'active' ORDER BY created_at DESC, rowid DESC LIMIT 1");
-  const strategy = tx.get<{ id: string }>("SELECT id FROM strategy_version WHERE status = 'active' ORDER BY created_at DESC, rowid DESC LIMIT 1");
+  const strategy = strategyVersionId !== undefined
+    ? { id: strategyVersionId }
+    : tx.get<{ id: string }>("SELECT id FROM strategy_version WHERE status = 'active' ORDER BY created_at DESC, rowid DESC LIMIT 1");
   const product = draft.product === undefined ? undefined : tx.get<{ id: string }>('SELECT id FROM product WHERE slug = ?', [draft.product]);
 
   const spec: TaskSpec = {
@@ -265,6 +275,8 @@ export interface RoutineFiring {
   routineId: string;
   /** 발화 예정 시각 (UTC ISO). 같은 값의 발화는 한 번만 기록된다 */
   scheduledFor: string;
+  /** 이 발화로 만든 업무가 속한 실험 전략 (A6-U15, 실험 활성화가 켠 루틴). 생략하면 createTask 기본값 */
+  strategyVersionId?: string | null;
 }
 
 export interface FireRoutineResult {
@@ -343,6 +355,7 @@ export function fireRoutineTasks(db: Db, context: CreateContext, firing: Routine
       const created = createTaskInTx(tx, context, {
         spec: { ...task.spec, trigger, dependencies, ...bindTemplateResultRefs(task, templateNames, idByName) },
         dedupeKey: sha256(canonicalJson({ trigger, inputs: task.spec['inputs'] ?? null, template_task: task.name })),
+        ...(firing.strategyVersionId === undefined || firing.strategyVersionId === null ? {} : { strategyVersionId: firing.strategyVersionId }),
       });
       idByName.set(task.name, created.taskId);
     }

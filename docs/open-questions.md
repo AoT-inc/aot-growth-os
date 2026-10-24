@@ -8,7 +8,7 @@ A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확
 | Q2 | (해소) 런타임/DB = TypeScript(Node LTS) + SQLite, DDL은 Postgres 이식 가능 범위 | ADR-0001 | 2026-10-19 결정 ([a0-decisions D1](plans/a0-decisions.md)) | 완료 |
 | Q3 | 실행 조정: LangGraph vs Microsoft Agent Framework | ADR-0009 | 축소 시나리오 스파이크 | Phase A 후속 (A5 선행 아님) |
 | Q4 | OpenHands 헤드리스 실행 가능성 | ADR-0005 | 스파이크 | Phase A 후속 (코드 작업 어댑터 착수 전) |
-| Q5 | MVP의 "측정 신호 1개"는 무엇인가 (어느 제품의 어느 지표) | ADR-0007 | 사람 결정 | MVP 설계 확정 전 |
+| Q5 | (해소) 측정 신호 1개 = 랜딩 페이지 1개의 주간 목표 행동 전환 수. Phase A는 사람이 값을 입력하고 근거(화면·내보내기)를 `evidence`로 첨부하며, 읽기 전용 분석 API 연결은 후속. 실제 제품·페이지는 `instance/`에만 기록 | ADR-0007 | 2026-10-24 결정 ([a0-decisions D2](plans/a0-decisions.md)) | 완료 (정의 형식·조회기 구현은 A6) |
 | Q6 | (해소) 위험 변경(외부 부작용·정책 변경) 승인 = 1인 승인 + 대기(기본 1h, 대기 중 취소) + 실행 직전 재인증. 자기 승인은 `min_approvers`가 1일 때만 허용, 2 이상이면 금지. 값은 정책 파라미터(`risky_change`)로 인스턴스에서 변경 가능, 보안 하향 변경은 그 자체가 위험 변경 | ADR-0006 | 2026-10-19 결정 ([a0-decisions D3](plans/a0-decisions.md), ADR-0006 Amendment) | 완료 |
 | Q7 | (해소) 정책 표현 = YAML(스키마 검증) + 자체 결정론적 TS 판정기. 정책 버전은 정규화된 내용 해시. 규칙이 복잡해지면 Cedar 이식 검토 | ADR-0006 | 2026-10-19 결정 ([ADR-0013](adr/0013-policy-format.md)) | 완료 |
 | Q8 | 기억 검색 구현 (전문 검색 / 벡터) | ADR-0008 | 별도 ADR | memory 패키지 분리 시 |

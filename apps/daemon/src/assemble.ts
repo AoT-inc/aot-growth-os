@@ -69,7 +69,7 @@ export interface AssembleOptions {
   /**
    * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
    * 생략하면 validating 업무는 검증되지 않고 그대로 남는다. 데몬 설정에 `research_agent` 가 있으면 출처 조회기(`createSourceFetcher`, `fetch_url` 과 같은 허용 호스트·SSRF 규칙)가
-   * 여기에 연결된다(runtime-config.ts). LLM 검증기와 효과 측정 값 조회기는 A6/Q22 이후에 연결한다.
+   * 여기에 연결된다(runtime-config.ts). 설정 `llm_verifier: {kind: "stub"}` 가 있으면 가짜 LLM 검증기(`llm`)도 함께 연결된다(A6-U12; 실제 모델은 Q22 후속). 효과 측정 값 조회기는 A6-U13 에서 연결한다.
    */
   evaluation?: Omit<EvaluatorDeps, 'db' | 'clock'>;
   /**

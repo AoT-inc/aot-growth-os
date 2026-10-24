@@ -18,9 +18,10 @@
         "acceptance_criteria": [
           "각 주장에 접근 가능한 출처 URL이 1개 이상 있다",
           "각 인용문이 출처 원문에 존재한다",
+          "불확실성 항목이 명시되어 있다",
           "동일 주장이 중복되지 않는다"
         ],
-        "validation": {"deterministic": ["url_reachable", "quote_in_source", "dedupe", "budget"], "llm": null, "human": false},
+        "validation": {"deterministic": ["url_reachable", "quote_in_source", "dedupe", "budget", "uncertainty_listed"], "llm": null, "human": false},
         "cost_budget": {"max_usd": 2.0}
       }
     }

@@ -12,9 +12,10 @@ import { join } from 'node:path';
 import { after, describe, it, test, type TestContext } from 'node:test';
 
 import { cleanupOrphanContainers, type JsonObject, type ToolCallRecord } from '@aot/agent-runtime';
+import { createStubLlmVerifier, type IsolatedVerificationInput, type LlmVerifier } from '@aot/evaluation';
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
-import { buildAgentRuntime, type AgentRuntimeBuild, type AgentRuntimeConfig } from '../../apps/daemon/src/runtime-config.ts';
+import { buildAgentRuntime, type AgentRuntimeBuild, type AgentRuntimeConfig, type AgentRuntimeOverrides } from '../../apps/daemon/src/runtime-config.ts';
 import { createFetchUrlToolWithHooks, createSourceFetcherWithHooks, type FetchUrlHooks } from '../../packages/agent-runtime/src/fetch-url.ts';
 import { dockerOut, labeledContainers, TEST_INSTANCE, waitUntilNoContainers, type SandboxEnvironment } from '../support/container-sandbox.ts';
 import { manualTimers, runsOf, taskStatus } from '../support/engine.ts';
@@ -86,12 +87,13 @@ if (!prepared.ok) {
     records: ToolCallRecord[];
   }
 
-  function makeRig(env: PolicyEnv, extra: Partial<AgentRuntimeConfig> = {}): Rig {
+  function makeRig(env: PolicyEnv, extra: Partial<AgentRuntimeConfig> = {}, overrides: AgentRuntimeOverrides = {}): Rig {
     const records: ToolCallRecord[] = [];
     const built = buildAgentRuntime(configFor(env, extra), env.dir, {
       recorder: { record: (record) => void records.push(record) },
       createFetchUrlTool: (options) => createFetchUrlToolWithHooks(options, HOOKS),
       createSourceFetcher: (options) => createSourceFetcherWithHooks(options, HOOKS),
+      ...overrides,
     });
     const daemon = assembleDaemon({
       db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
@@ -147,7 +149,9 @@ if (!prepared.ok) {
     status: string;
     path: string[];
     lastTransition: { caused_by: string; reason: string };
-    evaluation: { outcome: string; safety: string; evaluator: string; primary_evidence_refs: string } | undefined;
+    evaluation: { outcome: string; safety: string; evaluator: string; primary_evidence_refs: string; quality_note: string } | undefined;
+    /** LLM 검증기가 받은 입력 (검증기를 단 경우) */
+    llmInputs: IsolatedVerificationInput[];
     evidence: { kind: string; ref: string; content_hash: string | null; trust_origin: string; verified: number; verification_note: string | null }[];
     ledger: { category: string; amount_usd: number; task_run_id: string }[];
     decisions: { action: string; decision: string }[];
@@ -169,10 +173,18 @@ if (!prepared.ok) {
   /** 업무 하나를 만들어 두 tick(실행, 검증)을 돌린다. `validationPage` 가 있으면 첫 tick 뒤(검증 전)에 페이지를 그것으로 바꾼다 */
   async function runPipeline(t: TestContext, page: PageHandler, options: {
     validationPage?: PageHandler; inputs?: JsonObject[]; quotes?: JsonObject[]; extra?: Partial<AgentRuntimeConfig>; deterministic?: string[];
+    /** 주면 설정 `llm_verifier: {kind:'stub'}` 로 검증기를 켜고 명세에 LLM 검증을 요구한다. 함수는 설정이 만든 가짜를 받아 시험용 판정을 하는 검증기를 돌려준다(생략하면 설정이 만든 그대로) */
+    llm?: (made: LlmVerifier) => LlmVerifier;
   } = {}): Promise<Pipeline> {
     counter += 1;
     const env = policyEnv(t);
-    const rig = makeRig(env, options.extra);
+    const llmInputs: IsolatedVerificationInput[] = [];
+    const rig = makeRig(env, { ...(options.llm === undefined ? {} : { llm_verifier: { kind: 'stub' as const } }), ...options.extra }, options.llm === undefined ? {} : {
+      createLlmVerifier: () => {
+        const verifier = options.llm!(createStubLlmVerifier());
+        return { id: verifier.id, verify: (input) => { llmInputs.push(input); return verifier.verify(input); } };
+      },
+    });
     await rig.daemon.prepareAgentRuntime(); // docker 확인 + 이 인스턴스의 고아 컨테이너 정리
     state.page = page;
     let release!: () => void;
@@ -185,7 +197,11 @@ if (!prepared.ok) {
       expected_quotes: options.quotes ?? [{ source: 'primary', text: QUOTE_A }, { source: 'secondary', text: QUOTE_B }],
       allowed_tools: [{ tool: 'fetch_url', operations: ['fetch'], scope: 'internal', impact: 'read' }],
       constraints: { time_limit: '2m', network_allowlist: [HOST], publish_scope: 'internal' },
-      validation: { deterministic: options.deterministic ?? ['url_reachable', 'quote_in_source', 'dedupe', 'budget'], llm: null, human: false },
+      validation: {
+        deterministic: options.deterministic ?? ['url_reachable', 'quote_in_source', 'dedupe', 'budget', 'uncertainty_listed'],
+        llm: options.llm === undefined ? null : { check: 'claim_supported_by_source', isolated_context: true },
+        human: false,
+      },
       cost_budget: { max_usd: 1 },
     }));
     const countsBefore = countsOf(env.db);
@@ -207,7 +223,8 @@ if (!prepared.ok) {
       status: taskStatus(env.db, taskId),
       path: transitionsOf(env.db, taskId).map((tr) => tr.to_status),
       lastTransition: { caused_by: last.caused_by, reason: last.reason },
-      evaluation: env.db.get('SELECT outcome, safety, evaluator, primary_evidence_refs FROM evaluation WHERE task_id = ?', [taskId]) as Pipeline['evaluation'],
+      evaluation: env.db.get('SELECT outcome, safety, evaluator, primary_evidence_refs, quality_note FROM evaluation WHERE task_id = ?', [taskId]) as Pipeline['evaluation'],
+      llmInputs,
       evidence: env.db.all<Pipeline['evidence'][number]>('SELECT kind, ref, content_hash, trust_origin, verified, verification_note FROM evidence WHERE task_id = ? ORDER BY rowid', [taskId]).map((r) => ({ ...r })),
       ledger: env.db.all<Pipeline['ledger'][number]>('SELECT category, amount_usd, task_run_id FROM cost_entry WHERE task_id = ? ORDER BY at, rowid', [taskId]).map((r) => ({ ...r })),
       decisions: decisionsOf(env.db, taskId).filter((d) => d.task_run_id === run!.id).map((d) => ({ action: d.action, decision: d.decision })),
@@ -240,6 +257,9 @@ if (!prepared.ok) {
       assert.equal(control.evaluation?.outcome, 'pass');
       assert.equal(control.evaluation?.safety, 'pass');
       assert.equal(control.evaluation?.evaluator, 'task-evaluator@v1');
+      // A6-U12: the container emits `uncertainties` (nothing uncertain here: both quotations were found), so uncertainty_listed passes
+      assert.deepEqual(control.result['uncertainties'], []);
+      assert.match(control.evaluation?.quality_note ?? '', /uncertainty_listed=pass/);
 
       // 증거: 컨테이너가 읽은 두 출처(원본 바이트 해시)가 evidence 에 남고, 검증기가 직접 다시 읽어 verified=1 로 만들었다
       // 외부 페이지에서 읽은 근거이므로 신뢰 출처는 external_untrusted 다 (evidence.trust_origin, 검증되어도 바뀌지 않는다)
@@ -272,6 +292,71 @@ if (!prepared.ok) {
       // 정책·권한 테이블은 한 행도 늘지 않았다
       for (const table of PERMISSION_TABLES) assert.equal(control.delta[table] ?? 0, 0, `${table} did not change`);
       assert.equal(control.delta['evaluation'], 1);
+    });
+
+    describe('uncertainties and the stub LLM verifier (A6-U12) with the real container', () => {
+      // 컨테이너가 낸 주장 문장은 `The source "<name>" contains the quotation.` 이라 기본 규칙(원문에 부분 문자열)으로는 뒷받침되지 않는다. 시험은 판정을 상태로 정한다(주입 규칙).
+      const verdict: { value: 'supported' | 'unsupported' | 'unclear' } = { value: 'supported' };
+      const scripted = (made: LlmVerifier): LlmVerifier => createStubLlmVerifier({ id: made.id, rule: () => verdict.value });
+
+      it('the page is missing a quotation: the agent lists it as an uncertainty (derived from found:false); uncertainty_listed passes (the field is there) while quote_in_source is what fails the run', async (t) => {
+        const run = await runPipeline(t, html('<html><body><p>Nothing relevant here.</p></body></html>'), { quotes: [{ source: 'primary', text: QUOTE_A }] });
+        assert.deepEqual(run.result['uncertainties'], [
+          { topic: 'primary', note: 'expected quotation #1 was not found in the page' },
+        ]);
+        assert.match(run.evaluation?.quality_note ?? '', /uncertainty_listed=pass/);
+        assert.match(run.evaluation?.quality_note ?? '', /deterministic check\(s\) failed: quote_in_source/, 'the listed uncertainty itself does not fail the run; the missing quotation does, as before');
+        assert.equal(run.evaluation?.outcome, 'fail');
+      });
+
+      it('supported -> pass -> completed (verifier from the settings, isolated input, no verification cost by default)', async (t) => {
+        verdict.value = 'supported';
+        const run = await runPipeline(t, html(CONTROL_HTML), { llm: scripted });
+        assert.equal(run.second.validated[0]?.taskStatus, 'completed');
+        assert.equal(run.status, 'completed');
+        assert.equal(run.evaluation?.outcome, 'pass');
+        assert.match(run.evaluation?.quality_note ?? '', /stub-llm-verifier@v1: supported/);
+        assert.equal(run.llmInputs.length, 1);
+        const input = run.llmInputs[0]!;
+        assert.deepEqual(Object.keys(input).sort(), ['check', 'claims', 'criteria', 'sources']);
+        assert.deepEqual(input.sources.map((s) => [s.ref, s.trustOrigin]).sort(), [[PAGE_URL, 'external_untrusted'], [OTHER_URL, 'external_untrusted']].sort());
+        assert.deepEqual(input.claims.map((c) => c.sourceRef).sort(), [PAGE_URL, OTHER_URL].sort());
+        assert.ok(!JSON.stringify(input).includes('fetched; '), 'the report summary is not part of the verification input');
+        assert.ok(run.ledger.every((e) => e.category === 'tool'), 'the stub adds no verification cost');
+      });
+
+      it('unsupported -> fail -> retry_wait with one attempt used', async (t) => {
+        verdict.value = 'unsupported';
+        const run = await runPipeline(t, html(CONTROL_HTML), { llm: scripted });
+        assert.equal(run.second.validated[0]?.taskStatus, 'retry_wait');
+        assert.equal(run.status, 'retry_wait');
+        assert.equal(run.evaluation?.outcome, 'fail');
+        assert.equal(run.attempts, 1);
+      });
+
+      it('the verifier throws -> inconclusive -> needs_review, no attempt used', async (t) => {
+        const run = await runPipeline(t, html(CONTROL_HTML), { llm: () => ({ id: 'broken-stub@v1', verify: () => Promise.reject(new Error('verifier unavailable')) }) });
+        assert.equal(run.second.validated[0]?.taskStatus, 'needs_review');
+        assert.equal(run.status, 'needs_review');
+        assert.equal(run.evaluation?.outcome, 'inconclusive');
+        assert.match(run.evaluation?.quality_note ?? '', /verifier unavailable/);
+        assert.equal(run.attempts, 0);
+      });
+
+      it('the stub as the settings build it (no injected rule): the agent\'s generic claim sentences are not in the page text, so the default rule says unsupported -> retry_wait', async (t) => {
+        const run = await runPipeline(t, html(CONTROL_HTML), { llm: (made) => made });
+        assert.equal(run.evaluation?.outcome, 'fail');
+        assert.match(run.evaluation?.quality_note ?? '', /stub-llm-verifier@v1: unsupported/);
+        assert.equal(run.status, 'retry_wait');
+      });
+
+      it('without llm_verifier in the settings a task that asks for LLM verification stays the previous behaviour: inconclusive -> needs_review', async (t) => {
+        const run = await runPipeline(t, html(CONTROL_HTML), { llm: scripted, extra: { llm_verifier: null } });
+        assert.equal(run.llmInputs.length, 0);
+        assert.equal(run.evaluation?.outcome, 'inconclusive');
+        assert.match(run.evaluation?.quality_note ?? '', /no LLM verifier is configured/);
+        assert.equal(run.status, 'needs_review');
+      });
     });
 
     it('the container is gone after the run: no aot.run container is left on the host', async () => {

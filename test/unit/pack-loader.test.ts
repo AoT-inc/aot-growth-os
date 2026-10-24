@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 
 import { validateTaskSpec, type Db } from '@aot/domain';
+import { defaultChecks } from '@aot/evaluation';
 import { TaskCreationError } from '@aot/task-engine';
 
 import { loadPack, PackLoadError, PackSyncError, packOptionsFromConfig, syncPackRoutines, type PackIssue, type PackOptions } from '../../apps/daemon/src/pack-loader.ts';
@@ -96,6 +97,17 @@ describe('the example pack', () => {
     assert.deepEqual((spec['constraints'] as Record<string, unknown>)['network_allowlist'], ['docs.example.com']);
     assert.deepEqual(spec['trigger'], { kind: 'routine', ref: `weekly-market-research@${SLOT}` });
     assert.ok(!JSON.stringify(spec).includes('{{'), 'no placeholder survives');
+  });
+
+  it('the research template lists uncertainty_listed, and every deterministic check id it names is a registered check (none would end as "cannot verify")', () => {
+    const pack = loadPack({ dir: PACK_DIR, values: VALUES });
+    const routine = { id: 'r1', slug: 'weekly-market-research', orgUnitId: 'u', productId: null, schedule: 's', taskTemplate: 'weekly-market-research@1', catchUp: 'skip' as const };
+    const [task] = pack.templateSource.resolve({ routine, scheduledFor: SLOT });
+    const ids = (task!.spec['validation'] as { deterministic: string[] }).deterministic;
+    assert.deepEqual(ids, ['url_reachable', 'quote_in_source', 'dedupe', 'budget', 'uncertainty_listed']);
+    const registered = defaultChecks();
+    for (const id of ids) assert.ok(registered.has(id), `${id} is registered`);
+    assert.ok((task!.spec['acceptance_criteria'] as string[]).includes('불확실성 항목이 명시되어 있다'));
   });
 
   it('each call returns a fresh copy (a consumer cannot change the loaded template)', () => {

@@ -1,5 +1,5 @@
 // @aot/evaluation 공개 API 진입점 (단계 A4). 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
-// 책임: 결정론적 검증기, 컨텍스트 분리 LLM 검증 인터페이스(포트만), 평가기(pass/fail/inconclusive, 4축), 비용 원장 집계와 예산 초과 판정.
+// 책임: 결정론적 검증기, 컨텍스트 분리 LLM 검증 인터페이스(포트 + 모델 호출 없는 가짜 구현 createStubLlmVerifier), 평가기(pass/fail/inconclusive, 4축), 비용 원장 집계와 예산 초과 판정.
 // 의존: @aot/domain 만. task-engine 과는 domain 의 TaskValidator 포트로 연결되고, apps/daemon 이 조립한다.
 export {
   applyEvidenceVerification, defaultChecks, runDeterministicChecks, SourceReader,
@@ -20,4 +20,8 @@ export type {
   ClaimStatement, EffectObservation, EffectSignal, EffectSignalSource, FetchResult, IsolatedVerificationInput, LlmVerdict, LlmVerifier,
   SourceFetcher, SourceText,
 } from './ports.ts';
+export { createStubLlmVerifier, STUB_LLM_VERIFIER_ID, substringRule, type StubClaimVerdict, type StubLlmVerifierOptions } from './stub-verifier.ts';
+export {
+  MAX_UNCERTAINTIES, MAX_UNCERTAINTY_NOTE_CHARS, MAX_UNCERTAINTY_TOPIC_CHARS, uncertaintiesFromResult, type UncertaintiesCheck, type Uncertainty,
+} from './uncertainties.ts';
 export { createTaskValidator, summarizeEvaluation } from './validator.ts';

@@ -7,6 +7,8 @@
 //                      - 어댑터 = createResearchAgentAdapter (이미지는 research_agent.image)
 //                      - 도구 = `fetch_url` 선언·실행기 (허용 호스트 = research_agent.allowed_hosts, 비어 있으면 모두 거부)
 //                      - 평가 포트 = 같은 허용 호스트·같은 SSRF 규칙의 출처 조회기(createSourceFetcher) → `validating` 업무가 실제 출처 조회 검증을 받는다
+//   llm_verifier     컨텍스트 분리 LLM 검증기 (A6-U12). `{kind: "stub"}` 만 허용한다(모델 호출 없는 결정적 가짜. 실제 모델 연결은 Q22 후속이므로 다른 kind 는 거부).
+//                    평가 포트가 있어야 의미가 있으므로 research_agent 와 함께 있을 때만 받는다. 없으면 검증기를 연결하지 않아 `validation.llm` 이 있는 업무는 inconclusive(이전 동작).
 //                    research_agent 가 없으면 평가 포트를 넘기지 않는다: `validating` 업무는 검증되지 않고 그대로 남는다(자동 완료 없음, A4 이후 동작 유지).
 // 비밀값은 설정에 넣지 않는다(이미지 ID·호스트 이름·숫자뿐이다). 시험 전용 주입점(`overrides`)은 코드에서만 넘길 수 있고 설정 파일로는 닿지 않는다.
 import { createHash } from 'node:crypto';
@@ -18,7 +20,7 @@ import {
   type FetchUrlTool, type FetchUrlToolOptions, type GatewayTimers, type SourceFetcherOptions, type ToolCallRecorder,
 } from '@aot/agent-runtime';
 import { parseTimeLimit, systemClock, type Clock } from '@aot/domain';
-import type { SourceFetcher } from '@aot/evaluation';
+import { createStubLlmVerifier, type LlmVerifier, type SourceFetcher } from '@aot/evaluation';
 
 import type { AssembleOptions } from './assemble.ts';
 
@@ -49,9 +51,18 @@ export interface ResearchAgentConfig {
   source_fetch_timeout_ms?: number;
 }
 
+/** 컨텍스트 분리 LLM 검증기 설정. 지금은 모델 호출 없는 가짜(`stub`)만 있다. 실제 모델 연결(Q22)이 정해지면 kind 를 더한다 */
+export interface LlmVerifierConfig {
+  kind: 'stub';
+  /** 검증 호출 한 번의 비용(USD)으로 기록할 값. 생략하면 0 */
+  cost_usd?: number;
+}
+
 export interface AgentRuntimeConfig {
   container_agent?: ContainerAgentConfig | null;
   research_agent?: ResearchAgentConfig | null;
+  /** LLM 검증기. 생략·null 이면 연결하지 않는다. `research_agent` 가 있어야 한다 */
+  llm_verifier?: LlmVerifierConfig | null;
   /** 컨테이너 라벨 `aot.instance` 에 쓸 값. 생략하면 인스턴스 디렉터리의 절대 경로에서 도출한다(`deriveInstanceId`) */
   instance_id?: string;
   /** run_log 파일 디렉터리. 기본 `<instance_dir>/run-logs` */
@@ -67,6 +78,8 @@ export interface AgentRuntimeOverrides {
   createFetchUrlTool?: (options: FetchUrlToolOptions) => FetchUrlTool;
   /** 출처 조회기 생성기. 같은 옵션을 받는다 */
   createSourceFetcher?: (options: SourceFetcherOptions) => SourceFetcher;
+  /** LLM 검증기 생성기. 검증한 설정(`kind: 'stub'`)을 받는다. 시험이 판정표·규칙·예외를 가진 가짜로 바꾼다 */
+  createLlmVerifier?: (config: LlmVerifierConfig) => LlmVerifier;
   /** 게이트웨이 호출 기록을 구조화된 채로 받는 훅 (run 마다 모든 호출에 대해 불린다) */
   recorder?: ToolCallRecorder;
   /** 도구 호출·시간 제한 타이머 */
@@ -93,11 +106,32 @@ function requireContainer(config: AgentRuntimeConfig): ContainerAgentConfig {
   return container;
 }
 
+const createStubFromConfig = (config: LlmVerifierConfig): LlmVerifier => createStubLlmVerifier(config.cost_usd === undefined ? {} : { costUsd: config.cost_usd });
+
+const LLM_VERIFIER_KEYS: ReadonlySet<string> = new Set(['kind', 'cost_usd']);
+
+/** `llm_verifier` 설정을 검증한다. 없으면(undefined·null) undefined. 알 수 없는 kind·키·비용은 던진다 */
+export function parseLlmVerifierConfig(value: unknown): LlmVerifierConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('llm_verifier must be an object like {"kind": "stub"}');
+  const record = value as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => !LLM_VERIFIER_KEYS.has(key));
+  if (unknown.length > 0) throw new Error(`llm_verifier has unknown key(s): ${unknown.join(', ')}`);
+  if (record['kind'] !== 'stub') {
+    throw new Error(`llm_verifier.kind '${String(record['kind'])}' is not supported (only 'stub', which makes no model call; a real model is wired after Q22)`);
+  }
+  const cost = record['cost_usd'];
+  if (cost !== undefined && (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0)) throw new Error('llm_verifier.cost_usd must be a finite number >= 0');
+  return { kind: 'stub', ...(cost === undefined ? {} : { cost_usd: cost }) };
+}
+
 export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: string, overrides: AgentRuntimeOverrides = {}): AgentRuntimeBuild {
   const instanceId = config.instance_id ?? deriveInstanceId(instanceDir);
   if (!isValidInstanceId(instanceId)) throw new Error(`instance_id '${String(instanceId)}' must start with a letter or digit and contain only letters, digits, '_', '.', '-' (max 63 chars)`);
   const container = config.container_agent ?? undefined;
   const research = config.research_agent ?? undefined;
+  const llmConfig = parseLlmVerifierConfig(config.llm_verifier);
+  if (llmConfig !== undefined && research === undefined) throw new Error('llm_verifier needs research_agent (the evaluation port is wired only with it)');
   if (container === undefined) {
     if (research !== undefined) requireContainer(config);
     return { agent: undefined, evaluation: undefined, instanceId };
@@ -145,7 +179,10 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
       tools: [fetchTool.spec],
       executors: new Map([[fetchTool.spec.tool, fetchTool.executor]]),
     },
-    evaluation: { fetcher: sourceFetcher },
+    evaluation: {
+      fetcher: sourceFetcher,
+      ...(llmConfig === undefined ? {} : { llm: (overrides.createLlmVerifier ?? createStubFromConfig)(llmConfig) }),
+    },
     instanceId,
   };
 }

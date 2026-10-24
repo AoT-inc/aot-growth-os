@@ -6,8 +6,9 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { RESEARCH_AGENT_NAME, type FetchUrlToolOptions, type SourceFetcherOptions } from '@aot/agent-runtime';
+import { buildIsolatedInput, STUB_LLM_VERIFIER_ID, type LlmVerifier } from '@aot/evaluation';
 
-import { buildAgentRuntime, deriveInstanceId, type AgentRuntimeConfig } from '../../apps/daemon/src/runtime-config.ts';
+import { buildAgentRuntime, deriveInstanceId, parseLlmVerifierConfig, type AgentRuntimeConfig } from '../../apps/daemon/src/runtime-config.ts';
 import { REPO_ROOT } from '../support/schema-snapshot.ts';
 
 const IMAGE = `sha256:${'ab12'.repeat(16)}`;
@@ -82,6 +83,53 @@ describe('buildAgentRuntime: research_agent wires the tool, the adapter and the 
   });
 });
 
+describe('llm_verifier: the stub verifier is switched on by the settings; nothing is wired without the key', () => {
+  const RESEARCH = { image: IMAGE, allowed_hosts: ['docs.example.com'] };
+  const input = () => buildIsolatedInput({
+    check: 'claim_supported_by_source', criteria: [], claims: [{ id: 'c1', statement: 'Seats are counted per team.', sourceRef: 'https://docs.example.com/a' }],
+    sources: [{ ref: 'https://docs.example.com/a', kind: 'source_url', text: 'Seats are counted per team.', contentHash: null, trustOrigin: 'external_untrusted' }],
+  });
+
+  it('absent or null: no verifier (the previous behaviour: a task that asks for LLM verification ends inconclusive)', () => {
+    for (const llm_verifier of [undefined, null]) {
+      const built = buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, ...(llm_verifier === undefined ? {} : { llm_verifier }) }, DIR);
+      assert.ok(built.evaluation?.fetcher);
+      assert.equal(built.evaluation && 'llm' in built.evaluation, false);
+    }
+  });
+
+  it('{kind: "stub"}: the stub verifier is wired next to the source fetcher; it is a working stub (default rule) with no cost', async () => {
+    const built = buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, llm_verifier: { kind: 'stub' } }, DIR);
+    const llm = built.evaluation?.llm;
+    assert.equal(llm?.id, STUB_LLM_VERIFIER_ID);
+    assert.deepEqual(await llm!.verify(input()), { verdict: 'supported', note: 'stub (no model call): 1 claim(s) supported by their sources' });
+  });
+
+  it('cost_usd is carried to the stub (a verification cost entry is then recorded by the evaluator)', async () => {
+    const built = buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, llm_verifier: { kind: 'stub', cost_usd: 0.01 } }, DIR);
+    assert.equal((await built.evaluation!.llm!.verify(input())).costUsd, 0.01);
+  });
+
+  it('any other kind is refused (a real model is wired after Q22), as are unknown keys and bad values; so is a verifier without an evaluation port', () => {
+    const bad: unknown[] = [{ kind: 'openai' }, { kind: 'model' }, { kind: 'STUB' }, {}, { kind: null }, { kind: 'stub', model: 'x' }, { kind: 'stub', cost_usd: -1 }, { kind: 'stub', cost_usd: '0.1' }, { kind: 'stub', cost_usd: Number.POSITIVE_INFINITY }, 'stub', ['stub'], 3];
+    for (const llm_verifier of bad) {
+      assert.throws(() => buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, llm_verifier } as AgentRuntimeConfig, DIR), /llm_verifier/, JSON.stringify(llm_verifier));
+      assert.throws(() => parseLlmVerifierConfig(llm_verifier), /llm_verifier/);
+    }
+    assert.throws(() => buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, llm_verifier: { kind: 'stub' } }, DIR), /llm_verifier needs research_agent/);
+    assert.throws(() => buildAgentRuntime({ llm_verifier: { kind: 'stub' } }, DIR), /llm_verifier needs research_agent/);
+    assert.throws(() => buildAgentRuntime({ llm_verifier: { kind: 'openai' } as never }, DIR), /not supported/);
+  });
+
+  it('the test injection point replaces the verifier but receives the validated settings', () => {
+    let seen: unknown;
+    const replacement: LlmVerifier = { id: 'replacement@v1', verify: () => Promise.resolve({ verdict: 'supported', note: 'x' }) };
+    const built = buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, llm_verifier: { kind: 'stub', cost_usd: 0.5 } }, DIR, { createLlmVerifier: (config) => { seen = config; return replacement; } });
+    assert.deepEqual(seen, { kind: 'stub', cost_usd: 0.5 });
+    assert.equal(built.evaluation?.llm, replacement);
+  });
+});
+
 describe('instance id', () => {
   it('derives a safe, stable id from the instance directory and tells instances apart', () => {
     const a = deriveInstanceId('/srv/example/instance-a');
@@ -103,6 +151,7 @@ describe('the example settings file', () => {
     const config = JSON.parse(text) as AgentRuntimeConfig & Record<string, unknown>;
     assert.equal(config.container_agent, null);
     assert.equal(config.research_agent, null);
+    assert.equal(config.llm_verifier, null, 'no verifier by default');
     assert.equal(buildAgentRuntime(config, DIR).agent, undefined);
     assert.ok(!/(token|secret|password|api[_-]?key)\s*"\s*:/i.test(text.replace(/"_comment"[^\n]*/, '')), 'no credential-like key in the example settings');
   });

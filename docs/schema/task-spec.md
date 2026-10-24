@@ -102,8 +102,15 @@
 | `dedupe` | 같은 주장·같은 출처 중복 없음 | 보고서 주장, `evidence` |
 | `budget` | 비용 원장 합계가 `cost_budget`(USD, 토큰) 이내 | `cost_entry` |
 | `policy_compliance` | 보낸 외부 부작용마다 허용(또는 승인 대기) 정책 판정이 기록됨. 실패는 안전성 실패 | `external_effect`, `policy_decision` |
+| `uncertainty_listed` | run 결과에 `uncertainties` 필드가 *존재*하고 형식이 유효함(아래). 필드 누락·형식 오류는 `fail`(사유 포함, 평가 `fail` → 재시도 대기). 명세의 `validation.deterministic`에 이 id가 있을 때만 적용된다 | `task_run.result` |
 
 보고서의 주장 목록은 `{"claims": [{"id"?, "statement", "source_url", "quote"?}]}` 모양을 읽는다(어댑터 출력 계약은 A5에서 확정). 조사 에이전트는 *찾은* 기대 인용문만 주장으로 올리고, 찾지 못한 것은 `result.sources[].quotes[]`에 `found:false`로 남긴다(출처를 읽지 못했거나 이름이 맞는 출처가 없는 인용문도 `found:false`, 후자는 `result.unmatched_quotes[]`). 주장으로 올라오지 않은 기대 인용문은 검증기가 `fail`로 잡으므로, 일부만 보고한 결과가 `pass`가 될 수 없다. `expected_quotes`가 없고 보고서에 인용문도 없으면 `quote_in_source`는 "확인 불가"다(`inconclusive`). 필수 테스트 결과(`test_result`) 검사는 합격 표현 형식이 정해지지 않아 구현하지 않았다.
+
+### 불확실성 항목 (`uncertainties`, 완료 조건 "불확실성 항목이 명시되어 있다")
+
+결과의 `uncertainties`는 `[{"topic": string, "note": string}]`이다(최대 100개, `topic` 100자·`note` 300자 이하, 두 키 외 다른 키 거부). 조사 에이전트는 *스스로 아는* 불확실성만 싣는다: 건너뛴 입력(`skipped_inputs`), 읽지 못한 출처(오류 코드·HTTP 상태), 본문을 읽지 않았거나 잘린 출처, 찾지 못했거나 확인하지 못한 기대 인용문(`found:false`). 모두 에이전트가 이미 가진 보고에서 기계적으로 도출하고 문구는 코드에 고정되어 있다(페이지 텍스트나 임의 서술을 싣지 않는다). 상한을 넘으면 앞쪽 항목과 생략 개수를 알리는 항목 하나(`topic: "(more)"`)를 남긴다.
+
+**빈 목록은 유효하다.** 완료 조건 문구는 "불확실성이 *명시*되어 있다"이다. 모르는 것이 없는 run에 지어낸 항목을 요구하면 "임의 서술 금지"를 어기므로, 검사 `uncertainty_listed`는 항목 수가 아니라 *필드의 존재와 형식*을 본다: `[]`는 "알려진 불확실성이 없다"는 에이전트의 명시이고, 필드가 없는 것(말하지 않음)은 `fail`이다. 이 검사는 에이전트가 불확실성을 *빠짐없이* 적었는지는 확인하지 못한다(출처·인용문 쪽은 `url_reachable`·`quote_in_source`가 원본으로 따로 본다). 보고된 불확실성이 있다고 해서 평가가 `fail`이 되지도 않는다.
 
 ## 버전과 승인 스냅샷
 

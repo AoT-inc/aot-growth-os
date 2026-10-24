@@ -133,6 +133,8 @@ if (!prepared.ok) {
       const [source] = result['sources'] as JsonObject[];
       assert.equal(source?.['trust_origin'], 'external_untrusted');
       assert.equal(source?.['http_status'], 200);
+      // A6-U12: the image emits the field (empty here: the quotation was found and nothing else is uncertain); the host-side format check accepts it
+      assert.deepEqual(result['uncertainties'], []);
     });
 
     it('cancelling while the agent is blocked waiting for a tool answer kills the container: cancelled, nothing left behind', async () => {

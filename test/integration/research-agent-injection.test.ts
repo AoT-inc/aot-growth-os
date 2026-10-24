@@ -216,7 +216,7 @@ if (!prepared.ok) {
   }));
 
   /** 텍스트에서 오는 필드를 가린 결과. 나머지 구조는 같아야 한다 */
-  const structure = (result: JsonObject | null): unknown => JSON.parse(JSON.stringify(result, (key, value: unknown) => (['excerpt', 'context', 'bytes', 'content_hash', 'truncated', 'excerpt_truncated', 'content_type'].includes(key) ? '[from page]' : value)));
+  const structure = (result: JsonObject | null): unknown => JSON.parse(JSON.stringify(result, (key, value: unknown) => (['excerpt', 'context', 'bytes', 'content_hash', 'truncated', 'excerpt_truncated', 'content_type', 'uncertainties'].includes(key) ? '[from page]' : value)));
 
   function keysDeep(value: unknown, out: Set<string> = new Set()): Set<string> {
     if (Array.isArray(value)) for (const item of value) keysDeep(item, out);
@@ -269,6 +269,10 @@ if (!prepared.ok) {
         assert.equal(result['trust_origin'], 'external_untrusted');
         assert.ok((result['sources'] as JsonObject[]).every((s) => s['trust_origin'] === 'external_untrusted'));
         assert.deepEqual(structure(result), structure(control.output.result), 'the result differs from the control only in the page-derived fields');
+        // A6-U12: `uncertainties` is a function of what the agent knows (here only a truncated body), in fixed wording: no page text and no instruction ever lands in it
+        const noted = (result['uncertainties'] as JsonObject[]).map((u) => `${String(u['topic'])}: ${String(u['note'])}`);
+        for (const line of noted) assert.match(line, /^(primary|secondary): source body was truncated; text beyond the limit was not checked$/, hostile.name);
+        assert.deepEqual(control.output.result!['uncertainties'], [], 'the clean control page leaves nothing uncertain');
         const keys = keysDeep(result);
         for (const forged of ['forged', 'send_email', 'tool_call', 'tool_result']) assert.ok(!keys.has(forged), `no "${forged}" key made it into the result structure`);
         assert.deepEqual(run.output.evidence.map((e) => e.ref), [PAGE_URL, OTHER_URL], 'evidence refs are the requested URLs, never page-derived');
@@ -317,6 +321,10 @@ if (!prepared.ok) {
       const sources = run.output.result!['sources'] as JsonObject[];
       assert.deepEqual(sources.map((s) => [s['fetched'], s['fetch_error'] ?? null]), [[true, null], [true, null], [false, 'tool_error']]);
       assert.deepEqual((run.output.result!['skipped_inputs'] as JsonObject[]).map((s) => s['reason']), ['invalid_url']);
+      // A6-U12: the container derives uncertainties only from what it knows (the skipped input, the refused source); no page or task_spec prose is copied into them
+      assert.deepEqual((run.output.result!['uncertainties'] as JsonObject[]).map((u) => Object.keys(u).sort()), (run.output.result!['uncertainties'] as JsonObject[]).map(() => ['note', 'topic']));
+      assert.ok((run.output.result!['uncertainties'] as JsonObject[]).some((u) => u['note'] === 'input skipped: invalid_url'));
+      assert.ok((run.output.result!['uncertainties'] as JsonObject[]).some((u) => u['note'] === 'source could not be read: tool_error'));
     });
   });
 

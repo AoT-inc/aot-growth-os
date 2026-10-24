@@ -4,6 +4,9 @@
 //      · `expected_quotes[]` 의 `{source:<출처 name>, text:<인용문>}`  그 출처에 이 인용문이 있는지 확인 (docs/schema/task-spec.md)
 //  - 동작: 허용 도구 `fetch_url` 로 출처마다 한 번 페이지를 가져와(같은 URL 은 한 번) 상태 코드·해시·발췌·인용 포함 여부를 구조화 결과로 낸다.
 //    기대 인용문 *전부*에 대해 found/not found 를 낸다(`sources[].quotes[]`, 출처를 못 읽었거나 출처가 없는 인용문도 found:false 로 남는다).
+//  - 결과의 `uncertainties: [{topic, note}]` 는 에이전트가 *스스로 아는* 불확실성만 담는다(A6-U12): 건너뛴 입력, 읽지 못한 출처(오류 코드·HTTP 상태), 본문을 읽지 않았거나 잘린 출처,
+//    찾지 못했거나 확인하지 못한 기대 인용문. 전부 이미 있는 `skipped_inputs`·`sources[]`·인용문 `found:false` 에서 기계적으로 도출하며 문구는 코드에 고정되어 있다(페이지 텍스트·임의 서술 없음).
+//    알려진 불확실성이 없으면 빈 배열이다(필드는 항상 있다). 검사 `uncertainty_listed` 가 호스트에서 이 필드를 확인한다.
 //  - 외부 페이지 텍스트는 **데이터로만** 쓴다. 이 파일에서 페이지 텍스트가 가는 곳은 (1) 발췌·인용 주변 문맥 문자열, (2) 인용 포함 여부 불리언 — 둘 다 출력일 뿐이다.
 //    도구 이름·인자·호출 횟수·다음 행동은 task_spec 의 출처 목록과 허용 도구 목록으로만 정해진다. 링크를 따라가지 않고 지시문을 해석하지 않는다.
 //  - 게이트웨이로 나가는 길은 주입된 `fetchUrl` 하나뿐이다. 다른 도구를 부르는 코드 경로가 없다(허용 목록에 `fetch_url` 이 없으면 아무것도 부르지 않고 오류로 끝난다).
@@ -23,6 +26,10 @@ export const MAX_QUOTE_CHARS = 500;
 export const MAX_NAME_CHARS = 100;
 export const EXCERPT_CHARS = 300;
 export const CONTEXT_CHARS = 80;
+// 불확실성 목록 상한: @aot/evaluation 의 MAX_UNCERTAINTIES·MAX_UNCERTAINTY_TOPIC_CHARS·MAX_UNCERTAINTY_NOTE_CHARS 와 같다(이미지는 그 패키지를 import 할 수 없어 값을 복사했고, 시험이 두 값을 대조한다).
+export const MAX_UNCERTAINTIES = 100;
+export const MAX_UNCERTAINTY_TOPIC_CHARS = 100;
+export const MAX_UNCERTAINTY_NOTE_CHARS = 300;
 
 export interface StartInfo {
   run_id: string;
@@ -182,6 +189,47 @@ function quoteReports(text: string | null, quotes: readonly ResearchQuote[]): Qu
 /** 페이지를 읽지 못했거나 출처가 없는 기대 인용문: 찾지 못한 것으로 보고한다 (조용히 빠지지 않는다) */
 const notFoundReports = (quotes: readonly ResearchQuote[]): QuoteReport[] => quotes.map((entry): QuoteReport => ({ quote: entry.quote, found: false, context: null }));
 
+// ===== 불확실성 =====
+
+export interface UncertaintyItem extends JsonObject { topic: string; note: string }
+
+/**
+ * 에이전트가 이미 알고 있는 사실(건너뛴 입력, 출처 보고, 인용문 found 여부)에서 기계적으로 도출한다. 순서: 건너뛴 입력 → 출처 단위 → 짝 없는 인용문 → 인용문 단위.
+ * 상한을 넘으면 앞의 `MAX_UNCERTAINTIES - 1` 개와 생략 개수를 알리는 항목 하나를 낸다.
+ */
+export function uncertaintiesOf(
+  targets: ResearchTargets, sources: readonly SourceReport[], unmatchedQuotes: readonly ResearchQuote[],
+): UncertaintyItem[] {
+  const all: UncertaintyItem[] = [];
+  const add = (topic: string, note: string): void => {
+    all.push({ topic: topic.slice(0, MAX_UNCERTAINTY_TOPIC_CHARS), note: note.slice(0, MAX_UNCERTAINTY_NOTE_CHARS) });
+  };
+  for (const item of targets.skipped) add(item.name, `input skipped: ${item.reason}`);
+  for (const source of sources) {
+    if (source['fetched'] !== true) {
+      add(source.name, `source could not be read: ${String(source['fetch_error'])}`);
+      continue;
+    }
+    if (source['reachable'] === false) add(source.name, `source answered HTTP ${String(source['http_status'])}`);
+    if (typeof source['body_skipped'] === 'string') add(source.name, `source body was not read: ${source['body_skipped']}`);
+    if (source['truncated'] === true) add(source.name, 'source body was truncated; text beyond the limit was not checked');
+  }
+  unmatchedQuotes.forEach((entry, index) => add(entry.source, `expected quotation #${index + 1} has no matching source input`));
+  for (const source of sources) {
+    const quotes = Array.isArray(source['quotes']) ? source['quotes'] as QuoteReport[] : [];
+    quotes.forEach((check, index) => {
+      if (check.found) return;
+      add(source.name, source['fetched'] === true
+        ? `expected quotation #${index + 1} was not found in the page`
+        : `expected quotation #${index + 1} could not be checked: the source was not read`);
+    });
+  }
+  if (all.length <= MAX_UNCERTAINTIES) return all;
+  const kept = all.slice(0, MAX_UNCERTAINTIES - 1);
+  kept.push({ topic: '(more)', note: `${all.length - kept.length} further uncertainty item(s) omitted` });
+  return kept;
+}
+
 const byteLength = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
 
 // ===== 실행 =====
@@ -278,6 +326,7 @@ export async function runResearch(deps: ResearchDeps): Promise<ResearchOutput> {
     unmatched_quotes: notFoundReports(unmatchedQuotes).map((report, index) => ({ source: unmatchedQuotes[index]!.source, quote: report.quote, found: false })),
     claims,
     skipped_inputs: targets.skipped.map((item) => ({ name: item.name, reason: item.reason })),
+    uncertainties: uncertaintiesOf(targets, sources, unmatchedQuotes),
   };
 
   // 결과 프레임이 상한을 넘지 않게 한다: 문맥 → 발췌 순으로 줄인다

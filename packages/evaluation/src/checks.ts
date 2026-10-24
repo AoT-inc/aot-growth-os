@@ -10,6 +10,7 @@
 //   dedupe                 같은 주장·같은 출처가 중복되지 않는다
 //   budget                 비용 원장 합계가 업무 예산(USD, 토큰) 이내다
 //   policy_compliance      보낸 외부 부작용마다 기록된 정책 판정이 있다 (안전성 검사)
+//   uncertainty_listed     run 결과에 `uncertainties` 필드가 있고 형식이 유효하다 (빈 목록은 "알려진 불확실성 없음"이라는 명시로 유효). 누락·형식 오류는 fail
 // 이 목록에 없는 id 는 'unknown' (검증할 수 없음 → 평가는 inconclusive). 필수 테스트 결과(test_result)는 합격 표현 형식이
 // 문서에 없어 구현하지 않았다 — `extraChecks` 로 주입할 수 있다 (phase-a.md A4 완료 기록).
 //
@@ -20,6 +21,7 @@ import { resolveExpectedQuotes, validateTaskSpec, type Db, type EvidenceRow, typ
 import type { ReportedClaim } from './claims.ts';
 import { budgetLimitsOf, costForTask, evaluateBudget } from './cost.ts';
 import type { FetchResult, SourceFetcher } from './ports.ts';
+import { uncertaintiesFromResult } from './uncertainties.ts';
 
 export type CheckStatus = 'pass' | 'fail' | 'unknown';
 
@@ -243,10 +245,23 @@ const schemaValid: DeterministicCheck = {
   },
 };
 
+const uncertaintyListed: DeterministicCheck = {
+  id: 'uncertainty_listed',
+  safety: false,
+  run(context) {
+    const found = uncertaintiesFromResult(context.run.result);
+    if (!found.ok) return Promise.resolve({ status: 'fail', note: found.reason });
+    return Promise.resolve({
+      status: 'pass',
+      note: found.items.length === 0 ? 'the result states no known uncertainty (empty list)' : `${found.items.length} uncertainty item(s) listed`,
+    });
+  },
+};
+
 /** 검사 id → 검사. `schema` 는 `schema_valid` 의 별칭 */
 export function defaultChecks(): Map<string, DeterministicCheck> {
   const map = new Map<string, DeterministicCheck>();
-  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance]) map.set(check.id, check);
+  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed]) map.set(check.id, check);
   map.set('schema', schemaValid);
   return map;
 }

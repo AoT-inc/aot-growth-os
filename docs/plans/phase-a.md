@@ -112,6 +112,7 @@
 - [ ] `require_approval` 호출의 처리: 위 "열린 항목 (A5-U2)"과 같다. 승인이 필요한 부작용 도구는 Phase A 실제 어댑터(읽기 전용)에 없으므로 A6 전에 다시 본다
 - [ ] LLM 검증기·측정 값 조회기 연결(Q22, Q5/D2): LLM 검증기는 가짜 구현을 설정으로 연결했다(A6-U12, 실제 모델은 Q22 후속). 측정 값 조회기는 A6-U13 에서 연결했다(팩에 측정 신호가 있고 평가 포트가 있을 때)
 - [ ] Linux 실측: OS 수준 시험은 macOS Docker Desktop 에서만 돌렸다. Linux 에서는 바인드 마운트 권한·소켓 동작이 다르므로 CI(Linux)에서 같은 시험을 돌려 확인한다. 조사 에이전트 이미지는 시험이 빌드(`docker build`)하고 운영 이미지의 빌드·배포 절차는 정하지 않았다
+- [ ] 통합 시험 간헐 실패 (2026-10-24 관측): Docker 를 쓰는 통합 시험(`container-sandbox` (f) 등)이 약 20회 반복 중 1~2회 실패하고 재실행하면 통과한다. 통합 시험을 동시에 두 번 돌리면 `aot.run` 컨테이너 개수 검사가 서로 간섭하지만, 단독 실행에서도 1회 관측되어 원인은 미확인이다. A6-U17 에서 실패 로그를 남기며 확인한다(전역 `aot.run` 개수 대신 인스턴스 라벨로 좁히는 것을 검토)
 - 해석: ① 데몬 설정의 `research_agent.allowed_hosts`는 운영 상한이고, 에이전트의 `fetch_url`은 업무의 `constraints.network_allowlist`와 *둘 다* 만족해야 한다. 검증기의 출처 조회기는 업무 단위 목록이 없어 운영 상한만 적용한다. ② 검증기가 출처를 다시 읽을 때 `fetch_url`과 같은 SSRF 규칙을 쓰므로 사설 주소의 출처는 검증도 할 수 없다. ③ `task_run.adapter`는 어댑터 이름(`research-agent`)이다
 
 ### A6 시작 결정 (2026-10-24)
@@ -131,7 +132,7 @@
 | U11 | 업무 간 결과 전달(`inputs[kind=task_result]` → `AdapterInput.upstream`, `external_untrusted`), 업무별 어댑터 선택 (완료, [기록](#a6-u11-기록-2026-10-24)) | U10 |
 | U12 | 조사 결과 `uncertainties[]`·`uncertainty_listed` 검사, 가짜 LLM 검증기 연결 (완료, [기록](#a6-u12-기록-2026-10-24)) | U10 |
 | U13 | 측정 값 입력(소켓 `measure` → `recordMeasurement`, 사람만), 대기 조건, `createMeasurementSignalSource` (완료, [기록](#a6-u13-기록-2026-10-24)) | U10 |
-| U14 | 후보 형식 검사, `compareCandidates`, `strategy_version` proposed 생성 | U11, U13 |
+| U14 | 후보 형식 검사, `compareCandidates`, `strategy_version` proposed 생성 (완료, [기록](#a6-u14-기록-2026-10-24)) | U11, U13 |
 | U15 | `strategy_version` 승인(사람 1인) → experiment 전이와 루틴 활성화(event 멱등) | U14, U9 |
 | U16 | 결과 검토 → `measurement`·`strategy_record` 기억, 다음 주 입력 반영, 승격·퇴역 | U15 |
 | U17 | 통합 시나리오(가짜/Docker)와 §3 8개 영역 재확인, A6 완료 기록 | 전부 |
@@ -189,6 +190,19 @@
   - **효과 판정의 관측 수.** "1주 = 관측 단위 1"(A6 결정 ②)이므로 값은 1개이고, 사람이 밝힌 `observations`(그 주 값이 모은 관측 수)를 신호의 `min_observations`와 비교한다. 첨부 근거는 데이터 품질 조건으로 다룬다(없거나 업무의 `internal` 근거 행과 해시가 맞지 않으면 `poor_quality`).
 - 시험: 단위 `task-measurement`(ISO 주 표·53주 해·연 경계·DST 주 구간, 명세 형식, 에이전트·모르는 actor 거부와 무기록, 첨부 없음 거부, 형식 오류, 기본 주·끝나지 않은 주, 같은 입력 N회 → event 1·근거 1벌·비용 1줄, 다른 값·관측 수·품질·첨부 → `conflict`·첫 값 유지, 대기: 전이·run·시도 없음과 사유 목록, 대기 업무 25개가 있어도 다른 업무 선택, 입력 뒤 다음 claim 과 측정 뒤 생성 업무의 근거, 다른 주·다른 신호는 풀지 않음), `evaluation-measurement-source`(met → pass, below → fail, insufficient·poor(사람 표시)·첨부 없음·첨부 근거 불일치 → inconclusive, 미정의 신호, 측정 입력 없음 → null, 조회는 쓰기 0, 상수 대조), `daemon-measure`(처리기 조합: 에이전트 거부, 입력·목록·충돌, 나머지는 승인 엔진, 신호 없음, 조립에서 대기 → 입력 → 실행 → 평가에 효과 반영). 통합 `daemon-measurement`(같은 DB 를 여는 데몬 두 프로세스 + 실제 CLI: 소켓 권한 없음 EACCES, 에이전트 거부, 첨부 없음 거부, 입력 반영·반복 1건·다른 값 거부, 파일 내용 미저장, 대기 중 다른 업무 1회 실행, 입력 뒤 두 데몬의 동시 tick 에서 1회 실행).
 - 열린 항목: ① **정정 절차.** 잘못 넣은 값을 바로잡는 경로가 없다(덮어쓰기 거부만). 정정은 원래 이벤트를 남긴 채 새 기록(예: `measurement-correction`)과 사람 승인을 두는 방식이 후보이며, 이미 그 값으로 평가된 업무의 처리도 함께 정해야 한다. ② 정의되지 않은 신호를 기다리는 업무는 생성 단계에서 거부되지 않고 계속 기다린다(대기 목록에는 보인다). ③ 첨부 파일이 나중에 바뀌었는지(해시 재확인)는 보지 않는다 — 평가기는 근거 행의 해시와 이벤트의 해시만 대조한다. ④ 한 업무의 측정 입력은 1개다(여러 주·여러 신호의 비교는 U14 의 후보 비교기 몫). ⑤ 측정 대기 업무에 만료·알림은 없다.
+
+#### A6-U14 기록 (2026-10-24)
+
+- 구현: ① **후보 형식과 검사.** evaluation `candidates.ts`: 결과의 `candidates: [{id, hypothesis, expected_effect, est_cost_usd, task_template_ref | task_spec, measurement: {signal_id, period}}]`(1~10개, id 유일, 가설 500자, 명세 16 KiB, 모르는 키 거부, 명세는 trigger·dependencies 금지 + `validateTaskSpec` draft 통과). 검사 `experiment_candidates`를 `defaultChecks`에 등록했다(U12 의 `uncertainty_listed`와 같은 방식). 신호 정의는 `EvaluatorDeps.signals`/`CheckContext.signals`(선택)로 받고 조립이 측정 신호 정의를 넘긴다. 형식·신호 위반은 `fail`, 정의가 없으면 `unknown`. 팩에 템플릿 `weekly-experiment-planning@1`(research → plan, plan 은 `task_result`와 `measurement:weekly-landing-conversions@{{baseline_week}}`를 받음)을 더했다. ② **비교기.** evaluation `compare.ts`의 `compareCandidates`(순수, 결정적)와 `inconclusiveComparison`, 평가기의 `assessEffect`를 공개해 기준선 판정에 재사용. ③ **제안.** domain `strategy.ts`: `recordStrategyComparison`(event, 멱등 키 `experiment-comparison:<기획 업무 id>`), `proposeStrategyVersion`(비교 기록이 추천한 후보만, id = (기획 업무 id, 후보 id) 해시), `transitionStrategyVersion`(허용표 + 사람 actor 확인 + 그 행의 `approved` 승인 + `experiment_scope`), `listStrategyReviews`. ④ **연결.** apps/daemon `cycle.ts`(`createExperimentCycle`, `createPolicyRiskJudge`, `cycleOptionsFromConfig`), `assembleDaemon({cycle})` → `Daemon.cycle`, task-engine `runPolling`의 선택 `afterTick`, main 이 설정 `experiment_cycle`이 있을 때만 tick 뒤에 `cycle.advance()`를 부른다. 스키마·허용표·경계 lint·sql-guard 는 바뀌지 않았다.
+- 해석·결정:
+  - **정렬 기준.** 위험 allow → require_approval, 비용당 상승(상승 ÷ max(비용, 0.01 USD)) 큰 순, 상승 큰 순, 비용 작은 순, id 순. 상승 = 기대 효과 − 기준선. 합격선 = 기준선 + max(1, 기준선 × 0.1)(설정으로 바꿈)이고 주장이 합격선에 못 미치는 후보는 제외한다. 주장·상승·비용당 상승은 `agent_claim` 아래에만 둔다([evaluation §7](../operations/evaluation.md)).
+  - **위험 판정 주입.** apps 가 정책 `evaluateRequest`로 후보 업무의 요청마다 판정해 가장 엄격한 값을 넘긴다(정책 상한 초과 예산·정책 내용 없음·모르는 템플릿은 deny). 사전 판정이라 `policy_decision`에 남기지 않는다. 판정 함수가 던지면 deny.
+  - **기획 업무의 식별과 결과.** 명세에 `experiment_candidates`가 있는 완료 업무. 결과는 U11 과 같이 통과 평가가 가리키는 run 만 읽는다(`resolveUpstream` 재사용). 평가 없이 사람이 끝낸 업무는 inconclusive.
+  - **멱등 키.** 비교 기록은 기획 업무당 event 1건, 제안은 (기획 업무 id, 후보 id) 결정적 id. 둘을 한 `writeTx`에서 쓰고 비교 기록을 먼저 쓴 쪽만 제안을 만든다.
+  - **검토 대기.** 추천이 없으면(inconclusive, no_candidate) 비교 기록 `review_required=true`가 `listStrategyReviews`(`Daemon.cycle.pendingReviews()`)에 보인다. 기획 업무는 이미 종단(`completed`)이라 상태를 바꾸지 않고 새 상태도 만들지 않았다.
+  - **생성은 전이가 아니다.** `(none) → proposed` 행을 허용표에 더하지 않았다. 생성 주체는 시스템(`evaluator`)이며 에이전트면 거부, `created_by`는 기획 run 의 행위자(제안자)다. `experiment_scope`에 명세·신호·기간(1주)·기준선 주·합격선·비교 요약을 넣고 `trust_origin: external_untrusted`로 표시했다(가설·명세는 기획 에이전트의 값).
+- 시험: 단위 `evaluation-candidates`(형식 표, 검사 표, 등록과 평가기 연결, 비교기: deny 제외·require_approval 후순위, 다른 신호·미정의 신호·예산 초과 제외, 합격선과 no_candidate, 기준선 부족·품질 불량·측정 불가·없음 → inconclusive, 정렬과 동점(id 순), 입력 순서 무관, 주장은 `agent_claim`에만, 판정 예외 → deny), `strategy`(멱등, 비교 없음·비추천 거부, 검토 목록, 에이전트의 기록·제안·전이 거부, 사람 actor·승인·범위 확인, 허용표 불변), `daemon-cycle`(설정, 정책 위험 판정, 평가 없는 완료 → inconclusive, `afterTick`), `pack-loader`(새 템플릿). 통합 `daemon-experiment-cycle`(가짜 어댑터: 조사 → 기준선 입력 → 기획 completed → 제안 1건 `proposed`, 반복 무변화, 후보 모두 deny → 제안 없음·검토 대기, 옵션 없음 = 이전 동작).
+- 열린 항목: ① `baseline_week`는 팩 값(고정 주)이다 — 발화 시각으로 지난주를 넣는 내장 자리표시자는 U15/U16. 루틴은 아직 기획 템플릿을 가리키지 않는다. ② 검토 대기 목록은 함수(`pendingReviews`)로만 있고 승인 CLI 명령은 없다(U15 에서 승인 명령과 함께). ③ 후보의 `task_template_ref`는 검사 단계에서 형식만 보고, 존재는 위험 판정(deny)에서 본다. ④ 실험 주 지정·제안 승인·루틴 활성화는 U15.
 
 ## 3. 필수 테스트 매핑
 

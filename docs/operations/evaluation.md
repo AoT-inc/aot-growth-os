@@ -81,3 +81,16 @@ Phase A의 사업 성과 신호는 랜딩 페이지 1개의 주간 목표 행동
 - 안전성 위반이 있으면 효과 점수가 높아도 `fail`이다.
 - 시험 중 즉시 중단 조건이 충족되면 기간 경과를 기다리지 않고 중단된다.
 - `inconclusive` 결과가 전략·기억의 성공 사례로 기록되지 않는다.
+
+## 7. 실험 후보 비교 (A6-U14, 주간 사이클 5단계)
+
+완료된 기획 업무(명세에 검사 `experiment_candidates`가 있는 업무)마다 한 번, 데몬의 주간 사이클(`apps/daemon/src/cycle.ts`, 설정 `experiment_cycle`)이 후보를 비교한다. 비교기는 `@aot/evaluation`의 `compareCandidates`(순수 함수, 같은 입력이면 같은 기록)다.
+
+- **입력.** 후보([task-spec "실험 후보"](../schema/task-spec.md)), 기준선 = 기획 업무의 측정 입력(§5.1 신호 조회기), 신호 정의, 위험 판정 함수, 예산 상한(`experiment_cycle.budget_usd`). 결과는 업무 간 결과 전달과 같은 규칙으로 *통과 평가가 있는 완료 업무*의 run 결과만 읽는다.
+- **위험 판정은 주입이다.** evaluation 은 정책을 모르므로(경계 lint) 데몬이 정책(`evaluateRequest`)으로 후보가 실행할 업무의 요청(도구 × 작업)을 판정해 가장 엄격한 값을 넘긴다. 배포된 정책 내용이 없거나 모르는 템플릿이면 `deny`. 비교용 사전 판정이라 `policy_decision`에 남기지 않는다(실제 판정은 승인 뒤 업무 생성 때 정책 게이트가 한다).
+- **inconclusive.** 기준선이 없거나 측정 불가·관측 수 부족·데이터 품질 불량이면(§4·§5.1과 같은 규칙) 비교 자체가 `inconclusive`이고 후보를 고르지 않는다.
+- **제외(사유를 모두 기록).** 위험 `deny`(`risk_denied`), 정의에 없는 신호(`unknown_signal`)·기준선과 다른 신호(`signal_mismatch`)·주기 불일치(`period_mismatch`), 예산 초과(`over_budget`: 추정 비용 또는 마케팅 업무 명세의 `cost_budget.max_usd`가 상한 초과), 합격선 미달(`below_pass_line`).
+- **합격선.** 기준선 + max(최소 절대 상승, 기준선 × 최소 상대 상승). 기본 1과 0.1(설정 `min_absolute_lift`·`min_relative_lift`). 비교기가 기준선 대비로 정하고 제안의 `experiment_scope.measurement.pass_at_least`에 남는다.
+- **정렬.** ① 위험 `allow`가 `require_approval`보다 먼저 ② 비용당 상승(상승 ÷ max(추정 비용, 0.01 USD)) 큰 순 ③ 상승 큰 순 ④ 추정 비용 작은 순 ⑤ id 순. 상승 = 기대 효과 − 기준선. 1위가 추천이다. 남은 후보가 없으면 `no_candidate`.
+- **평가기 독립.** 기대 효과·추정 비용과 그로부터 계산한 상승·비용당 상승은 후보마다 `agent_claim` 아래에만 둔다. 비교기가 확인한 사실(위험 판정, 신호·예산 대조, 기준선, 합격선)과 섞지 않는다. 주장은 순서를 정하는 참고일 뿐이고, 효과는 실험 주의 실제 측정 값으로 따로 평가한다.
+- **기록과 제안.** 한 쓰기 트랜잭션에서 비교 기록(`event`, source `experiment-cycle`, type `experiment.compared`, 멱등 키 `experiment-comparison:<기획 업무 id>`)을 남기고, 추천이 있으면 `strategy_version`을 `proposed`로 만든다(id 는 (기획 업무 id, 후보 id)의 해시라 다시 돌려도 늘지 않는다, `created_by`는 기획 run 의 행위자). 추천이 없으면(`inconclusive`, `no_candidate`) 제안 없이 비교 기록의 `review_required`가 참이 되어 사람 검토 목록(`listStrategyReviews`)에 오른다. 새 상태는 없다.

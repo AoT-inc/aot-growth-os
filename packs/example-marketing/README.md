@@ -7,7 +7,7 @@
 | 위치 | 내용 | 상태 |
 |---|---|---|
 | `manifest.json` | 이름, 버전, 요구 코어 버전, 필요한 도구, 구성 디렉터리 | 형식 검증 있음 (`validatePackManifest`) |
-| `workflows/` | 업무 템플릿 `<id>.json` (`id`, `version`, `tasks[{name, depends_on?, spec}]`; `spec` 은 [task-spec](../../docs/schema/task-spec.md) 초안 형식) | 주간 시장 조사 1개 |
+| `workflows/` | 업무 템플릿 `<id>.json` (`id`, `version`, `tasks[{name, depends_on?, spec}]`; `spec` 은 [task-spec](../../docs/schema/task-spec.md) 초안 형식) | 주간 시장 조사 1개, 주간 실험 기획 1개(조사 → 기획: 조사 결과와 기준선 측정을 받아 `candidates` 를 낸다, 검사 `experiment_candidates`. 루틴은 아직 가리키지 않는다) |
 | `routines/` | 루틴 선언 `<slug>.json` (`schedule`, `catch_up`, `task_template` = `<템플릿 id>@<version>`, `org_unit`, 선택 `product`) | 주간 시장 조사 1개 (월 09:00 `Asia/Seoul`, `catch_up: skip`) |
 | `measurement-signals/` | 측정 신호 정의 `<id>.json` ([D2](../../docs/plans/a0-decisions.md), `validateMeasurementSignal`) | 주간 랜딩 전환 수 1개 |
 | `evaluations/` | 결정론적 검사 id, LLM 검증 프롬프트 | 비어 있음 |
@@ -23,6 +23,7 @@
 | `product` | 제품 slug (DB 의 `product.slug`, 등록 완료 상태여야 한다). 업무 명세의 `product`·목적 문장, 루틴의 `product_id` |
 | `research_source_url` | 조사 출처 주소 (`source_url` 입력) |
 | `research_host` | 업무의 `network_allowlist` 에 들어갈 호스트 (운영 상한 `research_agent.allowed_hosts` 안에 있어야 한다) |
+| `baseline_week` | 기획 템플릿의 기준선 측정 주 (`YYYY-Www`, 명시 주). 발화 시각으로 주를 계산하는 내장 자리표시자는 아직 없다(U15/U16) |
 
 치환은 값 안의 `{{`/`}}` 를 허용하지 않는 단일 패스이며, 치환 뒤 `validateTaskSpec` 를 통과해야 한다. 값이 없는 자리표시자는 데몬 시작 때 거부한다.
 

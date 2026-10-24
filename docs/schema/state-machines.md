@@ -102,6 +102,7 @@ approved ──► trial ──► active ──► retired
 `proposed → experiment → active → retired`, `proposed → rejected`.
 - `proposed → experiment/active`: 사람 승인 필수. `experiment`는 범위·기간 제한 필수.
 - `active` 교체 시 이전 버전은 `retired`로 두고 롤백 지점으로 유지한다.
+- (A6-U14) `proposed` 행의 *생성*은 전이가 아니다(허용표에 `(none) → proposed` 행이 없고 더하지 않았다). 주간 사이클의 비교 단계가 비교 기록이 추천한 후보로만 만들며, 쓰는 주체는 시스템이고 에이전트가 아니다(`created_by`는 후보를 낸 기획 run 의 행위자). 전이는 domain `transitionStrategyVersion`이 이 표를 따르고, `human` 주체는 행위자가 실제 사람이어야 하며 승인이 필요한 전이는 그 행을 가리키는 `approved` 승인 기록이 있어야 한다.
 
 ## 게시 (`publication.status`)
 

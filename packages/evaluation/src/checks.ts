@@ -11,13 +11,18 @@
 //   budget                 비용 원장 합계가 업무 예산(USD, 토큰) 이내다
 //   policy_compliance      보낸 외부 부작용마다 기록된 정책 판정이 있다 (안전성 검사)
 //   uncertainty_listed     run 결과에 `uncertainties` 필드가 있고 형식이 유효하다 (빈 목록은 "알려진 불확실성 없음"이라는 명시로 유효). 누락·형식 오류는 fail
+//   experiment_candidates  기획 업무 결과의 `candidates` 형식이 유효하고(id 중복 없음, 마케팅 업무 명세는 validateTaskSpec 통과), 각 후보의 측정 신호가
+//                          알려진 신호 정의와 맞는다(A6-U14, candidates.ts). 위반은 fail. 신호 정의가 주입되지 않았으면 신호를 확인할 수 없어 unknown
 // 이 목록에 없는 id 는 'unknown' (검증할 수 없음 → 평가는 inconclusive). 필수 테스트 결과(test_result)는 합격 표현 형식이
 // 문서에 없어 구현하지 않았다 — `extraChecks` 로 주입할 수 있다 (phase-a.md A4 완료 기록).
 //
 // 비동기 검사(URL 조회)는 트랜잭션 밖에서 하고, 결과는 `applyEvidenceVerification` 이 Db.writeTx 안에서
 // evidence.verified / verification_note 에 반영한다.
-import { resolveExpectedQuotes, validateTaskSpec, type Db, type EvidenceRow, type ExternalEffectRow, type TaskRow, type TaskRunRow, type TaskSpec } from '@aot/domain';
+import {
+  resolveExpectedQuotes, validateTaskSpec, type Db, type EvidenceRow, type ExternalEffectRow, type MeasurementSignal, type TaskRow, type TaskRunRow, type TaskSpec,
+} from '@aot/domain';
 
+import { checkExperimentCandidates, EXPERIMENT_CANDIDATES_CHECK_ID } from './candidates.ts';
 import type { ReportedClaim } from './claims.ts';
 import { budgetLimitsOf, costForTask, evaluateBudget } from './cost.ts';
 import type { FetchResult, SourceFetcher } from './ports.ts';
@@ -46,6 +51,8 @@ export interface CheckContext {
   evidence: readonly EvidenceRow[];
   claims: readonly ReportedClaim[];
   sources: SourceReader;
+  /** 측정 신호 정의 (팩의 `measurement-signals/`). `experiment_candidates` 가 후보의 신호를 대조한다. 없으면 그 검사는 unknown */
+  signals?: readonly MeasurementSignal[];
 }
 
 export interface DeterministicCheck {
@@ -258,10 +265,18 @@ const uncertaintyListed: DeterministicCheck = {
   },
 };
 
+const experimentCandidates: DeterministicCheck = {
+  id: EXPERIMENT_CANDIDATES_CHECK_ID,
+  safety: false,
+  run(context) {
+    return Promise.resolve(checkExperimentCandidates(context.run.result, context.signals));
+  },
+};
+
 /** 검사 id → 검사. `schema` 는 `schema_valid` 의 별칭 */
 export function defaultChecks(): Map<string, DeterministicCheck> {
   const map = new Map<string, DeterministicCheck>();
-  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed]) map.set(check.id, check);
+  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed, experimentCandidates]) map.set(check.id, check);
   map.set('schema', schemaValid);
   return map;
 }

@@ -8,6 +8,8 @@ export interface PollingOptions {
   /** 기본은 setTimeout. 시험에서 바꿔 끼운다 */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   onTick?: (report: TickReport) => void;
+  /** tick 뒤에 한 번 부른다 (예: 주간 사이클의 후보 비교, A6-U14). 실패는 onError 로 가고 루프는 계속한다. 생략하면 부르지 않는다 */
+  afterTick?: () => Promise<void>;
   onError?: (error: unknown) => void;
 }
 
@@ -33,6 +35,13 @@ export async function runPolling(worker: TaskWorker, options: PollingOptions): P
       busy = report.executed !== null;
     } catch (error) {
       options.onError?.(error);
+    }
+    if (options.afterTick !== undefined) {
+      try {
+        await options.afterTick();
+      } catch (error) {
+        options.onError?.(error);
+      }
     }
     if (!busy) await sleep(options.pollMs, options.signal);
   }

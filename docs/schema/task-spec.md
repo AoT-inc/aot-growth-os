@@ -118,6 +118,7 @@
 | `budget` | 비용 원장 합계가 `cost_budget`(USD, 토큰) 이내 | `cost_entry` |
 | `policy_compliance` | 보낸 외부 부작용마다 허용(또는 승인 대기) 정책 판정이 기록됨. 실패는 안전성 실패 | `external_effect`, `policy_decision` |
 | `uncertainty_listed` | run 결과에 `uncertainties` 필드가 *존재*하고 형식이 유효함(아래). 필드 누락·형식 오류는 `fail`(사유 포함, 평가 `fail` → 재시도 대기). 명세의 `validation.deterministic`에 이 id가 있을 때만 적용된다 | `task_run.result` |
+| `experiment_candidates` | (A6-U14) 기획 업무 결과의 `candidates` 형식이 유효함(아래 "실험 후보"): id 중복 없음, 마케팅 업무 명세는 `validateTaskSpec` 통과, 각 후보의 `measurement.signal_id`가 알려진 측정 신호 정의(팩의 `measurement-signals/`)이고 주기가 같음. 위반은 `fail`(사유 포함). 신호 정의가 평가기에 주어지지 않았으면 신호를 확인할 수 없어 "확인 불가"(`inconclusive`). 이 id가 있는 업무가 곧 *기획 업무*다(데몬의 주간 사이클이 완료된 기획 업무의 후보를 비교한다) | `task_run.result`, 신호 정의 |
 
 보고서의 주장 목록은 `{"claims": [{"id"?, "statement", "source_url", "quote"?}]}` 모양을 읽는다(어댑터 출력 계약은 A5에서 확정). 조사 에이전트는 *찾은* 기대 인용문만 주장으로 올리고, 찾지 못한 것은 `result.sources[].quotes[]`에 `found:false`로 남긴다(출처를 읽지 못했거나 이름이 맞는 출처가 없는 인용문도 `found:false`, 후자는 `result.unmatched_quotes[]`). 주장으로 올라오지 않은 기대 인용문은 검증기가 `fail`로 잡으므로, 일부만 보고한 결과가 `pass`가 될 수 없다. `expected_quotes`가 없고 보고서에 인용문도 없으면 `quote_in_source`는 "확인 불가"다(`inconclusive`). 필수 테스트 결과(`test_result`) 검사는 합격 표현 형식이 정해지지 않아 구현하지 않았다.
 
@@ -126,6 +127,29 @@
 결과의 `uncertainties`는 `[{"topic": string, "note": string}]`이다(최대 100개, `topic` 100자·`note` 300자 이하, 두 키 외 다른 키 거부). 조사 에이전트는 *스스로 아는* 불확실성만 싣는다: 건너뛴 입력(`skipped_inputs`), 읽지 못한 출처(오류 코드·HTTP 상태), 본문을 읽지 않았거나 잘린 출처, 찾지 못했거나 확인하지 못한 기대 인용문(`found:false`). 모두 에이전트가 이미 가진 보고에서 기계적으로 도출하고 문구는 코드에 고정되어 있다(페이지 텍스트나 임의 서술을 싣지 않는다). 상한을 넘으면 앞쪽 항목과 생략 개수를 알리는 항목 하나(`topic: "(more)"`)를 남긴다.
 
 **빈 목록은 유효하다.** 완료 조건 문구는 "불확실성이 *명시*되어 있다"이다. 모르는 것이 없는 run에 지어낸 항목을 요구하면 "임의 서술 금지"를 어기므로, 검사 `uncertainty_listed`는 항목 수가 아니라 *필드의 존재와 형식*을 본다: `[]`는 "알려진 불확실성이 없다"는 에이전트의 명시이고, 필드가 없는 것(말하지 않음)은 `fail`이다. 이 검사는 에이전트가 불확실성을 *빠짐없이* 적었는지는 확인하지 못한다(출처·인용문 쪽은 `url_reachable`·`quote_in_source`가 원본으로 따로 본다). 보고된 불확실성이 있다고 해서 평가가 `fail`이 되지도 않는다.
+
+### 실험 후보 (`candidates`, A6-U14)
+
+기획 업무(generalist)는 조사 결과(`inputs[kind=task_result]`)와 기준선 측정(`inputs[kind=measurement]`)을 받아 결과에 실험 후보를 싣는다. 팩 템플릿 `weekly-experiment-planning@1`이 이 모양이다.
+
+```json
+{
+  "candidates": [{
+    "id": "landing-copy-a",
+    "hypothesis": "첫 화면 문구를 사용 사례 중심으로 바꾸면 주간 가입이 는다",
+    "expected_effect": 14,
+    "est_cost_usd": 0.5,
+    "task_spec": {"objective": "...", "role": "generalist", "inputs": [], "allowed_tools": [], "constraints": {}, "acceptance_criteria": ["..."], "validation": {"deterministic": ["budget"], "llm": null, "human": true}, "cost_budget": {"max_usd": 0.5}},
+    "measurement": {"signal_id": "weekly-landing-conversions", "period": "iso_week"}
+  }],
+  "uncertainties": []
+}
+```
+
+- 후보는 1~10개, `id`는 소문자·숫자·하이픈(64자 이하)이고 결과 안에서 유일하다. `hypothesis`는 500자 이하. `expected_effect`는 실험 주의 신호 값 주장(신호와 같은 단위, 유한한 수), `est_cost_usd`는 0 이상.
+- 실행할 업무는 `task_template_ref`(팩 템플릿 `<id>@<version>`)와 `task_spec`(이 문서의 초안 형식, 16 KiB 이하) 중 **정확히 하나**다. `task_spec`의 `trigger`·`dependencies`는 엔진이 정하므로 넣을 수 없고, 나머지는 `validateTaskSpec`(draft)을 통과해야 한다.
+- `measurement`는 `{signal_id, period}`이며 `period`는 신호 정의와 같아야 한다(`iso_week`). 실험 단위는 1주·관측 1이고(A6 결정 ②) 실험 주는 승인 때(U15) 정한다.
+- 모르는 키는 거부한다. 값은 모두 에이전트의 자기 신고이므로 비교기는 기대 효과·비용을 참고로만 쓴다([evaluation §7](../operations/evaluation.md)).
 
 ## 버전과 승인 스냅샷
 

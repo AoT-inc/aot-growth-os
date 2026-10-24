@@ -19,6 +19,7 @@ const VALUES = {
   product: 'example-product',
   research_source_url: 'https://docs.example.com/market-news',
   research_host: 'docs.example.com',
+  baseline_week: '2026-W43',
 };
 const SLOT = '2026-10-26T00:00:00.000Z'; // Monday 09:00 Asia/Seoul
 
@@ -61,14 +62,20 @@ describe('the example pack', () => {
     assert.deepEqual(pack.routines.map((r) => [r.slug, r.schedule, r.catchUp, r.taskTemplate, r.orgUnit, r.product]), [
       ['weekly-market-research', '0 9 * * 1 Asia/Seoul', 'skip', 'weekly-market-research@1', 'core', 'example-product'],
     ]);
-    assert.deepEqual(pack.templates.map((t) => [t.id, t.version, t.tasks.map((task) => task.name)]), [['weekly-market-research', 1, ['research']]]);
+    assert.deepEqual(pack.templates.map((t) => [t.id, t.version, t.tasks.map((task) => task.name)]), [
+      ['weekly-experiment-planning', 1, ['research', 'plan']],
+      ['weekly-market-research', 1, ['research']],
+    ]);
     assert.deepEqual(pack.signals.map((s) => [s.id, s.page_ref, s.period, s.tz, s.min_observations, s.attachment_required]), [
       ['weekly-landing-conversions', 'landing:example-product', 'iso_week', 'Asia/Seoul', 1, true],
     ]);
   });
 
   it('holds no real value: every instance value is a placeholder, the files carry no secret-looking text', () => {
-    const files = ['manifest.json', 'routines/weekly-market-research.json', 'workflows/weekly-market-research.json', 'measurement-signals/weekly-landing-conversions.json'];
+    const files = [
+      'manifest.json', 'routines/weekly-market-research.json', 'workflows/weekly-market-research.json', 'workflows/weekly-experiment-planning.json',
+      'measurement-signals/weekly-landing-conversions.json',
+    ];
     for (const file of files) {
       const text = readFileSync(join(PACK_DIR, file), 'utf8');
       assert.doesNotMatch(text, /\/Users\/|api[_-]?key|secret|token|password/i, file);
@@ -119,6 +126,30 @@ describe('the example pack', () => {
     const second = pack.templateSource.resolve({ routine, scheduledFor: SLOT });
     assert.notEqual(second[0]!.spec['objective'], 'tampered');
     assert.equal((second[0]!.spec['inputs'] as unknown[]).length, 2);
+  });
+
+  it('the planning template (A6-U14): plan reads the research result (task_result) and the baseline measurement, and asks for experiment_candidates', () => {
+    const pack = loadPack({ dir: PACK_DIR, values: VALUES });
+    const routine = { id: 'r1', slug: 'weekly-experiment-planning', orgUnitId: 'u', productId: null, schedule: 's', taskTemplate: 'weekly-experiment-planning@1', catchUp: 'skip' as const };
+    const tasks = pack.templateSource.resolve({ routine, scheduledFor: SLOT });
+    assert.deepEqual(tasks.map((task) => [task.name, task.dependsOn]), [['research', []], ['plan', ['research']]]);
+    const plan = tasks[1]!.spec;
+    assert.equal(validateTaskSpec(plan, 'draft').ok, true);
+    assert.deepEqual(plan['inputs'], [
+      { name: 'findings', ref: 'task:research', kind: 'task_result' },
+      { name: 'baseline', ref: 'measurement:weekly-landing-conversions@2026-W43', kind: 'measurement' },
+    ]);
+    const ids = (plan['validation'] as { deterministic: string[] }).deterministic;
+    assert.ok(ids.includes('experiment_candidates'));
+    const registered = defaultChecks();
+    for (const task of tasks) {
+      for (const id of (task.spec['validation'] as { deterministic: string[] }).deterministic) assert.ok(registered.has(id), `${task.name}: ${id} is registered`);
+    }
+    // 기준선 주는 명시 주만: 값이 없거나 주가 아니면 시작 때 거부
+    const missing: Record<string, string> = { ...VALUES };
+    delete missing['baseline_week'];
+    assert.ok(has(issuesOf({ dir: PACK_DIR, values: missing }), 'workflows/weekly-experiment-planning.json', 'unresolved_placeholder', 'tasks[1].spec.inputs[1].ref'));
+    assert.ok(has(issuesOf({ dir: PACK_DIR, values: { ...VALUES, baseline_week: 'last-week' } }), 'workflows/weekly-experiment-planning.json', 'format', 'tasks[1].spec.inputs[1].ref'));
   });
 
   it('an unknown template is an error (and not a deterministic task rejection)', () => {

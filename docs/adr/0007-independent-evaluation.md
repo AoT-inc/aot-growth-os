@@ -41,3 +41,6 @@
 ## Amendment (2026-10-24): 사람이 입력한 측정 값의 조회 (A6-U13)
 - 평가기는 사람이 입력한 측정 값을 `EffectSignalSource` 포트로만 읽는다(`createMeasurementSignalSource`, 읽기 전용). 값은 사람 채널(승인 소켓의 `measure`, `actor.kind='human'`만)로 들어온 `event`(`measurement:<신호 id>@<ISO 주>`)이고, 원본 증거로 인정되는 조건은 데이터 품질 판정에 넣었다: 사람이 품질을 `good`으로 밝혔고, 첨부(파일 sha256)가 하나 이상이며 그 전부가 업무의 `internal` 근거 행으로 남아 있을 것. 어느 하나라도 아니면 `poor_quality`, 사람이 밝힌 관측 수가 `min_observations`보다 적으면 `insufficient`이고, 둘 다 기존 규칙대로 `inconclusive`다. 포트의 `EffectSignal`에 선택 필드 `observations`(값 1개가 모은 관측 수; 생략하면 `values.length`)와 `qualityNote`(기록용)를 더했다. 판정 순서·규칙은 바뀌지 않았다.
 
+
+## Amendment (2026-10-24): 실험 후보 비교 (A6-U14)
+- 주간 사이클 5단계의 후보 비교기(`compareCandidates`)는 평가기와 같은 독립 원칙을 따른다: 에이전트가 낸 기대 효과·추정 비용은 *참고*로 순서를 정하는 데만 쓰고 비교 기록의 `agent_claim` 아래에만 둔다. 비교기가 스스로 확인한 사실(정책 위험 판정, 신호 정의·예산 대조, 기준선, 합격선)과 섞지 않으며, 기준선이 관측 수 부족·데이터 품질 불량·측정 불가면 평가와 같이 `inconclusive`(후보를 고르지 않음)다. 합격선은 기준선 대비로 비교기가 정한다. 위험 판정은 함수로 주입되므로 evaluation 은 policy 를 참조하지 않는다. 규칙의 정본은 [evaluation §7](../operations/evaluation.md).

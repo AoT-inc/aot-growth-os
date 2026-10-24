@@ -15,7 +15,7 @@
 // 새 행이 생기게 한다 (버전 변경의 승인 경로는 phase-a.md A4 완료 기록의 이월 항목).
 import { randomUUID } from 'node:crypto';
 
-import type { Clock, Db, EvalOutcome, EvaluationRow, EvidenceRow, SafetyResult, TaskRow, TaskRunRow, TaskSpec } from '@aot/domain';
+import type { Clock, Db, EvalOutcome, EvaluationRow, EvidenceRow, MeasurementSignal, SafetyResult, TaskRow, TaskRunRow, TaskSpec } from '@aot/domain';
 
 import {
   applyEvidenceVerification, runDeterministicChecks, SourceReader,
@@ -111,6 +111,8 @@ export interface EvaluatorDeps {
   effect?: EffectSignalSource;
   /** 명세 id 에 없는 검사를 더한다 (예: 필수 테스트 결과) */
   extraChecks?: readonly DeterministicCheck[];
+  /** 측정 신호 정의. 검사 `experiment_candidates` 가 후보의 신호를 대조한다(A6-U14). 없으면 그 검사는 unknown(→ inconclusive) */
+  signals?: readonly MeasurementSignal[];
   newId?: () => string;
 }
 
@@ -132,7 +134,8 @@ const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
 const round = (value: number): number => Math.round(value * 1e6) / 1e6;
 const mean = (values: readonly number[]): number => values.reduce((sum, v) => sum + v, 0) / values.length;
 
-function assessEffect(observation: EffectObservation | null): EffectAssessment {
+/** 측정 값 → 효과 판정 (순수). 평가기와 후보 비교기(기준선, compare.ts)가 같은 규칙을 쓴다 */
+export function assessEffect(observation: EffectObservation | null): EffectAssessment {
   if (observation === null) return { state: 'not_measured' };
   if (!observation.measurable) return { state: 'unmeasurable', reason: `not measurable: ${observation.reason}` };
   const { signal } = observation;
@@ -161,7 +164,7 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
     'SELECT * FROM evidence WHERE task_id = ? AND (task_run_id = ? OR task_run_id IS NULL) ORDER BY captured_at, id', [task.id, run.id],
   );
   const sources = new SourceReader(deps.fetcher);
-  const context: CheckContext = { db, task, spec, run, evidence, claims, sources };
+  const context: CheckContext = { db, task, spec, run, evidence, claims, sources, ...(deps.signals === undefined ? {} : { signals: deps.signals }) };
 
   // 1층: 결정론적 검증
   const deterministic = await runDeterministicChecks(context, spec.validation.deterministic, deps.extraChecks);

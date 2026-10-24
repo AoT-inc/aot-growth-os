@@ -10,6 +10,8 @@
 // 팩(A6 U10): `pack_dir` 설정이 있으면 팩을 읽어 루틴을 `enabled=0` 으로 DB 에 반영하고 템플릿 포트를 워커에 연결한다(`pack_values` 로 {{자리표시자}} 치환). 설정이 없으면 기존 동작.
 // LLM 검증기(A6-U12): `llm_verifier: {kind: "stub"}` 설정이 있으면 모델 호출 없는 가짜 검증기를 연결한다(실제 모델은 Q22 후속, 다른 kind 는 거부). 없으면 연결하지 않는다.
 // 측정 값(A6-U13): 팩에 측정 신호 정의가 있으면 승인 소켓에 `measure`·`measurements` 명령이 생기고(사람만, 같은 인증 경계), 평가 포트가 있으면 측정 값 조회기가 연결된다.
+// 주간 사이클 4·5단계(A6-U14): `experiment_cycle` 설정이 있으면 worker tick 뒤마다 `cycle.advance()` 로 완료된 기획 업무의 후보를 비교해 strategy_version 을
+// `proposed` 로 만든다(추천이 없으면 사람 검토 목록). 설정이 없으면 부르지 않는다(이전 동작).
 // `inputs[kind=measurement]` 업무는 값이 입력될 때까지 집히지 않는다. 출처 조회기는 `research_agent` 가 없으면 연결되지 않아 그 경우 validating 업무는 검증되지 않고 남는다(자동 완료 없음).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,12 +21,13 @@ import { applyMigrations, openDb, systemClock } from '@aot/domain';
 import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolling } from '@aot/task-engine';
 
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
+import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
 import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts';
 
 /** 에이전트 쪽 키(container_agent·research_agent·instance_id·run_log_dir·default_time_limit)는 AgentRuntimeConfig 에 있다 */
-/** 팩 키(pack_dir·pack_values)는 PackConfig 에 있다 */
-interface DaemonConfig extends AgentRuntimeConfig, PackConfig {
+/** 팩 키(pack_dir·pack_values)는 PackConfig 에, 주간 사이클 키(experiment_cycle)는 CycleConfig 에 있다 */
+interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   db_path: string;
   busy_timeout_ms?: number;
   worker_id: string;
@@ -60,6 +63,7 @@ async function main(): Promise<void> {
   const defaults = defaultInstancePaths(instanceDir);
   const { agent, evaluation } = buildAgentRuntime(config, instanceDir);
   const pack = packOptionsFromConfig(config);
+  const cycle = cycleOptionsFromConfig(config);
   const daemon = assembleDaemon({
     db,
     clock: systemClock,
@@ -75,6 +79,7 @@ async function main(): Promise<void> {
       : { agent }),
     ...(evaluation === undefined ? {} : { evaluation }),
     ...(pack === undefined ? {} : { pack }),
+    ...(cycle === undefined ? {} : { cycle }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
   });
@@ -90,6 +95,7 @@ async function main(): Promise<void> {
   }
   const channel = await daemon.startApprovalChannel((name) => console.error(`approval channel: ${String(name)}`));
   const { worker } = daemon;
+  const experimentCycle = daemon.cycle;
 
   const stop = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stop.abort());
@@ -105,6 +111,15 @@ async function main(): Promise<void> {
       for (const f of report.validationFailed) console.error(`validation failed ${f.taskId}: ${f.error}`);
       if (report.executed) console.log(`executed ${report.executed.taskId} attempt ${report.executed.attempt}: ${JSON.stringify(report.executed.end)}`);
     },
+    ...(experimentCycle === null ? {} : {
+      afterTick: async () => {
+        const report = await experimentCycle.advance();
+        for (const c of report.compared) {
+          console.log(`experiment comparison ${c.planningTaskId}: ${c.outcome}${c.strategyVersionId === null ? ' (waiting for a person to review)' : ` -> strategy_version ${c.strategyVersionId} proposed`}`);
+        }
+        for (const f of report.failed) console.error(`experiment comparison failed ${f.planningTaskId}: ${f.error}`);
+      },
+    }),
     onError: (error) => console.error('tick failed:', error),
   });
   await channel.close();

@@ -10,6 +10,8 @@
 // 선행 업무 결과(`inputs[kind=task_result]`)는 task-engine 이 읽고 agent-executor.ts 가 `external_untrusted` 로 표시해 어댑터 입력에 넣는다.
 // A6 U13: 측정 신호 정의(팩의 `signals` 또는 `measurementSignals`)가 있으면 승인 소켓에 `measure`·`measurements` 명령을 얹고(measure.ts, 같은 인증 경계),
 // 평가 포트가 있으면 효과 측정 조회기(`createMeasurementSignalSource`)를 연결한다. 측정 대기 조건 자체는 task-engine 의 claim 이 본다.
+// A6 U14: 측정 신호 정의를 평가기에도 넘겨 검사 `experiment_candidates` 가 후보의 신호를 대조한다. `cycle` 옵션이 있으면 주간 사이클 4·5단계(cycle.ts:
+// 완료된 기획 업무의 후보 비교 → strategy_version 제안)를 만든다. 위험 판정은 여기서 정책으로 만들어 주입한다(evaluation 은 policy 를 모른다).
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
@@ -22,6 +24,7 @@ import { ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, st
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
+import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
 
@@ -86,6 +89,11 @@ export interface AssembleOptions {
    * 정의가 있으면 승인 소켓에 `measure`·`measurements` 명령이 생긴다.
    */
   measurementSignals?: readonly MeasurementSignal[];
+  /**
+   * 주간 사이클 4·5단계 (A6-U14). 주면 `Daemon.cycle` 이 생기고, main 루프가 worker tick 뒤에 `cycle.advance()` 를 부른다.
+   * 생략하면 null(이전 동작). 위험 판정은 현재 정책(이 조립의 정책 보관소)과 팩 템플릿으로 한다.
+   */
+  cycle?: ExperimentCycleOptions;
 }
 
 /**
@@ -122,6 +130,8 @@ export interface Daemon {
   packSync: PackSyncResult | null;
   /** 측정 값 입력을 받는 신호 정의 (팩 또는 `measurementSignals`, 없으면 빈 목록) */
   measurementSignals: readonly MeasurementSignal[];
+  /** 주간 사이클 4·5단계 (후보 비교 → strategy_version 제안). `cycle` 옵션이 없으면 null */
+  cycle: ExperimentCycle | null;
   /** 승인 소켓의 요청 하나를 처리한다: `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
@@ -154,6 +164,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const measurementSignals = pack?.signals ?? options.measurementSignals ?? [];
   const evaluation = options.evaluation === undefined ? undefined : {
     ...options.evaluation,
+    ...(options.evaluation.signals === undefined && measurementSignals.length > 0 ? { signals: measurementSignals } : {}),
     ...(options.evaluation.effect === undefined && measurementSignals.length > 0
       ? { effect: createMeasurementSignalSource({ db: options.db, signals: measurementSignals }) }
       : {}),
@@ -163,6 +174,10 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
     return engine.handle(request);
   };
+  const cycle = options.cycle === undefined ? null : createExperimentCycle({
+    db: options.db, clock: options.clock, options: options.cycle, signals: measurementSignals,
+    riskOf: createPolicyRiskJudge({ db: options.db, store, templates: pack?.templates ?? [] }),
+  });
   const worker = new TaskWorker({
     db: options.db,
     clock: options.clock,
@@ -188,6 +203,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     pack,
     packSync,
     measurementSignals,
+    cycle,
     handleChannelRequest,
     async prepareAgentRuntime() {
       const docker = options.agent?.docker;

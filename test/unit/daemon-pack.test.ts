@@ -14,7 +14,7 @@ import { addAgent, seededDb, START } from '../support/seeded-db.ts';
 import { makeTempDir } from '../support/temp.ts';
 
 const PACK_DIR = join(REPO_ROOT, 'packs', 'example-marketing');
-const VALUES = { org_unit: 'core', product: 'example-product', research_source_url: 'https://docs.example.com/market-news', research_host: 'docs.example.com' };
+const VALUES = { org_unit: 'core', product: 'example-product', research_source_url: 'https://docs.example.com/market-news', research_host: 'docs.example.com', baseline_week: '2026-W43' };
 const MONDAY = '2026-10-26T00:00:00.000Z'; // 09:00 Asia/Seoul
 const completes: TaskExecutor = { execute: async () => ({ result: { ok: true } }) };
 

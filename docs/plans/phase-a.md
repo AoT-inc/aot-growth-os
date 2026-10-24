@@ -120,6 +120,22 @@
 - **`require_approval` 호출:** 막힘 유지로 닫는다. 승인이 필요한 부작용 도구는 Phase A 실제 어댑터(읽기 전용)에 없다. 승인 후 재개 경로는 Phase A 후속에서 설계한다(A3·A5의 열린 항목은 이 결정으로 "의도적 유지"가 된다).
 - **LLM 검증기(Q22):** A6은 `LlmVerifier` 포트의 가짜 구현으로 통합 시나리오를 확인한다. 실제 모델 연결과 모델 등급·비용 비율은 Q22 후속이다.
 
+#### A6 단위 분해와 추가 결정 (2026-10-24)
+
+결정: ① 측정 값은 **대기 조건**으로 붙인다(`inputs[kind=measurement]`가 채워질 때까지 해당 업무는 실행하지 않음). ② 실험 판정 단위는 **1주, 관측 1**(합격선은 후보 비교기가 기준선 대비로 정함). ③ 실험(`strategy_version`) 승인은 **사람 1인 승인**(cooldown·TOTP 없음, 외부 부작용은 업무 승인에서 위험 변경 절차). 스키마 변경 없음, 기획·마케팅 업무는 generalist 가 맡고 실제 어댑터는 1~3단계에만 쓴다.
+
+| 단위 | 내용 | 선행 |
+|---|---|---|
+| U9 | 루틴 발화 시각 계산(cron 부분집합 + IANA tz, `catch_up`), 템플릿 포트 `RoutineTemplateSource`, 템플릿 하나에서 업무 여러 개 발화(템플릿 안 이름으로 의존) | 없음 |
+| U10 | 측정 신호 정의 형식(D2), 팩의 루틴·템플릿 선언, 팩 로더 | U9 |
+| U11 | 업무 간 결과 전달(`inputs[kind=task_result]` → `AdapterInput.upstream`, `external_untrusted`), 업무별 어댑터 선택 | U10 |
+| U12 | 조사 결과 `uncertainties[]`·`uncertainty_listed` 검사, 가짜 LLM 검증기 연결 | U10 |
+| U13 | 측정 값 입력(소켓 `measure` → `recordMeasurement`, 사람만), 대기 조건, `createMeasurementSignalSource` | U10 |
+| U14 | 후보 형식 검사, `compareCandidates`, `strategy_version` proposed 생성 | U11, U13 |
+| U15 | `strategy_version` 승인(사람 1인) → experiment 전이와 루틴 활성화(event 멱등) | U14, U9 |
+| U16 | 결과 검토 → `measurement`·`strategy_record` 기억, 다음 주 입력 반영, 승격·퇴역 | U15 |
+| U17 | 통합 시나리오(가짜/Docker)와 §3 8개 영역 재확인, A6 완료 기록 | 전부 |
+
 ## 3. 필수 테스트 매핑
 
 [overview §6 필수 테스트 표](../00-overview.md) 중 Phase A 항목. "주 패키지"는 테스트를 소유하는 곳이고, A6에서 통합 시나리오로 한 번 더 확인한다.

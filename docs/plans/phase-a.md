@@ -47,7 +47,7 @@
 - [x] A3 전이 훅: domain `TaskPolicyGate`(`beforeCreate`, `beforeRun`, 쓰기 트랜잭션 안 동기 호출). 연결 전 기본값은 거부(`DENY_ALL_TASK_POLICY_GATE`: 생성 거부, 실행 직전 `needs_review`)
 - [x] 스파이크 Q15: lease 90초, heartbeat 30초, 폴링 5초 ([q15](../spikes/q15-lease-parameters.md)). 복구 지연 목표 120초는 잠정값
 - [x] 시험: 단위(`test/unit/task-create`·`task-lease`·`task-effects`), 다중 프로세스(`test/integration/task-engine-multiprocess.test.ts`: 두 데몬 경쟁, SIGKILL 후 인수, 같은 id 재시작, 멱등 지원/미지원 부작용 복구, lease 잃은 데몬의 무전송). 가짜 시계를 IPC로 넘겨 결정적으로 돌리며 5회 반복 무실패
-- [ ] 루틴 발화 시각 계산(`routine.schedule`의 cron + tz 해석, `catch_up`): 형식이 문서에 없어 구현하지 않음. `fireRoutine`은 호출자가 `scheduledFor`를 넘긴다
+- [x] 루틴 발화 시각 계산(`routine.schedule`의 cron + tz 해석, `catch_up`): A6-U9 에서 구현했다 ([A6-U9 기록](#a6-u9-기록-2026-10-24)). `routine.schedule` 형식은 [ADR-0004 Amendment (2026-10-24)](../adr/0004-events-routines-idempotency.md)가 정한다. `fireRoutine`은 호출자가 `scheduledFor`를 넘기고, 시각 계산은 `schedule.ts`, tick 의 발화 단계는 `routine.ts`가 맡는다
 - [x] `time_limit` 초과 취소(`killed`)와 도구 호출 타임아웃 (A5 완료): 도구 호출 타임아웃은 게이트웨이(U2, `AbortSignal`로 진행 중 호출을 멈추고 늦은 결과를 버린다), `time_limit` 감시는 실행 관리(U4, `runAgentTask`: 주입 타이머가 지나면 어댑터를 abort → 컨테이너는 `docker kill`, run 은 `killed`, 업무는 `retry_wait`이며 시도 1회 소모). [A5 완료 기록](#a5-완료-기록-2026-10-23) 참고
 - [ ] `failed` 부작용 재전송("정책 허용 시"): 정책 훅이 정해지는 A3. 지금은 재전송하지 않는다
 - 해석: 인수 시 멱등 지원 도구의 `unknown`은 `needs_review`가 아니라 `queued`로 돌려 같은 키로 재전송한다(recovery §3 표가 정본이라는 state-machines 업무 규칙에 따름). 멱등 미지원 도구는 조회로 전달이 확인되지 않으면 `unknown`으로 둔다
@@ -135,6 +135,14 @@
 | U15 | `strategy_version` 승인(사람 1인) → experiment 전이와 루틴 활성화(event 멱등) | U14, U9 |
 | U16 | 결과 검토 → `measurement`·`strategy_record` 기억, 다음 주 입력 반영, 승격·퇴역 | U15 |
 | U17 | 통합 시나리오(가짜/Docker)와 §3 8개 영역 재확인, A6 완료 기록 | 전부 |
+
+
+#### A6-U9 기록 (2026-10-24)
+
+- 구현: `packages/task-engine/src/schedule.ts`(순수 함수: `parseSchedule`, `nextSlot`, `slotsBetween`, `latestSlot`, `planFirings`, `missedSlots`), `routine.ts`(포트 `RoutineTemplateSource`, `RoutineFirer`), `create.ts`의 `fireRoutineTasks`(템플릿 하나로 업무 여러 개를 한 트랜잭션에 발화), `TaskWorker` 옵션 `routines`(포트가 주입된 경우에만 tick 이 도래한 슬롯을 발화, 보고는 `TickReport.routines`).
+- 일정 형식, 시간대 경계(건너뛴 시각은 건너뛴 길이만큼 뒤로, 겹친 시각은 앞선 쪽 한 번), `catch_up`, 기준점, 허용 지연의 정의는 ADR-0004 Amendment.
+- 시험: 단위 `task-schedule`(표 시험·잘못된 일정 거부·catch_up), `task-routine`(워커 통합: 업무 여러 개와 이름 의존, 거부, 재시도), 다중 프로세스 `task-engine-routine-multiprocess`(두 데몬이 같은 슬롯을 동시에 tick → 발화 1건·템플릿 1벌, 3주 정지 후 `run_once`/`skip`).
+- 열린 항목: 한 번도 발화하지 않은 루틴의 기준 시각은 `routine` 행에 켠 시각이 없어 `activatedAt` 주입이 없으면 "프로세스가 처음 본 시각"이다. 루틴 활성화(U15)가 활성화 event 의 시각을 `activatedAt` 으로 넘긴다. 템플릿 포트의 실제 구현(팩 로더)은 U10.
 
 ## 3. 필수 테스트 매핑
 

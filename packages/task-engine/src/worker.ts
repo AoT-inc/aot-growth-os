@@ -1,4 +1,5 @@
-// 폴링 워커: 한 번의 tick 에서 (1) 만료 lease 인수 (2) 재시도 대기 해제 (3) 검증 대기(validating) 업무 검증·전이 (4) 업무 하나 선택·lease 획득 (5) 실행.
+// 폴링 워커: 한 번의 tick 에서 (1) 만료 lease 인수 (2) 재시도 대기 해제 (3) 검증 대기(validating) 업무 검증·전이 (3b) 도래한 루틴 슬롯 발화 (4) 업무 하나 선택·lease 획득 (5) 실행.
+// (3b)는 RoutineTemplateSource 포트가 연결되었을 때만 한다 (A6-U9, routine.ts).
 // (3)은 TaskValidator 포트가 연결되었을 때만 한다 (A4, evaluation 이 구현). 연결 전에는 validating 업무가 그대로 남는다.
 // 실행 자체는 TaskExecutor 포트에 맡긴다 (A5 의 agent-runtime 이 구현한다. 의존 방향상 agent-runtime 이 이 패키지를 참조).
 // 실행기가 RunKilledError(시간 제한·예산 초과)를 던지면 run 을 killed 로 닫는다(killRun). 그 밖의 오류는 error, RunTimeoutError 는 timeout.
@@ -15,6 +16,7 @@ import {
   claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun, takeOverExpiredRun,
   type EffectLookups, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
 } from './lease.ts';
+import { RoutineFirer, type RoutineScheduleOptions, type RoutineTickReport } from './routine.ts';
 import { checkLeaseParams, DEFAULT_LEASE_PARAMS, type LeaseParams } from './params.ts';
 import { nextValidatingTask, validateTask, type ValidationEnd } from './validation.ts';
 
@@ -76,6 +78,8 @@ export interface WorkerOptions {
   lease?: Partial<LeaseParams>;
   /** retry_wait 의 대기 시간. 기본 60초 */
   retryDelayMs?: number;
+  /** 루틴 슬롯 발화 (A6-U9). 생략하면 tick 은 루틴을 보지 않는다. 있으면 포트로 템플릿을 해석해 도래한 슬롯을 발화한다 */
+  routines?: RoutineScheduleOptions;
   /** lease 만료 인수가 시도 횟수를 소모하는가. 기본 false */
   leaseExpiryConsumesAttempt?: boolean;
   timers?: Timers;
@@ -97,6 +101,8 @@ export interface TickReport {
   validated: ValidationEnd[];
   /** 검증 중 오류가 난 업무 (상태는 그대로 validating, 다음 tick 에 다시 시도) */
   validationFailed: { taskId: string; error: string }[];
+  /** 이번 tick 에 발화한 루틴 슬롯과 발화하지 못한 것 (루틴 옵션이 없으면 둘 다 빈 목록) */
+  routines: RoutineTickReport;
   executed: ExecutionReport | null;
 }
 
@@ -110,12 +116,14 @@ export class TaskWorker {
   readonly #params: LeaseParams;
   readonly #gate: TaskPolicyGate;
   readonly #timers: Timers;
+  readonly #routineFirer: RoutineFirer | null;
 
   constructor(options: WorkerOptions) {
     this.#options = options;
     this.#params = checkLeaseParams({ ...DEFAULT_LEASE_PARAMS, ...options.lease });
     this.#gate = options.gate ?? DENY_ALL_TASK_POLICY_GATE;
     this.#timers = options.timers ?? realTimers;
+    this.#routineFirer = options.routines ? new RoutineFirer(options.routines) : null;
   }
 
   get workerId(): string {
@@ -178,15 +186,23 @@ export class TaskWorker {
     return { validated, validationFailed };
   }
 
+  /** 도래한 루틴 슬롯을 발화한다 (루틴 옵션이 있는 경우). 슬롯 하나의 실패는 보고에 담고 나머지를 계속한다. */
+  async fireDueRoutines(): Promise<RoutineTickReport> {
+    if (!this.#routineFirer) return { fired: [], failed: [] };
+    return this.#routineFirer.fireDue(this.#options.db, { clock: this.#options.clock, gate: this.#gate });
+  }
+
   async tick(): Promise<TickReport> {
     const { db, clock, workerId, actorId, adapter } = this.#options;
     const recovered = await this.recoverExpired();
     const promoted = promoteDueRetries(db, clock);
     const { validated, validationFailed } = await this.validatePending();
+    // 도래한 루틴 슬롯을 먼저 발화해 같은 tick 에서 새 업무를 집을 수 있게 한다
+    const routines = await this.fireDueRoutines();
     const claim = claimNextTask(db, { clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs });
-    if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, executed: null };
+    if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed: null };
     const executed = await this.#execute(claim.claimed.lease, claim.claimed.spec, claim.claimed.checkpoint);
-    return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, executed };
+    return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed };
   }
 
   async #execute(lease: Lease, spec: TaskSpec, checkpoint: unknown): Promise<ExecutionReport> {

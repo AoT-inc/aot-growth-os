@@ -4,12 +4,14 @@
 // 부모 → 자식: {cmd:'tick', now} | {cmd:'drain', now} | {cmd:'continue'} | {cmd:'exit'}
 // 자식 → 부모: {type:'ready'} | {type:'tick', report} | {type:'drained', executed} | {type:'blocked', taskId, attempt}
 //              | {type:'delivered', taskId} | {type:'error', message}
+// routineTemplate 가 켜져 있으면 tick 이 도래한 루틴 슬롯을 발화한다 (tick 보고의 routines).
 import { appendFileSync } from 'node:fs';
 
 import { FakeClock, openDb } from '@aot/domain';
 import { TaskWorker, type EffectTool, type TaskExecutor } from '@aot/task-engine';
 
 import { ALLOW_ALL_GATE, asEffectTool, manualTimers } from '../../support/engine.ts';
+import { fakeTemplateSource, threeStepTemplate } from '../../support/routine-template.ts';
 import { createIdempotentFakeTool, createNonIdempotentFakeTool } from '../../support/fake-tool.ts';
 
 interface EngineWorkerConfig {
@@ -22,6 +24,8 @@ interface EngineWorkerConfig {
   blockAfterDelivery?: boolean;
   /** effect: 부작용 전에 멈춘다 (그 사이 lease 를 잃게 한다) */
   blockBeforeEffect?: boolean;
+  /** true 면 루틴 발화를 켠다: `weekly-research@1` 템플릿 = 의존이 있는 업무 3개 (가짜 RoutineTemplateSource) */
+  routineTemplate?: boolean;
   leaseMs: number;
   heartbeatMs: number;
 }
@@ -71,6 +75,7 @@ const executor: TaskExecutor = {
 const worker = new TaskWorker({
   db, clock, workerId: workerId!, actorId: 'actor-agent-1', adapter: 'fake-adapter', executor, gate: ALLOW_ALL_GATE, tools,
   timers: manualTimers(), lease: { leaseMs: config.leaseMs, heartbeatMs: config.heartbeatMs },
+  ...(config.routineTemplate ? { routines: { source: fakeTemplateSource({ 'weekly-research@1': threeStepTemplate }) } } : {}),
 });
 
 process.on('message', (raw) => {

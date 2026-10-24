@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   checkTaskSpecReferences, currentPolicyVersionId, validateTaskSpec,
-  type Clock, type Db, type TaskPolicyGate, type TaskSpec, type TaskSpecDraft, type TaskStatus, type TriggerKind,
+  type Clock, type Db, type Issue, type TaskPolicyGate, type TaskSpec, type TaskSpecDraft, type TaskStatus, type TriggerKind,
 } from '@aot/domain';
 
 import { canonicalJson, sha256 } from './canonical.ts';
@@ -260,27 +260,121 @@ export interface FireRoutineResult {
   taskId: string | null;
 }
 
+/** 루틴을 발화할 수 있는 상태인가를 확인하고 slug 를 돌려준다 (없음·비활성은 생성 거부) */
+function requireEnabledRoutine(tx: Db, routineId: string): string {
+  const routine = tx.get<{ slug: string; enabled: number }>('SELECT slug, enabled FROM routine WHERE id = ?', [routineId]);
+  if (!routine) throw new TaskCreationError([{ path: 'routine', code: 'not_found', message: `routine '${routineId}' does not exist` }]);
+  if (Number(routine.enabled) !== 1) {
+    throw new TaskCreationError([{ path: 'routine', code: 'disabled', message: `routine '${routine.slug}' is disabled` }]);
+  }
+  return routine.slug;
+}
+
+const firingExists = (tx: Db, firing: RoutineFiring): boolean =>
+  tx.get('SELECT 1 AS one FROM routine_firing WHERE routine_id = ? AND scheduled_for = ?', [firing.routineId, firing.scheduledFor]) !== undefined;
+
+const recordFiring = (tx: Db, context: CreateContext, firing: RoutineFiring): void => {
+  tx.run('INSERT INTO routine_firing (routine_id, scheduled_for, fired_at) VALUES (?, ?, ?)', [firing.routineId, firing.scheduledFor, context.clock.nowIso()]);
+};
+
 /**
  * 루틴 발화 1건을 기록하고 업무를 만든다 (한 트랜잭션). trigger 는 `{kind: 'routine', ref: '<slug>@<scheduledFor>'}`.
- * 언제 발화할지(cron 계산, catch_up) 는 여기서 정하지 않는다 — 호출하는 쪽이 `scheduledFor` 를 넘긴다.
+ * 언제 발화할지(cron 계산, catch_up) 는 여기서 정하지 않는다 — 호출하는 쪽이 `scheduledFor` 를 넘긴다 (schedule.ts, routine.ts).
  */
 export function fireRoutine(db: Db, context: CreateContext, firing: RoutineFiring, spec: Record<string, unknown>): FireRoutineResult {
   return withRefusalRecord(db, () => db.writeTx((tx) => {
-    const routine = tx.get<{ slug: string; enabled: number }>('SELECT slug, enabled FROM routine WHERE id = ?', [firing.routineId]);
-    if (!routine) throw new TaskCreationError([{ path: 'routine', code: 'not_found', message: `routine '${firing.routineId}' does not exist` }]);
-    if (Number(routine.enabled) !== 1) {
-      throw new TaskCreationError([{ path: 'routine', code: 'disabled', message: `routine '${routine.slug}' is disabled` }]);
-    }
-    const ref = `${routine.slug}@${firing.scheduledFor}`;
-    if (tx.get('SELECT 1 AS one FROM routine_firing WHERE routine_id = ? AND scheduled_for = ?', [firing.routineId, firing.scheduledFor])) {
-      return { created: false, taskId: taskByTrigger(tx, 'routine', ref) };
-    }
-    tx.run('INSERT INTO routine_firing (routine_id, scheduled_for, fired_at) VALUES (?, ?, ?)', [
-      firing.routineId, firing.scheduledFor, context.clock.nowIso(),
-    ]);
+    const slug = requireEnabledRoutine(tx, firing.routineId);
+    const ref = `${slug}@${firing.scheduledFor}`;
+    if (firingExists(tx, firing)) return { created: false, taskId: taskByTrigger(tx, 'routine', ref) };
+    recordFiring(tx, context, firing);
     const task = createTaskInTx(tx, context, { spec: { ...spec, trigger: { kind: 'routine', ref } } });
     return { created: true, taskId: task.taskId };
   }));
+}
+
+/** 루틴 템플릿이 해석된 업무 하나. `dependsOn` 은 같은 템플릿 안의 다른 업무 `name` (생성된 업무 id 로 바뀌어 저장된다) */
+export interface RoutineTemplateTask {
+  /** 템플릿 안에서 유일한 이름 */
+  name: string;
+  /** 업무 명세 초안. `trigger` 는 엔진이 덮어쓰고, `dependencies`(기존 업무 id)가 있으면 `dependsOn` 으로 생긴 id 가 덧붙는다 */
+  spec: Record<string, unknown>;
+  dependsOn?: readonly string[];
+}
+
+export interface FireRoutineTasksResult {
+  /** false 면 이 슬롯은 이미 발화되어 아무것도 만들지 않았다 */
+  created: boolean;
+  /** 이 슬롯으로 만든 업무 id (만든 순서 = 선행 업무가 먼저). 이미 발화된 슬롯이면 그때 만든 업무 전부 */
+  taskIds: string[];
+}
+
+/**
+ * 템플릿 하나가 업무 여러 개를 발화한다. 한 트랜잭션에서 `routine_firing` 1건과 모든 업무를 만들고, 하나라도 거부되면 전부 되돌린다
+ * (발화 기록도 남지 않으므로 다음 tick 이 다시 시도할 수 있다). 업무마다 `dedupe_key` 에 이름을 넣어 같은 입력의 형제 업무가 하나로 합쳐지지 않게 한다.
+ * 모든 업무의 trigger 는 `{kind: 'routine', ref: '<slug>@<scheduledFor>'}` 로 같다.
+ */
+export function fireRoutineTasks(db: Db, context: CreateContext, firing: RoutineFiring, tasks: readonly RoutineTemplateTask[]): FireRoutineTasksResult {
+  return withRefusalRecord(db, () => db.writeTx((tx) => {
+    const slug = requireEnabledRoutine(tx, firing.routineId);
+    const ref = `${slug}@${firing.scheduledFor}`;
+    if (firingExists(tx, firing)) return { created: false, taskIds: taskIdsByTrigger(tx, 'routine', ref) };
+    const ordered = orderTemplateTasks(tasks);
+    recordFiring(tx, context, firing);
+    const trigger = { kind: 'routine', ref };
+    const idByName = new Map<string, string>();
+    for (const task of ordered) {
+      const own = task.spec['dependencies'];
+      const dependencies = own === undefined || Array.isArray(own)
+        ? [...(own ?? []), ...(task.dependsOn ?? []).map((name) => idByName.get(name)!)]
+        : own;
+      const created = createTaskInTx(tx, context, {
+        spec: { ...task.spec, trigger, dependencies },
+        dedupeKey: sha256(canonicalJson({ trigger, inputs: task.spec['inputs'] ?? null, template_task: task.name })),
+      });
+      idByName.set(task.name, created.taskId);
+    }
+    return { created: true, taskIds: ordered.map((task) => idByName.get(task.name)!) };
+  }));
+}
+
+/** 이름 중복·알 수 없는 선행·자기 의존·순환을 거부하고, 선행 업무가 먼저 오는 순서(입력 순서 유지)로 돌려준다 */
+function orderTemplateTasks(tasks: readonly RoutineTemplateTask[]): RoutineTemplateTask[] {
+  const issues: Issue[] = [];
+  if (tasks.length === 0) issues.push({ path: 'template.tasks', code: 'empty', message: 'a routine template must resolve to at least one task' });
+  const byName = new Map<string, RoutineTemplateTask>();
+  tasks.forEach((task, i) => {
+    if (typeof task.name !== 'string' || task.name === '') {
+      issues.push({ path: `template.tasks[${i}].name`, code: 'required', message: 'template task name must be a non-empty string' });
+    } else if (byName.has(task.name)) {
+      issues.push({ path: `template.tasks[${i}].name`, code: 'duplicate', message: `template task name '${task.name}' is used more than once` });
+    } else {
+      byName.set(task.name, task);
+    }
+  });
+  tasks.forEach((task, i) => {
+    for (const dependency of task.dependsOn ?? []) {
+      if (dependency === task.name) issues.push({ path: `template.tasks[${i}].dependsOn`, code: 'cycle', message: `template task '${task.name}' depends on itself` });
+      else if (!byName.has(dependency)) issues.push({ path: `template.tasks[${i}].dependsOn`, code: 'not_found', message: `template task '${task.name}' depends on unknown template task '${dependency}'` });
+    }
+  });
+  if (issues.length > 0) throw new TaskCreationError(issues);
+
+  const ordered: RoutineTemplateTask[] = [];
+  const placed = new Set<string>();
+  while (ordered.length < tasks.length) {
+    const next = tasks.find((task) => !placed.has(task.name) && (task.dependsOn ?? []).every((name) => placed.has(name)));
+    if (!next) {
+      const stuck = tasks.filter((task) => !placed.has(task.name)).map((task) => task.name);
+      throw new TaskCreationError([{ path: 'template.tasks', code: 'cycle', message: `template dependency cycle among: ${stuck.join(', ')}` }]);
+    }
+    placed.add(next.name);
+    ordered.push(next);
+  }
+  return ordered;
+}
+
+function taskIdsByTrigger(tx: Db, kind: TriggerKind, ref: string): string[] {
+  return tx.all<{ id: string }>('SELECT id FROM task WHERE trigger_kind = ? AND trigger_ref = ? ORDER BY created_at, rowid', [kind, ref]).map((row) => row.id);
 }
 
 function taskByTrigger(tx: Db, kind: TriggerKind, ref: string): string | null {

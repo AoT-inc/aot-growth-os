@@ -3,10 +3,19 @@
 // 의존: @aot/domain 만. 정책 훅은 domain 의 TaskPolicyGate 포트, 검증은 domain 의 TaskValidator 포트(evaluation 이 구현), 실행은 이 패키지의 TaskExecutor 포트(A5 가 구현).
 export { canonicalJson } from './canonical.ts';
 export {
-  createTask, createTaskInTx, eventIdempotencyKey, findDependencyCycle, fireRoutine, recordEvent,
-  type CreateContext, type CreateTaskInput, type CreateTaskResult, type FireRoutineResult, type IncomingEvent,
-  type RecordEventResult, type RoutineFiring,
+  createTask, createTaskInTx, eventIdempotencyKey, findDependencyCycle, fireRoutine, fireRoutineTasks, recordEvent,
+  type CreateContext, type CreateTaskInput, type CreateTaskResult, type FireRoutineResult, type FireRoutineTasksResult, type IncomingEvent,
+  type RecordEventResult, type RoutineFiring, type RoutineTemplateTask,
 } from './create.ts';
+export {
+  DEFAULT_LATE_TOLERANCE_MS, RoutineFirer,
+  type RoutineFailure, type RoutineFired, type RoutineRef, type RoutineScheduleOptions, type RoutineTemplateRequest, type RoutineTemplateSource,
+  type RoutineTickReport,
+} from './routine.ts';
+export {
+  DEFAULT_SLOT_LIMIT, latestSlot, missedSlots, nextSlot, parseSchedule, planFirings, ScheduleError, slotsBetween,
+  type CatchUpPolicy, type CronSchedule, type FirePlanInput,
+} from './schedule.ts';
 export {
   beginDispatch, confirmByLookup, effectKeyOf, performEffect, planEffect, recordDispatchResult,
   type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,

@@ -38,3 +38,6 @@
 - 사업 성과(`effect`)의 측정 신호 1개는 정의 형식을 따른다: `id`, `description`, `page_ref`(별칭 키만, 실제 주소·제품명은 `instance/`), `action`, `period`(`iso_week`), `tz`(IANA), `min_observations`(정수 ≥ 1), `attachment_required`(`true` 고정), 선택 `pass_threshold`(단위 없음). 형식 검증은 `@aot/domain`의 `validateMeasurementSignal`이 하고, 정의는 도메인 팩이 선언한다([ADR-0012](0012-extension-unit-contract.md)).
 - Phase A 의 "원본 증거"는 사람이 입력한 값과, 값마다 첨부한 `evidence`(화면·내보내기 파일)다. 근거 없는 값(`attachment_required`를 끈 정의)은 형식 검증이 거부한다. 에이전트 보고서는 여전히 원본 증거가 아니다. 읽기 전용 분석 API 연결과 `min_observations` 판정 규칙의 사용은 후속(U13 이후)이다.
 
+## Amendment (2026-10-24): 사람이 입력한 측정 값의 조회 (A6-U13)
+- 평가기는 사람이 입력한 측정 값을 `EffectSignalSource` 포트로만 읽는다(`createMeasurementSignalSource`, 읽기 전용). 값은 사람 채널(승인 소켓의 `measure`, `actor.kind='human'`만)로 들어온 `event`(`measurement:<신호 id>@<ISO 주>`)이고, 원본 증거로 인정되는 조건은 데이터 품질 판정에 넣었다: 사람이 품질을 `good`으로 밝혔고, 첨부(파일 sha256)가 하나 이상이며 그 전부가 업무의 `internal` 근거 행으로 남아 있을 것. 어느 하나라도 아니면 `poor_quality`, 사람이 밝힌 관측 수가 `min_observations`보다 적으면 `insufficient`이고, 둘 다 기존 규칙대로 `inconclusive`다. 포트의 `EffectSignal`에 선택 필드 `observations`(값 1개가 모은 관측 수; 생략하면 `values.length`)와 `qualityNote`(기록용)를 더했다. 판정 순서·규칙은 바뀌지 않았다.
+

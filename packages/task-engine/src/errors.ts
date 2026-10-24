@@ -64,3 +64,14 @@ export class RunKilledError extends Error {
     this.detail = detail;
   }
 }
+
+/** 측정 값 입력 거부 (A6-U13, measurement.ts). `code` 는 사유 코드, 메시지는 사람이 읽는 설명이다 */
+export class MeasurementRefusedError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(`measurement refused (${code}): ${message}`);
+    this.name = 'MeasurementRefusedError';
+    this.code = code;
+  }
+}

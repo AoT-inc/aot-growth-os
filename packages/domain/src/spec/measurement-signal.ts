@@ -4,6 +4,7 @@
 import {
   IssueCollector, isNonBlankString, isPlainObject, rejectUnknownKeys, type ValidationResult,
 } from '../validation.ts';
+import { parseIsoWeekKey } from './iso-week.ts';
 
 /** 집계 주기. 지금은 ISO 8601 주(월~일, `tz` 기준)만 있다 */
 export const MEASUREMENT_PERIODS = ['iso_week'] as const;
@@ -90,3 +91,30 @@ export function validateMeasurementSignal(input: unknown): ValidationResult<Meas
   }
   return out.result(input as unknown as MeasurementSignal);
 }
+
+// ===== 측정 값 참조 (A6-U13) =====
+
+/**
+ * 측정 값을 기다리는 `inputs[]` 종류. `ref` = `measurement:<신호 id>@<ISO 주 키>` (예: `measurement:weekly-landing-conversions@2026-W43`).
+ * 같은 문자열이 사람이 입력한 측정 이벤트의 `event.idempotency_key` 이다(같은 신호·같은 주는 이벤트 1건). 주는 명세에 *명시*한다:
+ * 상대 지정("지난주")은 시간이 지나면 가리키는 주가 바뀌므로 저장된 명세에 두지 않는다.
+ */
+export const MEASUREMENT_INPUT_KIND = 'measurement';
+export const MEASUREMENT_REF_PREFIX = 'measurement:';
+/** 한 업무가 기다릴 수 있는 측정 입력의 수. MVP 의 사업 성과는 측정 신호 1개다(evaluation.md §5) */
+export const MAX_MEASUREMENT_INPUTS = 1;
+export const MAX_MEASUREMENT_SIGNAL_ID_CHARS = 100;
+
+const MEASUREMENT_REF = /^measurement:([a-z0-9][a-z0-9-]*)@(\d{4}-W\d{2})$/;
+
+/** `measurement:<신호 id>@<주>` 를 읽는다. 형식이 틀리거나 그 해에 없는 주면 null */
+export function parseMeasurementRef(ref: string): { signalId: string; week: string } | null {
+  const match = MEASUREMENT_REF.exec(ref);
+  if (!match || match[1]!.length > MAX_MEASUREMENT_SIGNAL_ID_CHARS || parseIsoWeekKey(match[2]!) === null) return null;
+  return { signalId: match[1]!, week: match[2]! };
+}
+
+export const measurementRef = (signalId: string, week: string): string => `${MEASUREMENT_REF_PREFIX}${signalId}@${week}`;
+
+/** 신호 id 형식 (정의의 `id` 와 같은 규칙) */
+export const isMeasurementSignalId = (value: string): boolean => ID.test(value) && value.length <= MAX_MEASUREMENT_SIGNAL_ID_CHARS;

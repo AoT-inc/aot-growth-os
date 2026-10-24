@@ -12,6 +12,7 @@ import {
   IssueCollector, isNonBlankString, isPlainObject, joinPath, rejectUnknownKeys,
   type PlainObject, type ValidationResult,
 } from '../validation.ts';
+import { MAX_MEASUREMENT_INPUTS, MEASUREMENT_INPUT_KIND, MEASUREMENT_REF_PREFIX, parseMeasurementRef } from './measurement-signal.ts';
 import { parseTimeLimit } from './time-limit.ts';
 
 export interface TaskTrigger { kind: TriggerKind; ref: string }
@@ -195,6 +196,26 @@ function checkInputs(value: unknown, out: IssueCollector): void {
     requiredText(item, 'kind', path, out);
   });
   checkTaskResultInputs(value, out);
+  checkMeasurementInputs(value, out);
+}
+
+/**
+ * `measurement` 입력의 형식 (A6-U13): `measurement:<신호 id>@<YYYY-Www>`(그 해에 있는 주), 업무당 최대 1개.
+ * 신호가 정의되어 있는지는 여기서 보지 않는다(정의는 팩에 있고 domain 은 팩을 모른다). 정의되지 않은 신호의 값은 입력 경로가 받지 않으므로 그 업무는 계속 기다린다
+ * (대기 목록 `listMeasurementWaits` 에 사유와 함께 보인다).
+ */
+function checkMeasurementInputs(inputs: unknown[], out: IssueCollector): void {
+  let count = 0;
+  inputs.forEach((item: unknown, index) => {
+    if (!isPlainObject(item) || item['kind'] !== MEASUREMENT_INPUT_KIND) return;
+    const path = joinPath('inputs', index);
+    count += 1;
+    if (count === MAX_MEASUREMENT_INPUTS + 1) out.add(path, 'too_many', `at most ${MAX_MEASUREMENT_INPUTS} '${MEASUREMENT_INPUT_KIND}' input per task`);
+    const ref = item['ref'];
+    if (isNonBlankString(ref) && parseMeasurementRef(ref) === null) {
+      out.add(joinPath(path, 'ref'), 'format', `a '${MEASUREMENT_INPUT_KIND}' input ref must be '${MEASUREMENT_REF_PREFIX}<signal id>@<YYYY-Www>' naming an existing ISO week (relative weeks are not stored)`);
+    }
+  });
 }
 
 /** `task_result` 입력의 형식: `task:<id>` 참조, 이름·참조 중복 없음, 개수 상한. 선행 업무가 `dependencies` 에 있는지는 업무 id 가 생기는 생성 단계가 본다 */

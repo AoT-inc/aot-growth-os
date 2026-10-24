@@ -12,6 +12,7 @@ import type { Clock, Db, EvidenceRow, ExternalEffectRow, TaskPolicyGate, TaskRow
 import { LeaseLostError } from './errors.ts';
 import { isoAfter } from './params.ts';
 import { transitionEffect, transitionTask } from './transitions.ts';
+import { attachRecordedMeasurements, measurementInputsOf, MEASUREMENTS_RECORDED_SQL } from './measurement.ts';
 import { hasTaskResultInputs, resolveUpstream, type UpstreamResult } from './upstream.ts';
 
 /** 워커가 쥔 실행 소유권. `runId` 가 펜싱 토큰이다. */
@@ -109,6 +110,8 @@ const CANDIDATES_PER_CLAIM = 20;
  * queued → needs_review 로 보내고 다음 후보를 본다.
  * A6-U11: 명세의 `task_result` 입력이 충족되지 않았거나(통과 평가가 있는 완료 업무의 결과만 인정, upstream.ts) 어댑터를 고를 수 없는 업무도
  * 같은 방식으로 `needs_review` 로 보낸다(run 을 만들지 않고 시도도 소모하지 않는다).
+ * A6-U13: 명세의 `measurement` 입력이 아직 기록되지 않은 업무는 후보에서 빠진다(대기 조건: 전이 없음, 시도 소모 없음, SQL 조건이라 다른 업무의 선택을 막지 않음).
+ * 기록된 뒤 집히는 업무에 아직 측정 근거가 없으면(측정 뒤에 만들어진 업무) 같은 트랜잭션에서 붙인다.
  */
 export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
   return db.writeTx((tx) => {
@@ -119,6 +122,7 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
        WHERE t.status = 'queued' AND t.role_id IS NOT NULL ${options.taskId === undefined ? '' : 'AND t.id = ?'}
          AND NOT EXISTS (SELECT 1 FROM task_dependency d JOIN task p ON p.id = d.depends_on
                          WHERE d.task_id = t.id AND p.status <> 'completed')
+         AND ${MEASUREMENTS_RECORDED_SQL}
        ORDER BY t.created_at, t.rowid LIMIT ${CANDIDATES_PER_CLAIM}`,
       options.taskId === undefined ? [] : [options.taskId],
     );
@@ -164,6 +168,7 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
         sentToReview.push(task.id);
         continue;
       }
+      if (measurementInputsOf(spec).length > 0) attachRecordedMeasurements(tx, task.id, spec, now);
       const runId = options.newRunId?.() ?? `run-${randomUUID()}`;
       transitionTask(tx, {
         taskId: task.id, from: 'queued', to: 'running', by: 'scheduler', now,

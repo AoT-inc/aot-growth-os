@@ -15,6 +15,7 @@ export {
   assertEvaluationInvariants, decide, EVALUATOR_ID, EVALUATOR_REF, EVALUATOR_VERSION, EvaluationError, evaluateRun, findEvaluation, isSuccessCase,
   type Decision, type DecisionFacts, type EffectAssessment, type EvaluateRunRequest, type EvaluationReport, type EvaluatorDeps, type LlmState,
 } from './evaluator.ts';
+export { createMeasurementSignalSource, MEASUREMENT_SOURCE_EVENT, type MeasurementSignalSourceOptions } from './measurement-source.ts';
 export { buildIsolatedInput, ISOLATED_INPUT_KEYS, IsolationError, MAX_CLAIMS, MAX_STATEMENT_CHARS, type IsolatedInputParts } from './isolation.ts';
 export type {
   ClaimStatement, EffectObservation, EffectSignal, EffectSignalSource, FetchResult, IsolatedVerificationInput, LlmVerdict, LlmVerifier,

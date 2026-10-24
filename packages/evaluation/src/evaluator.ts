@@ -8,7 +8,7 @@
 //        · 확인되지 않은 검사(unknown) · 원본 증거 없음(보고서만) · LLM 판단 불가 · 관측 수 부족 · 데이터 품질 불량 · 측정 불가
 //   4. LLM 이 뒷받침 안 됨, 효과가 합격선 미달   → fail
 //   5. 그 밖                                   → pass
-// 원본 증거 = 확인된(verified) evidence 행, 비용 원장, 외부에서 주입된 측정 값. 에이전트 보고서(task_run.result)는 참고이며
+// 원본 증거 = 확인된(verified) evidence 행, 비용 원장, 외부에서 주입된 측정 값(사람이 입력한 값은 measurement-source.ts). 에이전트 보고서(task_run.result)는 참고이며
 // 보고서를 읽었으면 agent_report_used = 1 이다. 원본 증거가 하나도 없으면 pass 가 나올 수 없다.
 //
 // 같은 (업무, run, 평가기)를 다시 검증하면 처음 기록된 행을 돌려준다 (UNIQUE 로 흡수). 평가기 로직을 바꾸면 EVALUATOR_VERSION 을 올려
@@ -136,9 +136,9 @@ function assessEffect(observation: EffectObservation | null): EffectAssessment {
   if (observation === null) return { state: 'not_measured' };
   if (!observation.measurable) return { state: 'unmeasurable', reason: `not measurable: ${observation.reason}` };
   const { signal } = observation;
-  const n = signal.values.length;
-  if (n < signal.minObservations) return { state: 'insufficient', reason: `${n} observation(s), fewer than the required ${signal.minObservations}` };
-  if (!signal.dataQualityOk) return { state: 'poor_quality', reason: 'data quality condition not met' };
+  const n = signal.observations ?? signal.values.length;
+  if (n < signal.minObservations || (signal.observations !== undefined && signal.values.length === 0)) return { state: 'insufficient', reason: `${n} observation(s), fewer than the required ${signal.minObservations}` };
+  if (!signal.dataQualityOk) return { state: 'poor_quality', reason: `data quality condition not met${signal.qualityNote === undefined ? '' : ` (${signal.qualityNote})`}` };
   const m = round(mean(signal.values));
   if (signal.passAtLeast === undefined) return { state: 'recorded_only', mean: m, observations: n };
   return { state: m >= signal.passAtLeast ? 'met' : 'below_target', mean: m, observations: n };

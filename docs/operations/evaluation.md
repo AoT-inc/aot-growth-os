@@ -64,6 +64,16 @@ ADR-0007의 구체화. 검증(validation)과 평가(evaluation)를 분리하고,
 
 `quality`, `effect`, `economics`, `safety` (ADR-0007). `safety='fail'`이면 다른 점수와 무관하게 `outcome='fail'`. 사업 성과(`effect`)는 MVP에서 측정 신호 1개로 한정한다.
 
+### 5.1 사람이 입력한 측정 값 (A6-U13, a0-decisions D2)
+
+Phase A의 사업 성과 신호는 랜딩 페이지 1개의 주간 목표 행동 전환 수이고 사람이 값을 넣는다.
+
+- **입력.** 사람용 CLI `approve.ts measure <신호 id> <값> --observations N --quality good|poor --attach <파일> [--week YYYY-Www] [--minutes M]` → 승인 소켓의 `measure` 명령 → task-engine `recordMeasurement`. 인증 경계는 승인 CLI와 같다(소켓 파일 권한 + `actor.kind='human'`). 값 입력은 외부 부작용이 아니므로 TOTP 재인증은 요구하지 않는다. 첨부 파일은 CLI가 읽어 sha256과 로컬 참조(`file:<절대 경로>`)만 보내며 내용은 DB에 들어가지 않는다. 신호 정의가 첨부를 요구하면(Phase A는 항상) 첨부 없는 값은 거부한다.
+- **기록.** 한 쓰기 트랜잭션에서 `event`(멱등 키 `measurement:<신호 id>@<ISO 주>`, payload: 값·관측 수·데이터 품질·측정 구간·첨부 해시·입력한 사람), 그 측정을 기다리는 업무마다 `evidence`(`measurement` 1줄 + 첨부마다 `document` 1줄, 모두 `trust_origin='internal'`), 분을 주면 `human_time` 비용 1줄. 같은 신호·주의 같은 값은 몇 번 와도 1건이고, 다른 값은 덮어쓰지 않고 거부한다(정정 절차는 열린 항목).
+- **주.** ISO 8601 주(월요일 시작)를 신호의 `tz` 벽시계로 센다. `--week`를 생략하면 데몬 시계 기준 *지난주*이고, 아직 끝나지 않은 주의 값은 받지 않는다.
+- **대기.** `inputs[kind=measurement]`가 있는 업무는 값이 기록될 때까지 실행되지 않는다([task-spec](../schema/task-spec.md) "측정 값 입력").
+- **평가.** 신호 조회기가 값 1개(1주 = 관측 단위 1), 사람이 밝힌 관측 수, 정의의 `min_observations`·`pass_threshold`로 효과를 만든다. 사람이 품질을 `poor`로 밝혔거나 첨부 근거가 업무에 없으면 데이터 품질 불량, 관측 수가 모자라면 관측 수 부족이며 둘 다 `inconclusive`다. 합격선이 없으면 효과는 기록만 한다.
+
 ## 6. 필수 테스트
 
 - 실행 에이전트의 보고서만 있는 입력으로는 `pass`가 나오지 않는다.

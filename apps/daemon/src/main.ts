@@ -9,7 +9,8 @@
 // 설정이 없으면 실행기가 없어 실행 요청이 오류로 끝난다(기존 동작). 설정 → 조립은 runtime-config.ts.
 // 팩(A6 U10): `pack_dir` 설정이 있으면 팩을 읽어 루틴을 `enabled=0` 으로 DB 에 반영하고 템플릿 포트를 워커에 연결한다(`pack_values` 로 {{자리표시자}} 치환). 설정이 없으면 기존 동작.
 // LLM 검증기(A6-U12): `llm_verifier: {kind: "stub"}` 설정이 있으면 모델 호출 없는 가짜 검증기를 연결한다(실제 모델은 Q22 후속, 다른 kind 는 거부). 없으면 연결하지 않는다.
-// 아직 연결되지 않은 것: 측정 값 조회기(A6-U13). 출처 조회기도 `research_agent` 가 없으면 연결되지 않아 그 경우 validating 업무는 검증되지 않고 남는다(자동 완료 없음).
+// 측정 값(A6-U13): 팩에 측정 신호 정의가 있으면 승인 소켓에 `measure`·`measurements` 명령이 생기고(사람만, 같은 인증 경계), 평가 포트가 있으면 측정 값 조회기가 연결된다.
+// `inputs[kind=measurement]` 업무는 값이 입력될 때까지 집히지 않는다. 출처 조회기는 `research_agent` 가 없으면 연결되지 않아 그 경우 validating 업무는 검증되지 않고 남는다(자동 완료 없음).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

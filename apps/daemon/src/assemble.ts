@@ -8,18 +8,21 @@
 // TaskWorker 의 `routines` 옵션에 연결한다. 루틴이 모두 꺼져 있으므로 켜기 전(U15)에는 발화가 일어나지 않는다. 팩이 잘못되었거나 반영할 수 없으면 조립이 던진다.
 // A6 U11: `agent.adapters`/`agent.selectAdapter` 가 있으면 업무마다 어댑터를 고른다(이름만 task-engine 의 워커로 넘기고 `task_run.adapter` 에 남는다. 등록되지 않은 이름은 그 업무를 needs_review 로 보낸다).
 // 선행 업무 결과(`inputs[kind=task_result]`)는 task-engine 이 읽고 agent-executor.ts 가 `external_untrusted` 로 표시해 어댑터 입력에 넣는다.
+// A6 U13: 측정 신호 정의(팩의 `signals` 또는 `measurementSignals`)가 있으면 승인 소켓에 `measure`·`measurements` 명령을 얹고(measure.ts, 같은 인증 경계),
+// 평가 포트가 있으면 효과 측정 조회기(`createMeasurementSignalSource`)를 연결한다. 측정 대기 조건 자체는 task-engine 의 claim 이 본다.
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type DockerCli, type OrphanCleanupResult } from '@aot/agent-runtime';
-import type { Clock, Db, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
-import { createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
+import type { Clock, Db, MeasurementSignal, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
+import { createMeasurementSignalSource, createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import { ApprovalEngine, createPolicyGate, createToolCallPolicy, PolicyStore, startApprovalServer, TotpSecretStore, type ApprovalServer } from '@aot/policy';
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
+import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
 
 /** 저장소의 기본 정책 템플릿 (시드의 policy-v1 내용) */
@@ -69,7 +72,8 @@ export interface AssembleOptions {
   /**
    * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
    * 생략하면 validating 업무는 검증되지 않고 그대로 남는다. 데몬 설정에 `research_agent` 가 있으면 출처 조회기(`createSourceFetcher`, `fetch_url` 과 같은 허용 호스트·SSRF 규칙)가
-   * 여기에 연결된다(runtime-config.ts). 설정 `llm_verifier: {kind: "stub"}` 가 있으면 가짜 LLM 검증기(`llm`)도 함께 연결된다(A6-U12; 실제 모델은 Q22 후속). 효과 측정 값 조회기는 A6-U13 에서 연결한다.
+   * 여기에 연결된다(runtime-config.ts). 설정 `llm_verifier: {kind: "stub"}` 가 있으면 가짜 LLM 검증기(`llm`)도 함께 연결된다(A6-U12; 실제 모델은 Q22 후속).
+   * `effect` 를 주지 않았고 측정 신호 정의가 있으면 사람이 입력한 측정 값의 조회기(`createMeasurementSignalSource`, 읽기 전용)를 연결한다(A6-U13).
    */
   evaluation?: Omit<EvaluatorDeps, 'db' | 'clock'>;
   /**
@@ -77,6 +81,11 @@ export interface AssembleOptions {
    * 팩의 템플릿 포트를 워커에 연결한다. 생략하면 워커는 루틴을 보지 않는다(기존 동작).
    */
   pack?: PackOptions;
+  /**
+   * 측정 신호 정의를 팩 없이 직접 줄 때 (A6-U13; 시험·팩 없는 구성). `pack` 과 함께 주면 거부한다(정의의 원천은 하나).
+   * 정의가 있으면 승인 소켓에 `measure`·`measurements` 명령이 생긴다.
+   */
+  measurementSignals?: readonly MeasurementSignal[];
 }
 
 /**
@@ -111,6 +120,10 @@ export interface Daemon {
   pack: LoadedPack | null;
   /** 팩 루틴의 DB 반영 결과. `pack` 옵션이 없으면 null */
   packSync: PackSyncResult | null;
+  /** 측정 값 입력을 받는 신호 정의 (팩 또는 `measurementSignals`, 없으면 빈 목록) */
+  measurementSignals: readonly MeasurementSignal[];
+  /** 승인 소켓의 요청 하나를 처리한다: `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
+  handleChannelRequest(request: unknown): unknown;
   /**
    * 첫 tick 전에 부른다. 컨테이너 어댑터가 설정된 경우에만 Docker 가용성을 확인하고(없으면 DockerUnavailableError, 호스트 실행으로 대체하지 않는다)
    * 라벨 `aot.run` AND `aot.instance=<이 인스턴스>` 컨테이너(이전 데몬이 남긴 고아)만 죽이고 지운다. 설정되지 않았으면 아무것도 하지 않고 null.
@@ -133,8 +146,23 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   if (executor === undefined) throw new Error('assembleDaemon needs an executor or an agent');
   const defaultAdapter = options.adapter ?? options.agent?.adapter.name ?? 'unconfigured';
   const adapterFor = options.agent === undefined ? undefined : adapterSelectorOf(options.agent, defaultAdapter);
+  if (options.pack !== undefined && options.measurementSignals !== undefined) {
+    throw new Error('give measurement signals either through the pack or through measurementSignals, not both');
+  }
   const pack = options.pack === undefined ? null : loadPack(options.pack);
   const packSync = pack === null ? null : syncPackRoutines(options.db, pack);
+  const measurementSignals = pack?.signals ?? options.measurementSignals ?? [];
+  const evaluation = options.evaluation === undefined ? undefined : {
+    ...options.evaluation,
+    ...(options.evaluation.effect === undefined && measurementSignals.length > 0
+      ? { effect: createMeasurementSignalSource({ db: options.db, signals: measurementSignals }) }
+      : {}),
+  };
+  const measure = measurementSignals.length === 0 ? null : createMeasurementHandler({ db: options.db, clock: options.clock, signals: measurementSignals });
+  const handleChannelRequest = (request: unknown): unknown => {
+    if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
+    return engine.handle(request);
+  };
   const worker = new TaskWorker({
     db: options.db,
     clock: options.clock,
@@ -144,7 +172,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     ...(adapterFor === undefined ? {} : { adapterFor }),
     executor,
     gate,
-    ...(options.evaluation === undefined ? {} : { validator: createTaskValidator({ db: options.db, clock: options.clock, ...options.evaluation }) }),
+    ...(evaluation === undefined ? {} : { validator: createTaskValidator({ db: options.db, clock: options.clock, ...evaluation }) }),
     ...(options.tools === undefined ? {} : { tools: options.tools }),
     ...(options.lease === undefined ? {} : { lease: options.lease }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
@@ -159,6 +187,8 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     worker,
     pack,
     packSync,
+    measurementSignals,
+    handleChannelRequest,
     async prepareAgentRuntime() {
       const docker = options.agent?.docker;
       if (docker === undefined) return null;
@@ -168,7 +198,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     },
     startApprovalChannel: (onError) => startApprovalServer({
       socketPath: options.paths.approvalSocket,
-      handle: (request) => engine.handle(request),
+      handle: handleChannelRequest,
       ...(onError === undefined ? {} : { onError }),
     }),
   };

@@ -69,18 +69,22 @@ export interface LlmVerifier {
 // ===== 효과 측정 신호 =====
 
 /**
- * 외부에서 주입된 관측 값 목록. 측정 신호의 정의 형식(어느 지표, 단위, 기준선)은 아직 정해지지 않았으므로
- * (Q5, a0-decisions D2) 여기서 해석하지 않는다: 값들과 관측 수, 합격선만 받는다.
+ * 외부에서 주입된 관측 값 목록. 단위·기준선은 여기서 해석하지 않는다: 값들과 관측 수, 합격선만 받는다.
+ * 사람이 입력한 측정 값(A6-U13)은 `createMeasurementSignalSource` 가 신호 정의(D2)와 저장된 측정 이벤트·근거에서 만든다.
  */
 export interface EffectSignal {
   /** 신호 이름 (기록용) */
   readonly name: string;
-  /** 관측 값. 관측 수는 `values.length` 다 */
+  /** 관측 값. 평균이 효과 점수다 */
   readonly values: readonly number[];
+  /** 관측 수. 생략하면 `values.length` (사람이 입력한 주간 값은 값 1개에 그 값이 모은 관측 수를 따로 밝힌다) */
+  readonly observations?: number;
   /** 판정에 필요한 최소 관측 수 (evaluation.md §4) */
   readonly minObservations: number;
   /** 호출자가 판정한 데이터 품질(측정 누락률 등). false 면 inconclusive */
   readonly dataQualityOk: boolean;
+  /** 데이터 품질이 불량인 이유 (기록용, 생략 가능) */
+  readonly qualityNote?: string;
   /** 관측 평균이 이 값 이상이어야 효과 기준 충족. 없으면 효과는 기록만 하고 판정에 쓰지 않는다 */
   readonly passAtLeast?: number;
 }

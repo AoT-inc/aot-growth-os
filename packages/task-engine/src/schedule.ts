@@ -161,13 +161,14 @@ function offsetAt(tz: string, utcMs: number): number {
   return Date.UTC(part['year']!, part['month']! - 1, part['day']!, part['hour']!, part['minute']!, part['second']!) - seconds;
 }
 
-function localDateAt(tz: string, utcMs: number): LocalFields {
+/** `utcMs` 순간의 `tz` 벽시계 날짜 (measurement.ts 도 쓴다; 공개 API 아님) */
+export function localDateAt(tz: string, utcMs: number): LocalFields {
   const local = new Date(utcMs + offsetAt(tz, utcMs));
   return { year: local.getUTCFullYear(), month: local.getUTCMonth() + 1, day: local.getUTCDate() };
 }
 
 /** 벽시계 시각(`naive` = 그 시각을 UTC 로 읽은 밀리초) → 순간. 건너뛴 시각은 뒤로 밀고, 겹친 시각은 앞선 쪽을 고른다. */
-function resolveLocal(tz: string, naive: number): number {
+export function resolveLocal(tz: string, naive: number): number {
   const before = offsetAt(tz, naive - DAY_MS);
   const after = offsetAt(tz, naive + DAY_MS);
   const valid = [...new Set([before, after])].map((offset) => naive - offset).filter((instant) => offsetAt(tz, instant) === naive - instant);

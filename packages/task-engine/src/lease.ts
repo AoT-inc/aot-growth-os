@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock, Db, EvidenceRow, ExternalEffectRow, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
 
 import { LeaseLostError } from './errors.ts';
+import { resendAllowed } from './idempotency.ts';
 import { isoAfter } from './params.ts';
 import { transitionEffect, transitionTask } from './transitions.ts';
 import { attachRecordedMeasurements, measurementInputsOf, MEASUREMENTS_RECORDED_SQL } from './measurement.ts';
@@ -203,16 +204,21 @@ export interface RunEnd {
   taskStatus: TaskStatus;
 }
 
+/** 이 run 의 `unknown` 부작용 중 지금 재전송할 수 없는 것(미지원, 또는 재전송 창이 닫힘)이 있는가. 행만 보고 판정한다 (resendAllowed). */
+function hasUnresendableUnknown(tx: Db, runId: string, now: string): boolean {
+  return tx.all<Pick<ExternalEffectRow, 'supports_idempotency' | 'idempotency_retention_ms' | 'planned_at'>>(
+    "SELECT supports_idempotency, idempotency_retention_ms, planned_at FROM external_effect WHERE task_run_id = ? AND state = 'unknown'", [runId],
+  ).some((row) => !resendAllowed(row, now));
+}
+
 /**
  * 이 run 의 부작용 중 전송 중(`dispatched`)으로 남은 것을 `unknown` 으로 돌리고(§3: 응답 유실·워커 사망),
- * 자동으로 풀 수 없는 것 — 멱등 키 미지원 도구의 `unknown` — 이 남았는지 돌려준다.
+ * 자동으로 풀 수 없는 것 — 멱등 키 미지원 도구, 또는 재전송 창(planned_at 부터 보존 기간의 50%)이 닫힌 `unknown` — 이 남았는지 돌려준다.
  */
 function settleRunEffects(tx: Db, runId: string, now: string): boolean {
   const inFlight = tx.all<Pick<ExternalEffectRow, 'id'>>("SELECT id FROM external_effect WHERE task_run_id = ? AND state = 'dispatched'", [runId]);
   for (const effect of inFlight) transitionEffect(tx, { effectId: effect.id, from: 'dispatched', to: 'unknown', by: 'system', now });
-  return tx.get(
-    "SELECT 1 AS one FROM external_effect WHERE task_run_id = ? AND state = 'unknown' AND supports_idempotency = 0", [runId],
-  ) !== undefined;
+  return hasUnresendableUnknown(tx, runId, now);
 }
 
 function closeRun(tx: Db, runId: string, outcome: TaskRunOutcome, now: string, result?: unknown): void {
@@ -223,7 +229,7 @@ function closeRun(tx: Db, runId: string, outcome: TaskRunOutcome, now: string, r
 
 /**
  * 실행이 결과를 냈다 (에이전트 자기 보고). running → validating.
- * 멱등 키 미지원 도구의 `unknown` 부작용이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
+ * 재전송할 수 없는 `unknown` 부작용(미지원·창 닫힘)이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
  */
 export function submitRun(db: Db, clock: Clock, lease: Lease, result: unknown): RunEnd {
   return db.writeTx((tx) => {
@@ -249,7 +255,7 @@ export interface FailRunOptions {
 
 /**
  * 실행이 오류·타임아웃으로 끝났다. 시도 1회를 소모한다(attempts + 1).
- * attempts < max_attempts 면 retry_wait, 아니면 failed. 미지원 도구의 unknown 부작용이 있으면 needs_review.
+ * attempts < max_attempts 면 retry_wait, 아니면 failed. 재전송할 수 없는 unknown 부작용(미지원·창 닫힘)이 있으면 needs_review.
  */
 export function failRun(db: Db, clock: Clock, lease: Lease, options: FailRunOptions): RunEnd {
   return db.writeTx((tx) => {
@@ -291,7 +297,7 @@ export interface KillRunOptions {
  * 실행 관리가 run 을 강제로 끝냈다(시스템이 죽임): run 은 `killed`. 업무 전이는 기존 허용표 안에서 정한다.
  *  - time_limit: `timeout` 과 같다. 시도 1회를 소모하고 attempts < max_attempts 면 retry_wait, 아니면 failed
  *  - budget_exceeded: 재시도해도 같은 예산이라 소용이 없으므로 시도를 소모하지 않고 needs_review (사람이 예산·명세를 정한다)
- * 어느 쪽이든 미지원 도구의 unknown 부작용이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
+ * 어느 쪽이든 재전송할 수 없는 unknown 부작용(미지원·창 닫힘)이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
  */
 export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOptions): RunEnd {
   if (options.reason === 'time_limit') {
@@ -363,7 +369,7 @@ export function stopRunForReview(tx: Db, lease: Lease, now: string, reason: stri
 }
 
 const unknownEffectReason = (runId: string) =>
-  `run ${runId} left an 'unknown' external effect on a tool without idempotency keys; not resent automatically (recovery §3)`;
+  `run ${runId} left an 'unknown' external effect that may not be resent (tool without idempotency keys, or more than 50% of retention_ms since planned_at); not resent automatically (recovery §3)`;
 
 // ===== 만료 인수와 재시도 대기 =====
 
@@ -400,8 +406,9 @@ export interface TakeoverResult extends RunEnd {
 /**
  * 만료된 run 하나를 인수 처리한다 (한 쓰기 트랜잭션). 이미 다른 워커가 처리했거나 그 사이 heartbeat 로 살아났으면 null.
  *  1. 이 run 의 `dispatched`/`unknown` 부작용: 조회 결과가 "전달됨"이면 confirmed, 아니면 `unknown` (워커 사망)
- *  2. 멱등 키 미지원 도구의 `unknown` 이 남으면 run = effect_unknown, 업무 running → needs_review (재전송 없음)
- *  3. 아니면 run = lease_expired, 업무 running → queued. 멱등 지원 도구의 `unknown` 은 새 attempt 가 같은 키로 재전송한다
+ *  2. 재전송할 수 없는 `unknown`(미지원, 또는 planned_at 부터 보존 기간의 50% 가 지나 창이 닫힘)이 남으면 run = effect_unknown, 업무 running → needs_review (재전송 없음, 시도 소모 없음).
+ *     도구 등록 없이 행만 보고 판정한다
+ *  3. 아니면 run = lease_expired, 업무 running → queued. 창 안의 멱등 지원 `unknown` 은 새 attempt 가 같은 키로 재전송한다
  */
 export function takeOverExpiredRun(db: Db, run: ExpiredRun, options: TakeoverOptions): TakeoverResult | null {
   return db.writeTx((tx) => {
@@ -420,9 +427,7 @@ export function takeOverExpiredRun(db: Db, run: ExpiredRun, options: TakeoverOpt
         transitionEffect(tx, { effectId: effect.id, from: 'dispatched', to: 'unknown', by: 'system', now });
       }
     }
-    const blocked = tx.get(
-      "SELECT 1 AS one FROM external_effect WHERE task_run_id = ? AND state = 'unknown' AND supports_idempotency = 0", [run.runId],
-    ) !== undefined;
+    const blocked = hasUnresendableUnknown(tx, run.runId, now);
     const base = `lease of run ${run.runId} (attempt ${run.attempt}, owner ${run.owner}) expired; taken over by ${options.workerId}`;
 
     if (blocked) {

@@ -97,8 +97,8 @@ export type TaskRunRow = {
 
 export type ExternalEffectRow = {
   id: string; effect_key: string; task_id: string; task_run_id: string; tool: string; action: string; target: string;
-  request_hash: string; state: ExternalEffectState; supports_idempotency: number; response_ref: string | null;
-  compensation_ref: string | null; at: Iso;
+  request_hash: string; state: ExternalEffectState; supports_idempotency: number;
+  idempotency_retention_ms: number | null; response_ref: string | null; compensation_ref: string | null; planned_at: Iso; at: Iso;
 }
 
 export type PolicyDecisionRow = {

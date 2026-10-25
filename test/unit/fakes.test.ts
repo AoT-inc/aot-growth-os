@@ -18,13 +18,14 @@ test('idempotent fake tool: same key sent N times -> one side effect', () => {
   assert.equal(again.duplicate, true);
   assert.equal(again.deliveryId, first.deliveryId);
   assert.equal(tool.lookup?.('key-1')?.deliveryId, first.deliveryId);
+  assert.deepEqual(tool.idempotency, { supported: true, retention_ms: 86_400_000 });
 });
 
 test('non-idempotent fake tool: every call is a side effect and status cannot be looked up', () => {
   const tool = createNonIdempotentFakeTool();
   tool.call(request);
   tool.call(request);
-  assert.equal(tool.supportsIdempotency, false);
+  assert.deepEqual(tool.idempotency, { supported: false });
   assert.equal(tool.deliveries.length, 2);
   assert.equal(tool.lookup, undefined);
 });

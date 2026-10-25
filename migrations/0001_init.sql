@@ -264,10 +264,14 @@ CREATE TABLE external_effect (
   target       TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   state        TEXT NOT NULL CHECK (state IN ('planned','dispatched','confirmed','failed','unknown','compensated')),
-  supports_idempotency INTEGER NOT NULL,      -- 외부 시스템의 멱등 키 지원 여부
+  supports_idempotency INTEGER NOT NULL CHECK (supports_idempotency IN (0, 1)), -- 이 키의 같은 키 재전송 허가 ((도구, action) 선언의 INSERT 시 스냅숏, 현재 선언으로 강화만 됨)
+  idempotency_retention_ms INTEGER,           -- 키 보존 기간(ms). supports_idempotency=1 일 때만, 강화만 됨. Postgres 이식 시 BIGINT
   response_ref TEXT,
   compensation_ref TEXT,
-  at           TEXT NOT NULL
+  planned_at   TEXT NOT NULL,                 -- 최초 planned 시각. INSERT 때만 쓴다 (재전송 창의 기준, recovery §3)
+  at           TEXT NOT NULL,                 -- 마지막 전이 시각 (전이마다 갱신)
+  CHECK ((supports_idempotency = 0 AND idempotency_retention_ms IS NULL)
+      OR (supports_idempotency = 1 AND idempotency_retention_ms IS NOT NULL AND idempotency_retention_ms > 0))
 );
 
 -- 정책 판정 기록 (append-only). 권한은 도구 이름이 아니라 7요소로 판정한다 (ADR-0006).

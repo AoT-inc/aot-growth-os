@@ -25,7 +25,13 @@ export {
   activateExperiment, endExperiment, endExperimentInTx, EXPERIMENT_TASK_CAUSE, ExperimentActivationError,
   type ActivateExperimentInput, type ActivateExperimentResult, type ApprovalCheck, type EndExperimentInput, type EndExperimentResult, type ExperimentRefusalCode,
 } from './experiment.ts';
-export { EffectRefusedError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError } from './errors.ts';
+export {
+  DECLARATION_ERROR_CODES, EFFECT_KEY_CARRIERS, idempotencyWindowOpen, resendAllowed, resolveActionDeclaration, snapshotOf, tightenSnapshot,
+  validateEffectToolDeclaration, validateIdempotencyDeclaration,
+  type DeclarationError, type DeclarationErrorCode, type EffectActionDeclaration, type EffectKeyCarrier, type IdempotencyDeclaration,
+  type IdempotencySnapshot,
+} from './idempotency.ts';
+export { EffectDeclarationError, EffectRefusedError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError } from './errors.ts';
 export {
   DATA_QUALITIES, findMeasurement, isoWeekKeyAt, isoWeekPeriod, listMeasurementWaits, MAX_ATTACHMENT_REF_CHARS, MAX_MEASUREMENT_ATTACHMENTS,
   MEASUREMENT_EVENT_SOURCE, MEASUREMENT_EVENT_TYPE, measurementContentHash, measurementInputsOf, previousIsoWeekKey, recordMeasurement,

@@ -63,12 +63,14 @@ export interface EffectTransitionRequest {
   set?: Readonly<Record<string, SqlValue>>;
 }
 
-/** external_effect.state 갱신. 허용표 확인 + 비교 후 갱신. */
+const EFFECT_PROTECTED_COLUMNS = ['state', 'id', 'planned_at', 'supports_idempotency', 'idempotency_retention_ms'];
+
+/** external_effect.state 갱신. 허용표 확인 + 비교 후 갱신. planned_at 과 멱등 스냅숏 열은 여기서 쓸 수 없다 (강화는 planEffect 만). */
 export function transitionEffect(tx: Db, request: EffectTransitionRequest): void {
   assertTransition(EXTERNAL_EFFECT_MACHINE, { from: request.from, to: request.to, by: request.by });
   const extra = Object.entries(request.set ?? {});
   for (const [column] of extra) {
-    if (!/^[a-z_]+$/.test(column) || column === 'state' || column === 'id') throw new Error(`transitionEffect: column '${column}' cannot be set`);
+    if (!/^[a-z_]+$/.test(column) || EFFECT_PROTECTED_COLUMNS.includes(column)) throw new Error(`transitionEffect: column '${column}' cannot be set`);
   }
   const assignments = ['state = ?', 'at = ?', ...extra.map(([column]) => `${column} = ?`)].join(', ');
   const changed = tx.run(`UPDATE external_effect SET ${assignments} WHERE id = ? AND state = ?`, [

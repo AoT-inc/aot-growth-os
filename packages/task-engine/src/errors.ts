@@ -1,5 +1,7 @@
 import type { Db, Issue } from '@aot/domain';
 
+import type { DeclarationError } from './idempotency.ts';
+
 /** 업무 생성 거부 (명세 검증, 참조, 의존 순환, 정책 판정). `issues` 에 이유가 모두 담긴다. */
 export class TaskCreationError extends Error {
   readonly issues: readonly Issue[];
@@ -27,6 +29,19 @@ export class EffectRefusedError extends Error {
     this.name = 'EffectRefusedError';
     this.effectId = effectId;
     this.reason = reason;
+  }
+}
+
+/** 도구의 (도구, action) 멱등 선언이 없거나 잘못됐다. 보내지 않았고 행도 만들지 않았다 (시작 시 검증이면 데몬이 뜨지 않는다) */
+export class EffectDeclarationError extends Error {
+  readonly tool: string;
+  readonly errors: readonly DeclarationError[];
+
+  constructor(tool: string, errors: readonly DeclarationError[]) {
+    super(`effect tool '${tool}' declaration invalid: ${errors.map((e) => `${e.action ?? '(tool)'}: ${e.code}`).join('; ')}`);
+    this.name = 'EffectDeclarationError';
+    this.tool = tool;
+    this.errors = errors;
   }
 }
 

@@ -205,3 +205,77 @@ test('a daemon that lost its lease while paused sends no side effect when it res
   assert.deepEqual(runsOf(env.db, task!).map((r) => [r.lease_owner, r.outcome]), [['daemon-a', 'lease_expired'], ['daemon-b', 'submitted']]);
   assert.deepEqual(effectsOf(env.db, task!).map((e) => e.state), ['confirmed']);
 });
+
+// --- 키 보존 기간(재전송 창) 과 재시작 (recovery §3: planned_at 으로부터 retention_ms 의 50% 이내에서만 같은 키로 재전송) ---
+const RETENTION_MS = 3_600_000;
+const WINDOW = RETENTION_MS / 2;
+const effectKeyOfTask = (env: Env, taskId: string) => String(env.db.get('SELECT effect_key FROM external_effect WHERE task_id = ?', [taskId])?.['effect_key']);
+const deliveredKeys = (env: Env) => (existsSync(env.toolStore) ? readFileSync(env.toolStore, 'utf8').trim().split('\n').filter(Boolean).map((l) => (JSON.parse(l) as { effectKey: string }).effectKey) : []);
+const sendLines = (env: Env) => logLines(env).filter(([kind]) => kind === 'send');
+
+/** daemon-a 가 dispatched 를 기록한 직후(전달 0건) SIGKILL 된 상태를 만든다. planned_at = T0 */
+async function killedAfterDispatch(t: TestContext, env: Env, task: string): Promise<string> {
+  const a = await spawn(t, env, 'daemon-a', { executor: 'effect', tool: 'idempotent', retentionMs: RETENTION_MS, blockAfterDispatch: true });
+  void a.tick(T0);
+  await a.next('dispatched');
+  await a.kill();
+  assert.deepEqual(effectsOf(env.db, task).map((e) => e.state), ['dispatched']);
+  assert.equal(deliveries(env), 0);
+  assert.equal(effectsOf(env.db, task)[0]?.planned_at, new Date(T0).toISOString());
+  return effectKeyOfTask(env, task);
+}
+
+for (const [label, restartAt] of [['inside the window', T0 + LEASE_MS], ['exactly at 50% of retention', T0 + WINDOW]] as const) {
+  test(`restart ${label}: the effect is resent exactly once with the same key`, async (t) => {
+    const env = engineDb(t);
+    const [task] = makeTasks(env, 1);
+    const key = await killedAfterDispatch(t, env, task!);
+
+    const b = await spawn(t, env, 'daemon-b', { executor: 'effect', tool: 'idempotent', retentionMs: RETENTION_MS });
+    const report = reportOf(await b.tick(restartAt));
+    assert.deepEqual(report.recovered.map((r) => [r.outcome, r.taskStatus]), [['lease_expired', 'queued']]);
+    assert.equal(report.executed?.attempt, 2);
+    assert.deepEqual(sendLines(env).map(([, effectKey, by]) => [effectKey, by]), [[key, 'daemon-a'], [key, 'daemon-b']], 'a 가 보내려다 죽고, b 가 같은 키로 한 번 재전송');
+    assert.equal(deliveries(env), 1);
+    assert.deepEqual(deliveredKeys(env), [key]);
+    assert.deepEqual(effectsOf(env.db, task!).map((e) => e.state), ['confirmed']);
+    assert.deepEqual(runsOf(env.db, task!).map((r) => r.outcome), ['lease_expired', 'submitted']);
+    assert.equal(taskStatus(env.db, task!), 'validating');
+  });
+}
+
+test('restart one millisecond beyond 50% of retention: nothing is sent, the run ends effect_unknown and the task needs_review (takeover decides)', async (t) => {
+  const env = engineDb(t);
+  const [task] = makeTasks(env, 1);
+  await killedAfterDispatch(t, env, task!);
+
+  const b = await spawn(t, env, 'daemon-b', { executor: 'effect', tool: 'idempotent', retentionMs: RETENTION_MS });
+  const report = reportOf(await b.tick(T0 + WINDOW + 1));
+  assert.deepEqual(report.recovered.map((r) => [r.outcome, r.taskStatus]), [['effect_unknown', 'needs_review']]);
+  assert.equal(report.executed, null);
+  for (let i = 1; i <= 3; i += 1) assert.equal(reportOf(await b.tick(T0 + WINDOW + 1 + LEASE_MS * i)).executed, null);
+  assert.deepEqual(sendLines(env).map(([, , by]) => by), ['daemon-a'], 'b 는 보내지 않았다');
+  assert.equal(deliveries(env), 0);
+  assert.deepEqual(effectsOf(env.db, task!).map((e) => e.state), ['unknown']);
+  assert.deepEqual(runsOf(env.db, task!).map((r) => r.outcome), ['effect_unknown']);
+  assert.equal(taskStatus(env.db, task!), 'needs_review');
+});
+
+test('restart beyond the window after the side effect was delivered: lookup still confirms it, nothing is resent', async (t) => {
+  const env = engineDb(t);
+  const [task] = makeTasks(env, 1);
+  const a = await spawn(t, env, 'daemon-a', { executor: 'effect', tool: 'idempotent', retentionMs: RETENTION_MS, blockAfterDelivery: true });
+  void a.tick(T0);
+  await a.next('delivered');
+  await a.kill();
+  assert.equal(deliveries(env), 1);
+
+  const b = await spawn(t, env, 'daemon-b', { executor: 'effect', tool: 'idempotent', retentionMs: RETENTION_MS });
+  const report = reportOf(await b.tick(T0 + WINDOW + 1));
+  assert.deepEqual(report.recovered.map((r) => [r.outcome, r.taskStatus]), [['lease_expired', 'queued']]);
+  assert.equal(report.executed?.attempt, 2);
+  assert.deepEqual(sendLines(env).map(([, , by]) => by), ['daemon-a']);
+  assert.equal(deliveries(env), 1);
+  assert.deepEqual(effectsOf(env.db, task!).map((e) => e.state), ['confirmed']);
+  assert.equal(taskStatus(env.db, task!), 'validating');
+});

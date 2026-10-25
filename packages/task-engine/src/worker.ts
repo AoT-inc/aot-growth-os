@@ -11,7 +11,8 @@ import {
 } from '@aot/domain';
 
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
-import { EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
+import { EffectDeclarationError, EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
+import { validateEffectToolDeclaration, type DeclarationError } from './idempotency.ts';
 import {
   claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun, takeOverExpiredRun,
   type AdapterSelector, type ClaimedTask, type EffectLookups, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
@@ -129,6 +130,14 @@ export class TaskWorker {
   readonly #routineFirer: RoutineFirer | null;
 
   constructor(options: WorkerOptions) {
+    // 도구 선언을 시작 때 검증한다 (이름 불일치·잘못된 (도구, action) 선언이면 데몬이 뜨지 않는다)
+    for (const [key, tool] of Object.entries(options.tools ?? {})) {
+      const errors: DeclarationError[] = [];
+      if (key !== tool.name) errors.push({ action: null, code: 'name_mismatch', detail: `tools key '${key}' differs from tool.name '${tool.name}'` });
+      const checked = validateEffectToolDeclaration(tool);
+      if (!checked.ok) errors.push(...checked.errors);
+      if (errors.length > 0) throw new EffectDeclarationError(tool.name, errors);
+    }
     this.#options = options;
     this.#params = checkLeaseParams({ ...DEFAULT_LEASE_PARAMS, ...options.lease });
     this.#gate = options.gate ?? DENY_ALL_TASK_POLICY_GATE;

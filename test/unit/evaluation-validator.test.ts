@@ -191,9 +191,9 @@ test('policy_compliance (safety): a sent external effect needs a recorded non-de
 
 function insertEffect(db: Db, clock: FakeClock, run: SubmittedRun, id: string, state: string): void {
   db.writeTx((tx) => tx.run(
-    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, at)
-     VALUES (?, ?, ?, ?, 'notify-tool', 'send', 'mailbox:example', 'h', ?, 1, ?)`,
-    [id, `key-${id}`, run.taskId, run.runId, state, clock.nowIso()],
+    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, idempotency_retention_ms, planned_at, at)
+     VALUES (?, ?, ?, ?, 'notify-tool', 'send', 'mailbox:example', 'h', ?, 1, 86400000, ?, ?)`,
+    [id, `key-${id}`, run.taskId, run.runId, state, clock.nowIso(), clock.nowIso()],
   ));
 }
 

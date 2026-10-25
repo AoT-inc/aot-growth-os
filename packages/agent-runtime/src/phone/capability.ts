@@ -31,8 +31,13 @@ export interface PhoneEffectStep {
   request: unknown;
 }
 
-/** 부작용 원장을 거쳐 도구를 실행하는 함수. 데몬 조립이 `RunContext.performEffect` 를 여기에 연결한다 */
-export type PhoneEffectRunner = (tool: string, step: PhoneEffectStep) => Promise<{ state: 'confirmed' | 'failed' | 'unknown' | 'compensated'; effectId: string; responseRef?: string | null | undefined }>;
+export interface PhoneEffectOutcome { state: 'confirmed' | 'failed' | 'unknown' | 'compensated'; effectId: string; responseRef?: string | null | undefined }
+
+/**
+ * 부작용 원장을 거쳐 도구를 실행하는 함수. 데몬 조립이 `RunContext.performEffect` 를 여기에 연결한다.
+ * 게이트웨이용 실행기에서는 `noEffect` 가 있다: 외부 부작용 없이 끝나는 길(provider 에 닿지 않은 통화의 로컬 취소)을 원장 묶음에 밝힌다 (effect-ledger.ts)
+ */
+export type PhoneEffectRunner = ((tool: string, step: PhoneEffectStep) => Promise<PhoneEffectOutcome>) & { noEffect?: (reason: string) => void };
 
 export interface PhoneCapabilityDeps {
   db: Db;
@@ -120,7 +125,8 @@ export function createPhoneCapability(deps: PhoneCapabilityDeps): PhoneCapabilit
       const call = ownCall(callId);
       if (call.status === 'completed' || call.status === 'failed' || call.status === 'cancelled') return; // 이미 끝났다 (멱등)
       if (call.status === 'queued' && call.providerCallId === null) {
-        // provider 에 닿지 않은 통화는 provider 호출 없이 취소한다
+        // provider 에 닿지 않은 통화는 provider 호출 없이 취소한다 (외부 부작용이 없다 — 원장 묶음에 그 사실을 밝힌다)
+        dispatch.noEffect?.('cancelled before dialing');
         applyPhoneEvent(db, clock, {
           type: 'phone.call.cancelled', eventId: `cancel:${call.id}`, provider: 'aot', providerCallId: null, callId: call.id, occurredAt: clock.nowIso(), reason: 'cancelled before dialing',
         });

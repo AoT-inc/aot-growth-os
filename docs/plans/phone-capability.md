@@ -13,7 +13,7 @@
 | P5 | 정책: `phone:` 섹션, 변경 등급, `PhoneCallPolicy` 구현 | `policy-phone` |
 | P6 | task-engine: 열린 통화가 있으면 `validating` 보류 | `task-call-wait` |
 | P7 | evaluation: `call_*` 검사 3개 | `evaluation-call` |
-| P8 | agent-runtime: Capability, 부작용 도구, 게이트웨이 도구, webhook 수신, 인바운드, 마감 조회, `approvalViaEffectGate` | `phone-capability`, `agent-runtime-gateway-effect-gate`, `phone-lifecycle` |
+| P8 | agent-runtime: Capability, 부작용 도구, 게이트웨이 도구, webhook 수신, 인바운드, 마감 조회, `bindToEffectLedger`(승인을 원장에 넘기는 실행기) | `phone-capability`, `agent-runtime-gateway-effect-gate`, `phone-lifecycle` |
 | P9 | Vapi 어댑터, 데몬 조립(`phone` 설정, webhook 리스너, 마감 조회 루프) | `phone-vapi`, `phone-config`, `phone-webhook-server` |
 
 ## DoD 대응
@@ -51,6 +51,7 @@ PR 리뷰의 지적을 코드에 비춰 확인해 반영했다.
 | transcript 이벤트 id (P1) | 맞는 지적. 스냅샷 계약을 명시하고 id에 내용 해시를 포함 |
 | webhook 재전송 방어 (P1) | 부분 수용. 시각 허용 오차는 더하지 않음(이유는 ADR-0014 구현 기록). TLS 강제는 반영, HMAC은 Q30으로 남김 |
 | TLS 강제 (P1) | 루프백이 아닌 바인드는 `allow_insecure=true` 없이는 시작 거부 |
+| `approvalViaEffectGate`가 우회 수단이 될 수 있음 (2차 리뷰) | 맞는 지적. 스펙 불리언을 없애고 `bindToEffectLedger`로 바꿈: 위조 불가 표시(비공개 WeakSet), 원장을 거치지 않으면 `tool_error`, `sideEffect`+`external_effect` 도구에만 허용, 시험(위조 3종·미경유·범위·`deny`/외부 입력 하한·승인 뒤 정책 변경 시 원장 거부) |
 | 리스너 시험·타임아웃 (P2) | chunked, 연결 중단, slowloris 시험과 요청 시간 제한 추가. `controlHostSuffix`는 어댑터 옵션일 뿐 데몬 설정으로 노출되지 않는다 |
 
 ## 수동 smoke 절차 (실제 Vapi, 사람이 비공개 환경에서만)

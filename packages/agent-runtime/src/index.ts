@@ -56,4 +56,5 @@ export {
 } from './run-manager.ts';
 // 전화 Capability (단계: ADR-0014). 에이전트가 쓰는 PhoneCapability 구현, 게이트웨이 도구, 부작용 도구, webhook 수신, 인바운드 처리, 마감 보완, 가짜 provider.
 // provider 어댑터(Vapi 등)는 이 패키지에 없다 — 비밀값을 가진 인프라 코드라 apps/daemon 이 PhonePort 로 주입한다.
+export { bindToEffectLedger, isEffectLedgerBound, type EffectLedgerRunner, type LedgerPerform } from './effect-ledger.ts';
 export * from './phone/index.ts';

@@ -457,3 +457,29 @@ test('a task that declares no number range cannot be created with a phone tool',
   const { createWithGate } = await import('../support/policy.ts');
   assert.throws(() => createWithGate(env, phoneTaskSpec({}, {})), /needs a target/);
 });
+
+test('the gateway lets a phone call reach the ledger, and the ledger still refuses when the person\'s approval no longer holds (policy changed after approval, mid-run)', async (t) => {
+  const env = policyEnv(t);
+  const port = createFakePhoneProvider();
+  const { deployDirect } = await import('../support/policy.ts');
+  const { withPhoneSection, PHONE_SECTION } = await import('../support/phone-rig.ts');
+  // 승인 뒤 run 도중에 정책이 새 버전으로 배포된다: 업무 승인 해시는 승인 시점의 정책 버전을 포함하므로 더 이상 유효하지 않다
+  const agent: AgentAdapter = {
+    name: 'late-policy',
+    async run(_input, context): Promise<AdapterOutput> {
+      deployDirect(env, withPhoneSection(PHONE_SECTION.replace('max_calls_per_day: 5', 'max_calls_per_day: 6')));
+      const placed = await context.gateway.call('phone_call', CALL_ARGS as never);
+      return { status: 'submitted', result: { placed: placed.ok }, evidence: [], run_log: [], cost: {} };
+    },
+  };
+  const rig = phoneRig(env, { port, adapter: agent });
+  const taskId = createApprovedTask(env);
+  await rig.tick();
+  // 게이트웨이는 require_approval 을 막지 않고 넘겼지만(호출 기록의 결정), 원장이 승인을 확인해 보내지 않았다
+  const record = rig.records.find((r) => r.tool === 'phone_call')!;
+  assert.equal(record.decision, 'require_approval');
+  assert.equal(port.started.length, 0, 'nothing reached the provider');
+  assert.equal(listCallsForTask(env.db, taskId).length, 0);
+  assert.equal(taskStatus(env.db, taskId), 'needs_review', 'the ledger stopped the run for a person');
+  assert.equal(env.db.get<{ state: string }>('SELECT state FROM external_effect WHERE task_id = ?', [taskId])?.state, 'planned');
+});

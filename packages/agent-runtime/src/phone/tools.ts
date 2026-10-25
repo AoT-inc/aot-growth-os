@@ -4,14 +4,16 @@
 import { isPlainObject, type PhoneCapability } from '@aot/domain';
 
 import type { JsonObject } from '../contract.ts';
-import type { GatewayToolSpec, ToolExecutor } from '../gateway.ts';
+import { bindToEffectLedger } from '../effect-ledger.ts';
+import type { GatewayToolSpec, ToolExecutionRequest, ToolExecutor } from '../gateway.ts';
+
+import type { PhoneEffectOutcome, PhoneEffectRunner, PhoneEffectStep } from './capability.ts';
 
 export const PHONE_CALL_TOOL = 'phone_call';
 export const PHONE_TRANSFER_TOOL = 'phone_transfer';
 export const PHONE_HANGUP_TOOL = 'phone_hangup';
 
-// approvalViaEffectGate: 실행기(Capability)가 부작용을 원장으로만 보내므로 사람의 업무 승인은 원장이 전송 직전에 확인한다 (gateway.ts GatewayToolSpec)
-const base = { scope: 'customer', impact: 'external_effect', sideEffect: true, approvalViaEffectGate: true } as const;
+const base = { scope: 'customer', impact: 'external_effect', sideEffect: true } as const;
 
 /** 에이전트에 내줄 수 있는 전화 도구. 명세의 `allowed_tools` 와 도구·operation 이 맞는 것만 그 run 에 열린다 */
 export function phoneToolSpecs(): GatewayToolSpec[] {
@@ -22,25 +24,39 @@ export function phoneToolSpecs(): GatewayToolSpec[] {
   ];
 }
 
+export interface PhoneToolExecutorOptions {
+  /** 부작용 원장 (데몬이 `RunContext.performEffect` 를 넘긴다) */
+  ledger: PhoneEffectRunner;
+  /** 이 호출의 Capability. 모든 부작용은 인자로 받은 `perform` 으로만 보낸다 */
+  capabilityFor: (perform: PhoneEffectRunner) => PhoneCapability;
+}
+
 /**
  * run 하나의 전화 도구 실행기. 인자는 에이전트가 낸 JSON 이라 검증은 Capability 가 한다(알 수 없는 키 거부).
  * 결과는 통화 식별자와 상태뿐이다: 통화가 끝났는지는 에이전트가 기다리지 않고, 결과는 시스템이 증거로 확인한다.
+ * 실행기는 `bindToEffectLedger` 로 만든다: 그래서 게이트웨이가 호출별 정책 판정의 `require_approval` 을 원장에 넘기고, 원장이 전송 직전에 사람의 업무 승인을 확인한다.
+ * 부작용 없이 끝나는 길(provider 에 닿지 않은 통화의 로컬 취소)은 Capability 가 `perform.noEffect` 로 밝힌다.
  */
-export function createPhoneToolExecutors(capability: PhoneCapability): Map<string, ToolExecutor> {
+export function createPhoneToolExecutors(options: PhoneToolExecutorOptions): Map<string, ToolExecutor> {
+  const bound = <Res>(run: (request: ToolExecutionRequest, capability: PhoneCapability) => Promise<Res>): ToolExecutor =>
+    bindToEffectLedger<ToolExecutionRequest, Res, PhoneEffectStep, PhoneEffectOutcome>({
+      ledger: options.ledger,
+      run: (request, perform) => run(request, options.capabilityFor(perform)),
+    }) as unknown as ToolExecutor;
   return new Map<string, ToolExecutor>([
-    [PHONE_CALL_TOOL, async (request) => {
+    [PHONE_CALL_TOOL, bound(async (request, capability) => {
       const handle = await capability.call(request.args as never);
       return { result: { callId: handle.callId, status: handle.status } satisfies JsonObject };
-    }],
-    [PHONE_TRANSFER_TOOL, async (request) => {
+    })],
+    [PHONE_TRANSFER_TOOL, bound(async (request, capability) => {
       await capability.transfer(request.args as never);
       return { result: { transferred: true } };
-    }],
-    [PHONE_HANGUP_TOOL, async (request) => {
+    })],
+    [PHONE_HANGUP_TOOL, bound(async (request, capability) => {
       const callId = isPlainObject(request.args) ? request.args['callId'] : undefined;
       if (typeof callId !== 'string') throw new Error('callId is required');
       await capability.hangup(callId);
       return { result: { hungUp: true } };
-    }],
+    })],
   ]);
 }

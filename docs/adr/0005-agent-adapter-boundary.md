@@ -27,5 +27,12 @@
 ## Amendment (2026-10-25): 부작용 도구의 `supports_idempotency` 선언
 외부 부작용 도구를 쓰는 어댑터가 계약에 선언할 `supports_idempotency`([recovery §3](../operations/recovery.md))의 후보 도구별 초기 값은 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 문서 근거와 함께 있다. 문서로 확인하지 못한 도구는 `false`다. 이 Amendment는 값의 출처를 가리킬 뿐 계약을 바꾸지 않는다. 키 보존 기간, 자연 멱등(upsert)의 취급, 선언 단위(도구/동작), 조회형 도구의 `effect_key` 전달 규칙은 계약에 닿으므로 사용자 결정 뒤에 이 ADR에 적는다.
 
-## Amendment (2026-10-25): 승인을 원장에 맡기는 도구 선언
-`GatewayToolSpec.approvalViaEffectGate`: 부작용을 부작용 원장(`performEffect`)으로만 보내는 도구가 선언한다. 호출별 정책 판정이 `require_approval`이어도 게이트웨이가 막지 않고 실행기로 넘기며, 사람의 업무 승인은 원장이 전송 직전에 다시 확인한다. `deny`와 외부 입력 영향 부작용 하한은 그대로 막는다. 선언하지 않은 부작용 도구는 계속 막힌다(게이트웨이에는 승인 경로가 없다). 호출 기록에는 정책의 `require_approval`과 위임 사유가 남는다. 첫 사용처는 전화 도구([ADR-0014](0014-phone-capability.md) §8).
+## Amendment (2026-10-25): 승인을 부작용 원장에 넘기는 실행기 (`bindToEffectLedger`)
+게이트웨이는 호출별 정책 판정이 `require_approval`이면 호출을 막는다(게이트웨이에는 승인 경로가 없다). 유일한 예외는 `bindToEffectLedger`(`packages/agent-runtime/src/effect-ledger.ts`)로 만든 실행기다: 부작용을 부작용 원장(`performEffect`)으로만 보내는 실행기는 원장이 전송 직전마다 정책과 *사람의 업무 승인*(`approved_hash`·cooldown·재인증)을 다시 확인하므로(`TaskPolicyGate.beforeEffect`), 게이트웨이가 승인 판정을 원장에 넘겨도 승인 없이 전송되지 않는다. 승인이 없으면 원장이 보내지 않고 run을 멈춘다(`needs_review`).
+
+이 예외를 스펙의 불리언 선언으로 두었던 첫 구현은 **승인 우회 수단이 될 수 있어** 구조로 바꿨다(PR 리뷰 지적):
+- **위조 불가:** 표시는 실행기 함수 자체에 붙고 모듈 비공개 `WeakSet`에만 등록된다. 스펙·설정·JSON 필드, 같은 모양의 속성을 가진 함수, 묶인 실행기를 감싼 래퍼는 인정되지 않는다.
+- **원장을 거치지 않으면 오류:** 실행기 본문은 `perform`(원장 호출)을 인자로 받고, `perform`도 `perform.noEffect(이유)`(provider에 닿지 않은 통화의 로컬 취소처럼 외부 부작용이 없는 길을 명시)도 부르지 않고 끝나면 성공이 아니라 `tool_error`다.
+- **적용 범위 제한:** 묶인 실행기는 `sideEffect=true`이고 영향이 `external_effect`인 도구에만 받는다(그 밖은 게이트웨이 시작 때 거부).
+- **하한 유지:** `deny`와 외부 입력의 영향을 받은 run의 부작용 호출(승인 없이 불가)은 이 예외와 무관하게 막힌다. 호출 기록에는 정책의 `require_approval`과 "원장이 재확인한다"는 사유가 남는다.
+- **한계:** 본문이 `perform` 없이 직접 외부에 접근하는 것까지 막지는 못한다. 실행기는 호스트가 조립하는 신뢰된 코드(에이전트는 닿지 못한다)이고, 이 구조는 설정 오류와 실수를 잡는다. 첫 사용처는 전화 도구([ADR-0014](0014-phone-capability.md) §8). 시험: `agent-runtime-gateway-effect-gate`, `phone-lifecycle`(승인 뒤 정책이 바뀌면 원장이 거부).

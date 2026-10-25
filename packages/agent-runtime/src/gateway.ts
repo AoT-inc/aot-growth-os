@@ -21,6 +21,7 @@ import { isNonBlankString, SCOPES } from '@aot/domain';
 import type { Clock, Impact, PolicyDecisionValue, Scope, ToolCallConstraints, ToolCallPolicy, ToolCallPolicyRequest, ToolCallPolicyVerdict } from '@aot/domain';
 
 import type { AdapterCost, AdapterInput, CostProgressEvent, JsonObject, JsonValue, RunLogEntry, ToolGateway, ToolGatewayResponse } from './contract.ts';
+import { isEffectLedgerBound } from './effect-ledger.ts';
 import { MAX_FRAME_BYTES } from './frames.ts';
 import { maskString, previewJson } from './mask.ts';
 import { isJsonObject, isJsonValue } from './validate.ts';
@@ -46,12 +47,6 @@ export interface GatewayToolSpec {
   unitCost?: AdapterCost;
   /** 이 도구의 타임아웃(밀리초). 생략하면 게이트웨이의 `toolTimeoutMs` */
   timeoutMs?: number;
-  /**
-   * 이 도구의 실행기가 부작용을 부작용 원장(performEffect)으로만 보낸다는 선언이다. 원장은 전송 직전마다 정책과 *업무 승인*(approved_hash, cooldown, 재인증)을
-   * 다시 확인하므로(`TaskPolicyGate.beforeEffect`), 호출별 정책 판정이 `require_approval` 이어도 여기서 막지 않고 실행기로 넘긴다 — 승인이 없으면 원장이 보내지 않고 run 을 멈춘다.
-   * `deny` 는 그대로 막고, 외부 입력의 영향을 받은 run 의 부작용 호출은 이 선언과 상관없이 막는다(하한). 선언하지 않은 부작용 도구는 `require_approval` 이면 막힌다(게이트웨이에는 승인 경로가 없다).
-   */
-  approvalViaEffectGate?: boolean;
 }
 
 /** 실행기에 넘기는 요청. `args` 는 동결된 사본이라 바꿀 수 없다 */
@@ -348,7 +343,8 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
       let recorded: PolicyDecisionValue = 'allow';
       let deferredReason: string | undefined;
       if (verdict.decision === 'require_approval') {
-        const deferred = spec.approvalViaEffectGate === true && !(spec.sideEffect && influenced);
+        // 승인 판정을 원장에 넘길 수 있는 것은 `bindToEffectLedger` 로 만든 실행기뿐이다 (effect-ledger.ts). 스펙의 표시가 아니다. 외부 입력의 영향을 받은 run 은 그래도 막는다(하한)
+        const deferred = isEffectLedgerBound(executor) && !influenced;
         if (!deferred) return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: verdict.reason, response: refuse('approval_required') });
         recorded = 'require_approval';
         deferredReason = `${verdict.reason}; approval is re-checked by the effect ledger before the side effect is sent`;
@@ -412,6 +408,10 @@ function indexTools(options: ToolGatewayOptions): ReadonlyMap<string, GatewayToo
     if (spec.timeoutMs !== undefined && !isPositiveFinite(spec.timeoutMs)) problems.push(`${label}: timeoutMs must be a positive finite number`);
     if (spec.unitCost !== undefined && validCost(spec.unitCost) === null) problems.push(`${label}: unitCost must be non-negative (tokens an integer)`);
     if (!options.executors.has(spec.tool)) problems.push(`${label} has no executor`);
+    // 원장에 묶인 실행기는 외부 부작용 도구에만 둘 수 있다: 승인을 원장에 넘기는 예외가 읽기 도구 등에 번지지 않게 한다
+    if (isEffectLedgerBound(options.executors.get(spec.tool)) && !(spec.sideEffect === true && impactOf(spec) === 'external_effect')) {
+      problems.push(`${label}: an effect-ledger-bound executor needs sideEffect=true and impact external_effect`);
+    }
   }
   if (problems.length > 0) throw new Error(`invalid tool gateway configuration: ${problems.join('; ')}`);
   return index;

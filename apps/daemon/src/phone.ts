@@ -51,11 +51,15 @@ export function createPhoneRuntime(deps: { db: Db; clock: Clock; store: PolicySt
   });
   return {
     port, policy, effectTools, toolSpecs: phoneToolSpecs(),
-    executorsFor: (context) => createPhoneToolExecutors(createPhoneCapability({
-      db, clock, policy,
-      run: { taskId: context.taskId, runId: context.lease.runId, subject: subjectOf(context.spec), allowedTargets: declaredTargets(context.spec) },
-      dispatch: (tool, step) => context.performEffect(tool, step),
-    })),
+    executorsFor: (context) => createPhoneToolExecutors({
+      // 전화 도구의 실행기는 원장에 묶인다(bindToEffectLedger): 게이트웨이가 호출별 정책의 require_approval 을 원장에 넘기고, 원장이 전송 직전에 사람의 업무 승인을 확인한다
+      ledger: (tool, step) => context.performEffect(tool, step),
+      capabilityFor: (perform) => createPhoneCapability({
+        db, clock, policy,
+        run: { taskId: context.taskId, runId: context.lease.runId, subject: subjectOf(context.spec), allowedTargets: declaredTargets(context.spec) },
+        dispatch: perform,
+      }),
+    }),
     ingest: (request) => ingestPhoneWebhook({ db, clock, port, inbound }, request),
     reconcile: () => reconcileOverdueCalls({ db, clock, port, ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }) }),
   };

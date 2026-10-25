@@ -103,7 +103,9 @@ test('(3) a closed-window unknown left by a previous run blocks submit, is tight
 
   assert.deepEqual(submitRun(env.db, env.clock, env.lease2, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
   assert.equal(taskStatus(env.db, env.taskId), 'needs_review');
+  assert.match(env.reviewReason(), /left by an earlier run/);
   assert.match(env.reviewReason(), UNRESENDABLE);
+  assert.doesNotMatch(env.reviewReason(), new RegExp(`^run ${env.lease2.runId} left`));
   assert.equal(env.row().state, 'unknown');
   assert.equal(Number(env.row().supports_idempotency), 0);
   assert.equal(env.row().idempotency_retention_ms, null);
@@ -177,7 +179,8 @@ test('(6) abnormal: a dispatched row left on another (closed) run blocks submit 
 
   assert.deepEqual(submitRun(env.db, env.clock, lease2, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
   assert.equal(taskStatus(env.db, env.taskId), 'needs_review');
-  assert.match(env.reviewReason(), UNRESENDABLE);
+  assert.match(env.reviewReason(), /still 'dispatched'/);
+  assert.doesNotMatch(env.reviewReason(), UNRESENDABLE);
   assert.deepEqual(env.db.get<ExternalEffectRow>("SELECT * FROM external_effect WHERE id = 'stray-1'"), before, '다른 run 의 행은 바꾸지 않는다');
   assert.equal(before.state, 'dispatched');
 });
@@ -190,4 +193,20 @@ test('(5b) a plain (non-idempotent) tool of another task also leaves this task a
   const fake = createNonIdempotentFakeTool();
   await loseResponse(env, asEffectTool(fake), fake, leaseB);
   assert.deepEqual(submitRun(env.db, env.clock, leaseA, {}), { outcome: 'submitted', taskStatus: 'validating' });
+});
+
+test('(7) failed and compensated effect rows do not block submit', async (t) => {
+  const env = setup(t);
+  const fake = createIdempotentFakeTool({ retentionMs: LONG });
+  const failing: EffectTool = { ...asEffectTool(fake), send: async () => ({ status: 'failed', responseRef: null }) };
+  const lease = env.claim();
+  assert.equal((await performEffect(env.db, env.clock, lease, failing, STEP, ALLOW_ALL_GATE)).state, 'failed');
+  assert.deepEqual(effectsOf(env.db, env.taskId).map((e) => e.state), ['failed']);
+  const at = env.clock.nowIso();
+  env.db.writeTx((tx) => tx.run(
+    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, idempotency_retention_ms, planned_at, at)
+     VALUES ('comp-1', 'key-comp-1', ?, ?, 'example-tool', 'send', 'mailbox:example', 'h', 'compensated', 1, ?, ?, ?)`,
+    [env.taskId, lease.runId, LONG, at, at],
+  ));
+  assert.deepEqual(submitRun(env.db, env.clock, lease, {}), { outcome: 'submitted', taskStatus: 'validating' });
 });

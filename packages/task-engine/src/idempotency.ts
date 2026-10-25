@@ -169,7 +169,7 @@ export function tightenSnapshot(
   return null;
 }
 
-/** 재전송 판정의 단일 술어 (performEffect, beginDispatch, settleRunEffects, takeOverExpiredRun 이 같이 쓴다). 행만 본다. */
+/** 재전송 판정의 단일 술어 (performEffect, beginDispatch, settleRunEffects, takeOverExpiredRun, submitRun 의 업무 범위 scan 이 같이 쓴다). 행만 본다. */
 export function resendAllowed(row: IdempotencySnapshot & { planned_at: string }, now: string): boolean {
   return Number(row.supports_idempotency) === 1 && row.idempotency_retention_ms !== null
     && idempotencyWindowOpen(row.planned_at, now, Number(row.idempotency_retention_ms));

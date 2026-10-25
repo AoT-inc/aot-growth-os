@@ -253,22 +253,30 @@ function closeRun(tx: Db, runId: string, outcome: TaskRunOutcome, now: string, r
  * 재전송 불가(미지원·창 닫힘) unknown 은 미지원으로 굳히고 unresendable, 다른 run 에 남은 dispatched 는 비정상이라 fail-closed(행은 안 바꾼다),
  * 창 안 멱등 unknown 은 pendingResendable (행은 안 바꾼다). 다른 업무 행은 보지 않는다. 쓰기 트랜잭션 안에서만 호출.
  */
-function scanTaskEffects(tx: Db, taskId: string, now: string): { unresendable: boolean; pendingResendable: boolean } {
-  let unresendable = false;
+function scanTaskEffects(
+  tx: Db, taskId: string, runId: string, now: string,
+): { ownUnresendable: boolean; otherUnresendable: boolean; otherDispatched: boolean; pendingResendable: boolean } {
+  let ownUnresendable = false;
+  let otherUnresendable = false;
+  let otherDispatched = false;
   let pendingResendable = false;
   const rows = tx.all<Pick<ExternalEffectRow, 'id' | 'task_run_id' | 'state' | 'supports_idempotency' | 'idempotency_retention_ms' | 'planned_at'>>(
     "SELECT id, task_run_id, state, supports_idempotency, idempotency_retention_ms, planned_at FROM external_effect WHERE task_id = ? AND state IN ('unknown', 'dispatched')",
     [taskId],
   );
   for (const row of rows) {
-    if (row.state === 'dispatched') unresendable = true;
-    else if (resendAllowed(row, now)) pendingResendable = true;
+    const own = row.task_run_id === runId;
+    if (row.state === 'dispatched') {
+      if (own) ownUnresendable = true;
+      else otherDispatched = true;
+    } else if (resendAllowed(row, now)) pendingResendable = true;
     else {
       closeResendWindowInTx(tx, row.id);
-      unresendable = true;
+      if (own) ownUnresendable = true;
+      else otherUnresendable = true;
     }
   }
-  return { unresendable, pendingResendable };
+  return { ownUnresendable, otherUnresendable, otherDispatched, pendingResendable };
 }
 
 /**
@@ -281,12 +289,14 @@ export function submitRun(db: Db, clock: Clock, lease: Lease, result: unknown): 
     const now = clock.nowIso();
     assertLeaseHeld(tx, lease, now, 'submit');
     const runBlocked = settleRunEffects(tx, lease.runId, now);
-    const { unresendable, pendingResendable } = scanTaskEffects(tx, lease.taskId, now);
-    if (runBlocked || unresendable || pendingResendable) {
-      const hard = runBlocked || unresendable;
-      const reason = hard
-        ? (pendingResendable ? `${unknownEffectReason(lease.runId)}; ${resendableUnknownReason(lease)}` : unknownEffectReason(lease.runId))
-        : resendableUnknownReason(lease);
+    const scan = scanTaskEffects(tx, lease.taskId, lease.runId, now);
+    const parts: string[] = [];
+    if (runBlocked || scan.ownUnresendable) parts.push(unknownEffectReason(lease.runId));
+    if (scan.otherUnresendable) parts.push(earlierRunUnknownReason(lease));
+    if (scan.otherDispatched) parts.push(otherRunDispatchedReason(lease));
+    if (scan.pendingResendable) parts.push(resendableUnknownReason(lease));
+    if (parts.length > 0) {
+      const reason = parts.join('; ');
       closeRun(tx, lease.runId, 'effect_unknown', now, result);
       transitionTask(tx, { taskId: lease.taskId, from: 'running', to: 'needs_review', by: 'scheduler', now, reason });
       return { outcome: 'effect_unknown', taskStatus: 'needs_review' };
@@ -421,6 +431,12 @@ export function stopRunForReview(tx: Db, lease: Lease, now: string, reason: stri
 
 const unknownEffectReason = (runId: string) =>
   `run ${runId} left an 'unknown' external effect that may not be resent (tool without idempotency keys, or more than 50% of retention_ms since planned_at); not resent automatically (recovery §3)`;
+
+const earlierRunUnknownReason = (lease: Lease) =>
+  `run ${lease.runId} submitted while task ${lease.taskId} has an 'unknown' external effect left by an earlier run that may not be resent (tool without idempotency keys, or more than 50% of retention_ms since planned_at); not resent automatically (recovery §3)`;
+
+const otherRunDispatchedReason = (lease: Lease) =>
+  `run ${lease.runId} submitted while task ${lease.taskId} has an external effect still 'dispatched' on another run (abnormal; delivery unknown, blocked fail-closed) (recovery §3)`;
 
 const resendableUnknownReason = (lease: Lease) =>
   `run ${lease.runId} submitted while an external effect of task ${lease.taskId} is still 'unknown' (resendable with the same key, delivery unconfirmed); not completed automatically (recovery §3)`;

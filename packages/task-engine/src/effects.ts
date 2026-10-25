@@ -19,7 +19,7 @@ import type { Clock, Db, EffectDispatchKind, ExternalEffectRow, TaskPolicyGate, 
 import { canonicalJson, sha256 } from './canonical.ts';
 import { EffectDeclarationError, EffectRefusedError, StaleStateError } from './errors.ts';
 import { resendAllowed, resolveActionDeclaration, snapshotOf, tightenSnapshot, type EffectActionDeclaration } from './idempotency.ts';
-import { assertLeaseHeld, heartbeatInTx, stopRunForReview, type Lease } from './lease.ts';
+import { assertLeaseHeld, closeResendWindowInTx, heartbeatInTx, stopRunForReview, type Lease } from './lease.ts';
 import { transitionEffect } from './transitions.ts';
 
 /** 외부 부작용 도구의 계약 (실제 구현은 A5 의 도구 게이트웨이). */
@@ -127,7 +127,7 @@ export type DispatchStart =
  * 전송 직전: 펜싱 + heartbeat + 행 재조회 + 재전송 창 + 정책 재검증 + `planned|unknown|failed → dispatched` 를 한 트랜잭션에서 (recovery §2 규칙 2).
  * 호출자가 넘긴 객체가 아니라 트랜잭션 안에서 다시 읽은 행으로 판정한다 (최종 관문). 낡았거나 다른 run 의 행이면 StaleStateError.
  * `unknown` 에서의 재전송은 멱등 지원 + 창 안일 때만 한다: 미지원이면 던지고(호출자 버그), 창이 닫혔으면 `not_resendable` 로 돌려준다
- * (조회 중에 닫힐 수 있다). 이 검사는 정책 게이트(policy_decision 기록)보다 먼저라 닫혔으면 게이트에 가지 않는다.
+ * (조회 중에 닫힐 수 있다). 닫혔다는 판정은 행에 남긴다(미지원으로 강화). 이 검사는 정책 게이트(policy_decision 기록)보다 먼저라 닫혔으면 게이트에 가지 않는다.
  * `failed` 에서의 재전송은 정책이 허용할 때만 한다.
  * 정책이 거부하면 보내지 않는다: 처음 전송·같은 키 재전송이면 run 을 멈추고(`runStopped`), `failed` 재전송이면 그대로 둔다.
  * 펜싱에 실패하면 LeaseLostError 이고 호출자는 보내지 않는다.
@@ -150,6 +150,7 @@ export function beginDispatch(db: Db, clock: Clock, lease: Lease, effect: Pick<E
         throw new Error(`external effect ${row.id}: resending an 'unknown' effect is forbidden for tools without idempotency keys`);
       }
       if (!resendAllowed(row, now)) {
+        closeResendWindowInTx(tx, row.id); // 닫힘 판정은 행에 남긴다 (시계가 뒤로 가도 다시 열리지 않게)
         return { started: false, code: 'not_resendable', runStopped: false, reason: 'idempotency window closed: more than 50% of retention_ms since planned_at (recovery §3)' };
       }
     }
@@ -215,7 +216,14 @@ export async function performEffect(
         }
       }
       // 조회가 못 찾았다는 것만으로 재전송하지 않는다. 지원 + 창 안일 때만 (행 기준, 최종 관문은 beginDispatch)
-      if (!resendAllowed(effect, clock.nowIso())) return { state: 'unknown', effectId: effect.id };
+      // 닫혔으면 그 판정을 행에 남기고(펜싱) 보내지 않는다
+      if (!resendAllowed(effect, clock.nowIso())) {
+        db.writeTx((tx) => {
+          assertLeaseHeld(tx, lease, clock.nowIso(), 'close idempotency window');
+          closeResendWindowInTx(tx, effect.id);
+        });
+        return { state: 'unknown', effectId: effect.id };
+      }
       break;
     }
     default:

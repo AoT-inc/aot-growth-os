@@ -153,10 +153,6 @@ test('beyond the window, no lookup: nothing is resent, beginDispatch refuses bef
   await loseResponse(env, tool, fake, lease);
   env.clock.advance(SHORT / 2 + 1);
 
-  assert.equal((await performEffect(env.db, env.clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
-  assert.equal(tool.keys.length, 1, '재전송 없음');
-  assert.equal(env.row().state, 'unknown');
-
   const { spy, gate } = spyGate();
   const start = beginDispatch(env.db, env.clock, lease, planEffect(env.db, env.clock, lease, tool, STEP), gate);
   assert.equal(start.started, false);
@@ -164,6 +160,12 @@ test('beyond the window, no lookup: nothing is resent, beginDispatch refuses bef
   assert.equal(start.code, 'not_resendable');
   assert.equal(start.runStopped, false);
   assert.equal(spy.calls, 0, '창이 닫혔으면 정책 게이트(= policy_decision 기록)에 가지 않는다');
+  assert.equal(env.row().state, 'unknown');
+  assert.equal(Number(env.row().supports_idempotency), 0, '닫힘 판정은 행에 남는다');
+  assert.equal(env.row().idempotency_retention_ms, null);
+
+  assert.equal((await performEffect(env.db, env.clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
+  assert.equal(tool.keys.length, 1, '재전송 없음');
   assert.equal(env.row().state, 'unknown');
 
   assert.deepEqual(submitRun(env.db, env.clock, lease, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
@@ -203,7 +205,7 @@ test('beyond the window, with lookup: found -> confirmed without sending; not fo
   }
 });
 
-test('the window closing during lookup: the in-transaction check is the authority (unknown, nothing sent)', async (t) => {
+test('the window closing during lookup: performEffect\'s post-lookup check declines (unknown, nothing sent)', async (t) => {
   const env = setup(t);
   const fake = createIdempotentFakeTool({ retentionMs: SHORT });
   const tool = counting({
@@ -222,6 +224,40 @@ test('the window closing during lookup: the in-transaction check is the authorit
   assert.equal(tool.keys.length, before, '재전송 없음');
   assert.equal(spy.calls, 0);
   assert.equal(env.row().state, 'unknown');
+});
+
+test('the window closing between performEffect\'s check and beginDispatch: the in-transaction check is the authority (unknown, nothing sent, row tightened)', async (t) => {
+  const env = setup(t);
+  const fake = createIdempotentFakeTool({ retentionMs: SHORT });
+  let armed = false;
+  let reads = 0;
+  const tool = counting({ ...asEffectTool(fake), lookup: () => ((armed = true), { found: false }) });
+  const lease = env.claim();
+  fake.loseNextResponses(1);
+  assert.equal((await performEffect(env.db, env.clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
+  const before = tool.keys.length;
+  // 조회 뒤 첫 읽기(performEffect 의 사전 검사)는 열린 창을 보고, 그 다음 읽기(beginDispatch)부터는 닫힌 창을 본다
+  const clock = {
+    nowMs: () => env.clock.nowMs(),
+    nowIso: () => {
+      const now = env.clock.nowIso();
+      if (armed) {
+        armed = false;
+        reads += 1;
+        env.clock.advance(SHORT / 2 + 1);
+      }
+      return now;
+    },
+  };
+  const { spy, gate } = spyGate();
+  assert.equal((await performEffect(env.db, clock, lease, tool, STEP, gate)).state, 'unknown');
+  assert.equal(reads, 1, '사전 검사는 열린 창을 봤다');
+  assert.equal(tool.keys.length, before, '재전송 없음');
+  assert.equal(fake.deliveries.length, 1);
+  assert.equal(spy.calls, 0, 'beginDispatch 의 창 검사가 게이트 앞에서 막았다');
+  assert.equal(env.row().state, 'unknown');
+  assert.equal(Number(env.row().supports_idempotency), 0, 'beginDispatch 가 닫힘 판정을 남겼다');
+  assert.equal(env.row().idempotency_retention_ms, null);
 });
 
 test('beginDispatch re-reads the row inside the transaction: forged, stale and foreign caller objects are refused', async (t) => {
@@ -348,8 +384,8 @@ test('declaration change on adoption: shorter retention tightens the row and the
   const v2 = closed.withActions({ send: { idempotency: { supported: true, retention_ms: 100_000 } } }); // 창 50초 < 경과 60초
   assert.equal((await performEffect(closed.db, closed.clock, closed.lease2, v2, STEP, ALLOW_ALL_GATE)).state, 'unknown');
   assert.equal(v2.keys.length, 0);
-  assert.equal(Number(closed.row().idempotency_retention_ms), 100_000);
-  assert.equal(Number(closed.row().supports_idempotency), 1);
+  assert.equal(Number(closed.row().supports_idempotency), 0, '강화된 창으로도 닫혔으니 닫힘 판정이 행에 남는다');
+  assert.equal(closed.row().idempotency_retention_ms, null);
   assert.equal(closed.row().task_run_id, closed.lease2.runId);
   assert.deepEqual(submitRun(closed.db, closed.clock, closed.lease2, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
 
@@ -446,4 +482,48 @@ test('TaskWorker constructor: an invalid declaration or a tools-map key that dif
   assert.deepEqual(codesOf({ 'notify-tool': { name: 'notify-tool', actions: {}, send } }), ['actions_missing']);
   assert.deepEqual(codesOf({ 'other-key': { name: 'notify-tool', actions: { send: { idempotency: { supported: false } } }, send } }), ['name_mismatch']);
   assert.throws(build({ 'notify-tool': { name: 'notify-tool', actions: { send: { idempotency: { supported: false, retention_ms: 5 } as never } }, send } }), EffectDeclarationError);
+});
+
+test('a declined resend is persisted: stepping the clock back does not reopen the window (performEffect, then submitRun)', async (t) => {
+  const env = setup(t);
+  const fake = createIdempotentFakeTool({ retentionMs: SHORT });
+  const tool = noLookup(fake, SHORT);
+  const lease = env.claim();
+  await loseResponse(env, tool, fake, lease);
+  const plannedAt = env.row().planned_at;
+  env.clock.advance(SHORT / 2 + 1000);
+  assert.equal((await performEffect(env.db, env.clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
+  assert.equal(Number(env.row().supports_idempotency), 0);
+  assert.equal(env.row().idempotency_retention_ms, null);
+
+  env.clock.set(env.clock.nowMs() - 2000); // 시계가 뒤로 갔다
+  assert.equal((await performEffect(env.db, env.clock, lease, tool, STEP, ALLOW_ALL_GATE)).state, 'unknown');
+  assert.equal(fake.deliveries.length, 1, '재전송 없음');
+  assert.equal(env.row().planned_at, plannedAt);
+  assert.equal(Number(env.row().supports_idempotency), 0);
+  assert.equal(env.row().idempotency_retention_ms, null);
+  assert.deepEqual(submitRun(env.db, env.clock, lease, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
+});
+
+test('settle and takeover that block on a closed window persist it: a later clock step back does not reopen it', async (t) => {
+  const settle = setup(t);
+  const fake = createIdempotentFakeTool({ retentionMs: SHORT });
+  const lease = settle.claim();
+  await loseResponse(settle, noLookup(fake, SHORT), fake, lease);
+  const start = settle.clock.nowMs();
+  settle.clock.advance(SHORT / 2 + 1000);
+  assert.deepEqual(submitRun(settle.db, settle.clock, lease, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
+  settle.clock.set(start);
+  assert.equal(Number(settle.row().supports_idempotency), 0);
+  assert.equal(settle.row().idempotency_retention_ms, null);
+
+  const takeover = setup(t);
+  const fake2 = createIdempotentFakeTool({ retentionMs: SHORT });
+  const lease2 = takeover.claim();
+  await loseResponse(takeover, noLookup(fake2, SHORT), fake2, lease2);
+  const start2 = takeover.clock.nowMs();
+  assert.equal(takeover.expireAndTakeOver()?.outcome, 'effect_unknown');
+  takeover.clock.set(start2);
+  assert.equal(Number(takeover.row().supports_idempotency), 0);
+  assert.equal(takeover.row().idempotency_retention_ms, null);
 });

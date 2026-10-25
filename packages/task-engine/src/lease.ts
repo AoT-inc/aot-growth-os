@@ -204,11 +204,32 @@ export interface RunEnd {
   taskStatus: TaskStatus;
 }
 
-/** 이 run 의 `unknown` 부작용 중 지금 재전송할 수 없는 것(미지원, 또는 재전송 창이 닫힘)이 있는가. 행만 보고 판정한다 (resendAllowed). */
+/**
+ * 재전송 창이 닫혔다는 판정을 행에 남긴다 (강화만: 지원 → 미지원). 시계가 뒤로 가도 다시 열리지 않는다. planned_at 은 건드리지 않는다.
+ * 호출자는 쓰기 트랜잭션 안이어야 한다.
+ */
+export function closeResendWindowInTx(tx: Db, effectId: string): void {
+  tx.run(
+    "UPDATE external_effect SET supports_idempotency = 0, idempotency_retention_ms = NULL WHERE id = ? AND state = 'unknown' AND supports_idempotency = 1",
+    [effectId],
+  );
+}
+
+/**
+ * 이 run 의 `unknown` 부작용 중 지금 재전송할 수 없는 것(미지원, 또는 재전송 창이 닫힘)이 있는가. 행만 보고 판정한다 (resendAllowed).
+ * 창이 닫혀서 막힌 행은 미지원으로 굳힌다 (쓰기 트랜잭션 안에서만 호출).
+ */
 function hasUnresendableUnknown(tx: Db, runId: string, now: string): boolean {
-  return tx.all<Pick<ExternalEffectRow, 'supports_idempotency' | 'idempotency_retention_ms' | 'planned_at'>>(
-    "SELECT supports_idempotency, idempotency_retention_ms, planned_at FROM external_effect WHERE task_run_id = ? AND state = 'unknown'", [runId],
-  ).some((row) => !resendAllowed(row, now));
+  let blocked = false;
+  const rows = tx.all<Pick<ExternalEffectRow, 'id' | 'supports_idempotency' | 'idempotency_retention_ms' | 'planned_at'>>(
+    "SELECT id, supports_idempotency, idempotency_retention_ms, planned_at FROM external_effect WHERE task_run_id = ? AND state = 'unknown'", [runId],
+  );
+  for (const row of rows) {
+    if (resendAllowed(row, now)) continue;
+    blocked = true;
+    closeResendWindowInTx(tx, row.id);
+  }
+  return blocked;
 }
 
 /**

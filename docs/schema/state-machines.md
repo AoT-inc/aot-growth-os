@@ -41,6 +41,7 @@ queued ──► running ──► validating ──► completed
 - 종료 상태: `completed`, `failed`, `cancelled`.
 - 검증 판정과 전이 (A4): 평가(`evaluation`)는 판정만 기록하고, 전이는 업무 엔진이 `validating` 행의 조건대로 한다. `completed`는 같은 run 의 `evaluation.outcome='pass'` AND `safety='pass'`가 기록되어 있을 때만 가능하다. `inconclusive`는 `retry_wait`가 아니라 `needs_review`다(증거 부족을 재시도로 덮지 않고 사람이 확인한다, 2026-10-21 결정).
 - 실행 소유권(lease)과 부작용 복구 규칙은 [recovery](../operations/recovery.md)를 따른다. 외부 부작용이 `unknown`인 run은 `retry_wait`가 아니라 `needs_review`로 간다.
+- `external_effect`의 사람 확정 (`unknown → confirmed/failed`, 행위자 `human`): 승인 CLI `resolve-effect`가 task-engine `resolveUnknownEffect`를 통해 `transitionEffect`로 한 트랜잭션에서 전이하고 `external_effect.resolved` 이벤트를 남긴다. 업무 상태는 바꾸지 않는다(재큐는 기존 승인 경로). 절차·거부 코드·위험 등급은 [recovery §3](../operations/recovery.md).
 - `queued → running`은 task_run 생성(lease 획득)과 한 트랜잭션이다. 실행 인자가 `approved_hash`와 다르면 `running`으로 가지 못하고 `queued → needs_review`(재승인)로 간다.
 - 실행 시작 시 현재 `policy_version`이 생성 시점보다 엄격하면 새 정책으로 재검증한다.
 

@@ -146,4 +146,5 @@
 - [phase-a](../plans/phase-a.md) §6 종료 조건 3과 A6 완료 기록의 해당 줄.
 - **구현됨(2026-10-25, 커밋 7fc4b02, fc84679):** `EffectTool.actions`의 (도구, action) 선언과 순수 검증, `planned_at`·`idempotency_retention_ms` 컬럼, 재전송 전 창 판정(`resendAllowed`), 닫힘 판정의 행 보존. 엔진 수준 시험은 가짜 도구로 한다.
 - **후속(2026-10-25, 커밋 4e7238a, c69454e):** `submitRun`이 업무 범위의 해결 안 된 `unknown`을 보고 `needs_review`로 보낸다([recovery §3](../operations/recovery.md)).
+- **후속(커밋 62056a6):** `unknown`을 사람이 `confirmed`/`failed`로 확정하는 승인 CLI `effects`·`resolve-effect`를 더해 앞 후속의 열린 항목(재큐해도 다시 막힘)을 닫았다([recovery §3](../operations/recovery.md)). 확정한 뒤 다시 계획하면 `confirmed`는 재사용(전송 0회), `failed`는 `resend_failed` 정책 게이트를 거친 재전송이다. 남은 것: 해소 뒤 재전송이 또 `unknown`이면 두 번째 해소 불가, `failed`의 다중 승인자·cooldown(스키마 변경).
 - **아직 없음:** 실제 부작용 어댑터, 실제 어댑터에 대한 계약 시험(A5), 오류 매핑(재시도 안내 응답 → `unknown`)의 적용, `tool_contract_version` 해시 계산. 자연 멱등은 여전히 받지 않는다.

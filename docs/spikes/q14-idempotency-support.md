@@ -145,4 +145,5 @@
 - [ADR-0004](../adr/0004-events-routines-idempotency.md) Amendment, [ADR-0005](../adr/0005-agent-adapter-boundary.md) Amendment(2026-10-25).
 - [phase-a](../plans/phase-a.md) §6 종료 조건 3과 A6 완료 기록의 해당 줄.
 - **구현됨(2026-10-25, 커밋 7fc4b02, fc84679):** `EffectTool.actions`의 (도구, action) 선언과 순수 검증, `planned_at`·`idempotency_retention_ms` 컬럼, 재전송 전 창 판정(`resendAllowed`), 닫힘 판정의 행 보존. 엔진 수준 시험은 가짜 도구로 한다.
+- **후속(2026-10-25, 커밋 4e7238a, c69454e):** `submitRun`이 업무 범위의 해결 안 된 `unknown`을 보고 `needs_review`로 보낸다([recovery §3](../operations/recovery.md)).
 - **아직 없음:** 실제 부작용 어댑터, 실제 어댑터에 대한 계약 시험(A5), 오류 매핑(재시도 안내 응답 → `unknown`)의 적용, `tool_contract_version` 해시 계산. 자연 멱등은 여전히 받지 않는다.

@@ -285,8 +285,9 @@ A6-U17(마지막 단위)의 기록과 A6 전체의 대응표다. U17 은 시험�
 #### Q14 구현 기록 (2026-10-25)
 
 - 커밋 7fc4b02(구현·시험), fc84679(리뷰 반영). `EffectTool.actions`의 (도구, action) 선언, `planned_at`·`idempotency_retention_ms` 컬럼(0001 직접 수정, 드리프트 시험 유지), 단일 술어 `resendAllowed`를 `performEffect`·`beginDispatch`·정산·만료 인수가 공유. 닫힘 판정은 행에 남긴다. 새 상태·결과값은 없다. 상세는 [recovery §3](../operations/recovery.md).
-- 시험(이 컨테이너): 단위 931 통과. 통합 172 = 169 통과, 1 skip(denied_tool), 2 실패(root 로 실행할 때만: 소켓 권한 시험, 비root 에서는 통과). 경계 규칙 3.
-- 안 한 것: 실제 부작용 어댑터, 실제 어댑터에 대한 계약 시험(A5; 엔진 수준 시험은 가짜 도구), 오류 매핑 적용, `tool_contract_version` 해시(`create.ts`는 null), 자연 멱등. 열린 틈은 §6 ⑥.
+- 시험(이 컨테이너): 단위 939 통과. 통합 172 = 169 통과, 1 skip(denied_tool), 2 실패(root 로 실행할 때만: 소켓 권한 시험, 비root 에서는 두 파일 모두 6/6 통과). 경계 규칙 3.
+- 안 한 것: 실제 부작용 어댑터, 실제 어댑터에 대한 계약 시험(A5; 엔진 수준 시험은 가짜 도구), 오류 매핑 적용, `tool_contract_version` 해시(`create.ts`는 null), 자연 멱등.
+- 후속(커밋 4e7238a, c69454e): 알려진 틈 둘을 `submitRun`의 업무 범위 관문으로 닫았다(업무의 `unknown` 또는 다른 run의 `dispatched`가 남으면 run `effect_unknown`, 업무 `needs_review`; 상태·스키마 변경 없음). 새 열린 항목: 새 run이 다시 계획하지 않는 `unknown`은 사람만 풀 수 있는데 `unknown → confirmed/failed`를 하는 경로가 없어, `needs_review`에서 재큐해도 submit에서 다시 막힌다. 대안(재전송 가능한 `unknown`만 남으면 재큐)은 안 했다. 상세는 [recovery §3](../operations/recovery.md).
 
 #### Phase A 종료 조건 (§6) 충족 현황
 
@@ -299,7 +300,7 @@ A6-U17(마지막 단위)의 기록과 A6 전체의 대응표다. U17 은 시험�
 
 ① **출하 팩 조사 템플릿과 실제 에이전트의 어긋남 (U17 발견, 결정 필요).** 실제 조사 에이전트는 명세의 `expected_quotes` 만 확인하고 주장을 만든다. 출하 템플릿(`weekly-experiment-planning`·`weekly-market-research`)에는 기대 인용문이 없어 실제 에이전트로 돌리면 주장이 없고 `quote_in_source` 가 확인 불가 → `inconclusive` → `needs_review` 다(자동 완료는 없다, fail-closed). 또 템플릿은 `validation.llm: null` 이라 컨텍스트 분리 LLM 검증을 요구하지 않는다 — 켜면 검증기가 없는 구성에서 늘 `inconclusive`, 가짜 검증기의 기본 규칙에서는 실제 에이전트의 주장 문장이 늘 `unsupported` 다. 후보: 팩 값으로 지켜볼 인용문을 받는 자리표시자, 또는 실제 모델 어댑터(Q22 이후)까지 템플릿을 그대로 두기. 시험은 팩 사본으로 돈다.
 ② **주간 기획 루틴을 켜는 운영 경로가 없다 (U17).** 루틴은 팩에서 꺼진 채로 반영되고 켜는 경로는 실험 승인(템플릿 실험)뿐이다. 시험은 DB 를 직접 고쳐 켠다. 사람이 승인 CLI 로 루틴을 켜고 끄는 명령(사람 1인 확인 + event 기록)이 후보다. 실험 경로 밖에서 켠 루틴의 기준점은 여전히 "프로세스가 처음 본 시각"이다(U9).
-③ Q17 — 기억 기본 만료 값(`memory.default_validity` 는 비어 있음). ④ Q22 — 실제 LLM 검증 모델과 비용 비율(가짜 검증기만 있다). ⑤ Q27 — 검증기·평가기 교체의 정책 변경 절차 연결. ⑥ Q14 — 엔진 구현은 끝났다(7fc4b02, fc84679; [Q14 구현 기록](#q14-구현-기록-2026-10-25)). 남은 것: 실제 부작용 어댑터와 어댑터 계약 시험(A5), 오류 매핑 적용, `tool_contract_version` 해시 계산, 알려진 틈 둘(`submitRun` 시 창 안 멱등 `unknown`이 `validating`으로 감, 정산이 `task_run_id` 범위라 이전 run의 `unknown`을 못 봄). 자연 멱등은 첫 CRM 어댑터 때 재검토. ⑦ 측정 값 **정정 절차** 없음(U13 ①). ⑧ **기억 입력의 내용 전달** 없음 — `memory:<id>` 참조만 명세에 남고 어댑터 입력에 들어가지 않는다(U16 ④). ⑨ **Linux** — 원격 CI 의 A5 실측 외에 운영 형태(rootful Docker 호스트) 실측과 운영 이미지 빌드·배포 절차가 없다. A6 시험은 원격 CI 를 거치지 않았다. ⑩ 실험이 끝나거나 거절된 뒤의 진행 중 업무 처리(U15 ⑤·U16 ①), 검토 업무의 형식 실패와 효과 `fail` 구분(U16 ②), `inconclusive` 뒤 재측정 절차(U16 ③), 시스템 행위자 부재(U16 ⑤), 승인 후 재개 경로(`require_approval` 막힘 유지, A6 시작 결정), 선택 입력(U11 ①), 팩 `required_tools` 대조(U10 ①), 측정 대기 업무의 만료·알림(U13 ⑤).
+③ Q17 — 기억 기본 만료 값(`memory.default_validity` 는 비어 있음). ④ Q22 — 실제 LLM 검증 모델과 비용 비율(가짜 검증기만 있다). ⑤ Q27 — 검증기·평가기 교체의 정책 변경 절차 연결. ⑥ Q14 — 엔진 구현은 끝났다(7fc4b02, fc84679; [Q14 구현 기록](#q14-구현-기록-2026-10-25)). 남은 것: 실제 부작용 어댑터와 어댑터 계약 시험(A5), 오류 매핑 적용, `tool_contract_version` 해시 계산, 알려진 틈 둘은 닫혔다(4e7238a, c69454e: `submitRun`의 업무 범위 관문). 새 열린 항목: 새 run이 다시 계획하지 않는 `unknown`을 사람이 `confirmed/failed`로 푸는 경로가 없어 `needs_review` 재큐 뒤 submit에서 다시 막힌다. 자연 멱등은 첫 CRM 어댑터 때 재검토. ⑦ 측정 값 **정정 절차** 없음(U13 ①). ⑧ **기억 입력의 내용 전달** 없음 — `memory:<id>` 참조만 명세에 남고 어댑터 입력에 들어가지 않는다(U16 ④). ⑨ **Linux** — 원격 CI 의 A5 실측 외에 운영 형태(rootful Docker 호스트) 실측과 운영 이미지 빌드·배포 절차가 없다. A6 시험은 원격 CI 를 거치지 않았다. ⑩ 실험이 끝나거나 거절된 뒤의 진행 중 업무 처리(U15 ⑤·U16 ①), 검토 업무의 형식 실패와 효과 `fail` 구분(U16 ②), `inconclusive` 뒤 재측정 절차(U16 ③), 시스템 행위자 부재(U16 ⑤), 승인 후 재개 경로(`require_approval` 막힘 유지, A6 시작 결정), 선택 입력(U11 ①), 팩 `required_tools` 대조(U10 ①), 측정 대기 업무의 만료·알림(U13 ⑤).
 
 ## 3. 필수 테스트 매핑
 

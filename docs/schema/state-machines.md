@@ -22,7 +22,7 @@ queued ──► running ──► validating ──► completed
 | queued | needs_review | 스케줄러/정책 | `approved_hash` 불일치(재승인 요청), 실행 직전 재검증에서 승인 범위 이탈, 또는 (A6-U11) 명세의 선행 결과 입력(`inputs[kind=task_result]`)이 충족되지 않았거나(통과 평가가 있는 완료 업무가 아님) 업무별 어댑터를 고를 수 없음. run 을 만들지 않고 시도도 소모하지 않는다. 사유는 `upstream_unmet: <code>` / `adapter_unresolved` |
 | running | validating | 스케줄러 | `task_run.outcome='submitted'` |
 | running | queued | 스케줄러 | lease 만료로 run을 `lease_expired`로 닫음, 미확정 부작용 없음 ([recovery §4](../operations/recovery.md)) |
-| running | needs_review | 스케줄러 | run `effect_unknown`(재전송할 수 없는 `unknown`: 멱등 미지원, 또는 `planned_at`부터 `idempotency_retention_ms`의 50%가 지나 재전송 창이 닫힘. lease 만료 인수 때도 같은 판정), 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈 |
+| running | needs_review | 스케줄러 | run `effect_unknown`(재전송할 수 없는 `unknown`: 멱등 미지원, 또는 `planned_at`부터 `idempotency_retention_ms`의 50%가 지나 재전송 창이 닫힘. lease 만료 인수 때도 같은 판정), 또는 submit 시 업무 범위에 해결 안 된 `unknown`(다른 run의 것, 창 안 재전송 가능 포함)이나 다른 run의 `dispatched`가 남음, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈 |
 | running | retry_wait | 스케줄러 | error/timeout, `attempts < max_attempts` |
 | running | failed | 스케줄러 | `attempts >= max_attempts` 또는 치명적 정책 위반 |
 | running | retry_wait / failed | 스케줄러 | 실행 관리가 `time_limit` 초과로 취소해 run을 `killed`로 닫음 — `error/timeout`과 같은 규칙(시도 1회 소모, `attempts < max_attempts`면 `retry_wait`, 아니면 `failed`). 허용표에 새 전이는 없다 (A5 U4) |

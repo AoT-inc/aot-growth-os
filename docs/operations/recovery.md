@@ -68,7 +68,9 @@ confirmed → compensated (보상 작업이 실행된 경우)
 - **조회형(`supported=false`이고 조회 가능)의 `effect_key` 전달.** 어댑터는 `effect_key`를 외부가 검색할 수 있는 자리에 싣는지 선언한다(`metadata` / `slug` / `property` / `none`). `none`이면 `lookup`은 최근 항목의 내용 대조이며, "찾음"만 `confirmed`의 근거가 된다. "못 찾음"은 정보가 없다는 뜻이라 재전송이나 `failed` 판정의 근거로 쓰지 않는다. 내용 대조의 시간 범위는 `dispatched` 시각 이후로 제한한다. **공개 게시물 본문에는 `effect_key`를 싣지 않는다.**
 - **오류 매핑(어댑터를 쓸 때 적용, 아직 없음).** 외부가 "재시도하라"고 안내하거나 일부 동작이 성공했을 수 있다고 밝히는 응답(예: 쓰기 충돌 409, 서버 오류 5xx)은 `failed`(명확한 실패)가 아니라 `unknown`으로 기록한다.
 - 위 규칙의 ① 보존 기간 초과 시 재전송 안 함 ② 내용 대조 조회의 "못 찾음"이 재전송을 일으키지 않음 ③ "찾음"이 `confirmed`가 됨은 가짜 도구를 쓴 엔진 시험으로 고정했다. 실제 어댑터에 대한 계약 시험(A5)은 어댑터를 쓸 때 넣는다.
-- **열린 항목(알려진 틈, 범위 밖).** ① 창 안의 멱등 `unknown`이 있는 채로 `submitRun`하면 업무가 `validating`으로 간다. ② 정산은 `task_run_id` 범위라서, 이전 run의 `unknown`을 새 run이 다시 계획하지 않으면 보이지 않는다(만료 인수 경로는 이제 판정한다).
+- **`submitRun`의 업무 범위 관문 (2026-10-25, 커밋 4e7238a, c69454e).** run 정산 뒤 이 업무(`task_id`) 전체의 `unknown`(어느 run의 것이든)과 다른 run에 남은 `dispatched`를 훑는다. 하나라도 있으면 run은 `effect_unknown`, 업무는 `running → needs_review`이고 `validating`으로 가지 않는다. 재전송할 수 없는 `unknown`(미지원·창 닫힘)은 업무 범위에서도 `(0, NULL)`로 강화한다. 창 안 재전송 가능 `unknown`도 막지만(fail closed) 행은 바꾸지 않는다. 다른 run에 남은 `dispatched`는 정상 경로로는 생기지 않으며, 막고 행은 바꾸지 않는다. `failed`·`confirmed`·`compensated` 행은 막지 않는다. 이유 문구는 이 run의 재전송 불가 / 이전 run이 남긴 재전송 불가 / 다른 run의 `dispatched` / 재전송 가능하지만 미확인으로 구분한다. `failRun`·`killRun`·`stopRunForReview`·인수는 그대로다(창 안 멱등 `unknown`은 `retry_wait`/`queued`로 가 같은 키로 재전송하는 의도된 복구 경로). 상태·결과값·스키마 변경은 없다.
+- **닫힘:** 앞 판의 알려진 틈 둘(창 안 멱등 `unknown`이 `validating`으로 감, 이전 run의 `unknown`이 정산에 안 보임)은 위 관문으로 닫았다.
+- **열린 항목.** 새 run이 다시 계획하지 않는 `unknown`은 사람만 풀 수 있다. 상태표는 사람이 `unknown → confirmed/failed`로 바꾸는 것을 허용하지만 이를 하는 코드·운영 경로는 아직 없다. 그래서 `needs_review`에서 업무를 다시 `queued`로 돌리면 재실행되고 submit에서 같은 이유로 또 막힌다. 안 한 대안: 재전송 가능한 `unknown`만 남았으면 `needs_review` 대신 재큐.
 
 ## 4. 데몬 재시작 시나리오
 

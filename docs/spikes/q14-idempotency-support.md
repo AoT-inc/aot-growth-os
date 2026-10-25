@@ -1,6 +1,6 @@
 # 스파이크 Q14: 외부 부작용 도구별 멱등 키 지원
 
-상태: 조사 완료, 후속 결정 4건 대기 (2026-10-25) · 관련: [open-questions Q14](../open-questions.md), [phase-a §5 스파이크 3](../plans/phase-a.md), [recovery §3](../operations/recovery.md), [ADR-0004 Amendment](../adr/0004-events-routines-idempotency.md)
+상태: 조사 완료, 결정 3건 승인·1건 보류 (2026-10-25). 구현 전 · 관련: [open-questions Q14](../open-questions.md), [phase-a §5 스파이크 3](../plans/phase-a.md), [recovery §3](../operations/recovery.md), [ADR-0004 Amendment](../adr/0004-events-routines-idempotency.md)
 
 문서 조사만 했다. 계정을 만들거나 로그인하지 않았고, 발송·게시·API 호출은 하지 않았다. 확인한 것은 공개 문서 페이지뿐이다.
 
@@ -10,13 +10,13 @@
 
 | 등급 | 조건 | 도구 | Phase A 처리 |
 |---|---|---|---|
-| 재전송형 | `supports_idempotency=true` | Resend(발송), Mastodon(게시) | `unknown` → `queued`, 같은 키로 재전송 (recovery §3 표). 단 **키 보존 기간 안에서만 안전**하다(아래 결정 1) |
+| 재전송형 | `supports_idempotency=true` | Resend(발송), Mastodon(게시) | `unknown` → `queued`, 같은 키로 재전송 (recovery §3 표). 단 **키 보존 기간 안에서만 안전**하다([결정 1·3](#결정-2026-10-25-사용자-승인)) |
 | 조회형 | `false` + 조회 가능 | Postmark, WordPress, HubSpot(연락처), X, LinkedIn, Facebook Pages, Slack | 재전송 금지. 조회로 전달을 확인하고, 확인 못 하면 `needs_review` (recovery §3 표 그대로) |
 | 승인형 | `false` + 조회 불가 | Amazon SES, SendGrid, Mailgun, Salesforce | **승인 필수·자동 재시도 금지** (phase-a §5 판정 기준) |
 
 "조회 가능"의 정도가 도구마다 다르다. 우리 `effect_key`로 정확히 찾을 수 있는 도구는 Postmark(`Metadata`), WordPress(`slug`), HubSpot(고유 속성 검색)뿐이다. X·LinkedIn·Facebook·Slack은 최근 글 목록을 가져와 내용을 대조하는 근사 조회라서, "찾지 못함"이 "보내지 않았음"을 뜻하지 않는다. 그래서 조회형은 전달 확인에만 쓰고 "없음"을 근거로 재전송하지 않는다(미지원 도구는 어차피 재전송하지 않는다).
 
-설계를 바꿀 수 있는 결과는 문서에 적용하지 않고 [사용자 결정 필요](#사용자-결정-필요)에 모았다.
+설계를 바꿀 수 있는 결과 네 가지는 [결정](#결정-2026-10-25-사용자-승인)에서 정했다(사용자 승인, 구현 전).
 
 ## 판정 방법 (시작 전에 고정)
 
@@ -123,21 +123,25 @@
 - 서버 쪽 일시적 지연(방금 보낸 글이 목록에 늦게 나타남)은 문서로 확인하지 못했다. 내용 대조 조회의 "찾지 못함"을 믿지 않는 이유 중 하나다.
 - 실제 호출이 없어서 문서와 실제 동작이 다른 경우는 잡지 못한다.
 
-## 사용자 결정 필요
+## 결정 (2026-10-25, 사용자 승인)
 
-아래 네 가지는 계약·스키마·엔진 동작에 닿는 내용이라 문서에 반영하지 않았다. 판정에 따른 갱신은 (값 확정 + 링크)까지만 했다.
+조사 때는 아래 네 가지를 계약·스키마·엔진에 닿는다는 이유로 반영하지 않고 권장안과 함께 올렸고, 사용자가 권장안대로 승인했다. 계약 문서에는 반영했고 **코드·스키마는 아직 바꾸지 않았다.**
 
-1. **키 보존 기간.** Mastodon은 최대 1시간, Resend·Stripe는 24시간이다. 현재 `supports_idempotency`는 참/거짓 하나이고 엔진은 보존 기간을 모른다([`EffectTool`](../../packages/task-engine/src/effects.ts)에도 필드가 없다). `unknown`이 된 업무는 `queued`로 돌아가 같은 키로 재전송되는데, 재시도 대기나 사람 응답으로 시간이 지나면 키가 이미 지워져 있을 수 있고, 그러면 같은 키가 새 요청이 되어 **중복 부작용**이 생긴다(Stripe 문서가 이 동작을 밝힌다). 선택지: (a) 도구 계약에 보존 기간 값을 두고, 첫 `dispatched` 뒤 그 시간(여유 포함)이 지났으면 미지원 도구처럼 다룬다(계약·엔진 변경), (b) 보존 기간이 짧은 도구는 `false`로 선언해 조회형으로 쓴다(변경 없음, 대신 Mastodon을 재전송형으로 못 쓴다). 권장: (a). 결정 전에는 Mastodon·Resend 어댑터를 쓰지 않거나 (b)로 선언한다.
-2. **자연 멱등을 `true`로 볼지.** HubSpot의 일괄 upsert와 Salesforce의 외부 ID `PATCH`는 키는 없지만 같은 요청을 다시 보내도 결과가 같다. 지금 계약의 문구는 "외부 시스템의 멱등 키 지원 여부"라서 `false`로 두었다. 자연 멱등 동작(고정 외부 ID로 upsert)을 `true`로 인정하면 CRM 쓰기 상당수가 재전송형이 되지만, 인정 조건(고정 ID를 반드시 쓸 것, 여러 건 일치 오류 처리)을 계약에 적어야 한다.
-3. **도구 단위인가 동작 단위인가.** `external_effect`는 도구와 동작(`action`)을 함께 기록하므로 스키마는 동작 단위 선언을 담을 수 있다. 반면 `EffectTool`과 [recovery §3](../operations/recovery.md) 문구는 도구 단위처럼 읽힌다. Stripe는 `POST`만 키를 받고 `GET`·`DELETE`는 정의상 멱등이며, 같은 서비스에서도 동작마다 다르다. 어디에서 선언할지 정해야 한다.
-4. **조회형의 `effect_key` 전달 규칙.** `lookup(effectKey)`로 정확히 찾으려면 보내기 전에 `effect_key`를 제공사가 검색할 수 있는 자리에 실어야 한다(Postmark `Metadata`, WordPress `slug`, HubSpot 사용자 지정 속성). 그런 자리가 없는 X·LinkedIn·Facebook·Slack은 내용 대조라서 "없음"이 확정이 아니다. 어댑터 계약(A5)에 이 규칙과 "내용 대조 조회는 `confirmed` 확인에만 쓴다"는 한계를 적을지 결정해야 한다.
+1. **키 보존 기간 — 선언에 포함하고 재전송을 보존 기간의 50% 안으로 제한한다.** Mastodon은 최대 1시간, Resend·Stripe는 24시간이다. 재시도 대기나 사람 응답으로 시간이 지나 키가 지워진 뒤 같은 키를 보내면 새 요청이 되어 부작용이 중복된다. 한계를 넘으면 그 부작용을 미지원 도구처럼 다룬다(조회, 확인 안 되면 `needs_review`). 50%는 서버가 요청을 받은 시각이 `planned`보다 늦고 시계 오차가 있다는 여유다. 예: Resend 12시간, Mastodon 30분.
+2. **자연 멱등(upsert) — 인정하지 않는다(보류).** 키가 없으면 `supported=false`다. 재전송해도 결과가 같다는 것이 안전과 같지 않다(그 사이 사람이 고친 값을 덮어쓸 수 있다). 첫 CRM 쓰기 어댑터를 만들 때 다시 정한다. 인정하게 되면 조건: ① 요청에 `effect_key` 파생 고정 외부 ID 사용 ② 여러 건 일치는 `needs_review` ③ 보존 기간 "없음".
+3. **선언 단위 — (도구, `action`) 단위.** `external_effect`는 이미 `tool`과 `action`을 기록한다. 도구 단위로 선언하면 가장 약한 동작에 맞춰야 한다. 형식은 `{supported: true, retention_ms}` | `{supported: false}`다. 결정 1과 하나의 계약 변경이다.
+4. **조회형의 `effect_key` 전달 — 전달 방식을 선언한다.** `metadata`(Postmark) / `slug`(WordPress) / `property`(HubSpot) / `none`(X, LinkedIn, Facebook, Slack). `none`은 내용 대조라서 "찾음"만 `confirmed` 근거이고 "못 찾음"은 재전송 근거가 아니다(엔진은 이미 그렇게 동작한다). 내용 대조의 시간 범위는 `dispatched` 이후로 제한하고, 공개 게시물 본문에는 `effect_key`를 싣지 않는다.
 
-결정이 필요하진 않지만 어댑터를 쓸 때 알아 둘 점: LinkedIn은 409·500·503에 "재시도하라"고 안내하고 Slack은 `internal_error`에서 일부 동작이 성공했을 수 있다고 경고한다. 이런 응답은 [recovery §3](../operations/recovery.md)의 `failed`(외부가 명확히 실패 응답)가 아니라 `unknown`으로 매핑해야 한다. SES의 `MessageId`는 수락 시점에 발급되므로 발송 확인이 아니다.
+구현할 때 정해야 하는 것: 기준 시각이다. `external_effect.at`은 전이마다 덮어써져(`transitions.ts`의 `UPDATE ... SET at = ?`) 최초 `planned` 시각이 남지 않는다. 컬럼 추가는 스키마 변경이라 별도 승인이 필요하다.
+
+어댑터를 쓸 때 알아 둘 점(결정 4의 오류 매핑으로 계약에 반영): LinkedIn은 409·500·503에 "재시도하라"고 안내하고 Slack은 `internal_error`에서 일부 동작이 성공했을 수 있다고 경고한다. 이런 응답은 [recovery §3](../operations/recovery.md)의 `failed`가 아니라 `unknown`으로 매핑한다. SES의 `MessageId`는 수락 시점에 발급되므로 발송 확인이 아니다.
+
+첫 어댑터 후보(문서 조사 기준): 이메일은 Resend(키 확인) 또는 Postmark(`Metadata`로 정확한 조회), 사이트 게시는 WordPress(`slug` 조회와 삭제). SES·SendGrid·Mailgun은 응답을 잃으면 조회할 방법이 없어 승인 필수 경로로만 쓴다.
 
 ## 반영
 
-- [open-questions](../open-questions.md) Q14: 조사 완료와 위 결정 대기로 갱신.
-- [recovery §3](../operations/recovery.md): 이 스파이크로 가는 링크 한 줄. 규칙 문구와 표는 그대로.
-- [ADR-0005](../adr/0005-agent-adapter-boundary.md): Amendment(2026-10-25)로 초기 선언 값의 위치만 적었다.
-- [phase-a](../plans/phase-a.md) §6 종료 조건 3과 A6 완료 기록의 해당 줄을 실제 결과에 맞게 고쳤다.
-- 스키마·시험·코드는 건드리지 않았다.
+- [open-questions](../open-questions.md) Q14: 해소(결정 3건, 보류 1건)로 갱신.
+- [recovery §3](../operations/recovery.md): 멱등 선언과 재전송 조건 절 추가. 위 재시도 표는 그대로이고 "같은 키 재전송은 보존 기간 안에서만"이 그 아래에서 덧붙는다.
+- [ADR-0004](../adr/0004-events-routines-idempotency.md) Amendment, [ADR-0005](../adr/0005-agent-adapter-boundary.md) Amendment(2026-10-25).
+- [phase-a](../plans/phase-a.md) §6 종료 조건 3과 A6 완료 기록의 해당 줄.
+- **구현 대기(별도 승인 후):** `EffectTool`을 동작 단위 `{supported, retention_ms}`로, 기준 시각 컬럼(스키마 변경), 재전송 전 만료 확인, 어댑터 계약 시험. 이 스파이크는 스키마·시험·코드를 건드리지 않았다.

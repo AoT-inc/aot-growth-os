@@ -174,7 +174,7 @@
 | `org_version_id`, `role_version` | `task` 컬럼 |
 | `task_spec_version` | `task` 컬럼 (명세 템플릿 버전) |
 | `strategy_version_id`, `policy_version_id` | `task` 컬럼 |
-| `tool_contract_version` | `task` 컬럼 (도구 어댑터 계약. `supports_idempotency` 포함) |
+| `tool_contract_version` | `task` 컬럼 (도구 어댑터 계약. (도구, action)별 멱등 선언 `{supported, retention_ms}` 포함. 해시는 아직 계산하지 않아 null) |
 | 승인된 입력·실행 인자 스냅샷 | `task.approved_snapshot`, 해시는 `task.approved_hash`, 승인은 `approval` (`subject_hash`) |
 
 실행 시 재검증 (`queued → running` 직전, 외부 부작용 직전):

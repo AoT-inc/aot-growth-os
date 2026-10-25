@@ -35,3 +35,5 @@
 - **기준 시각에는 최초 `planned` 시각이 필요하다.** `external_effect.at`은 전이마다 덮어써지므로 쓸 수 없다. 컬럼 추가는 스키마 변경이라 구현 때 별도 승인을 받는다.
 - **자연 멱등(upsert)은 아직 인정하지 않는다.** 첫 CRM 쓰기 어댑터 때 재검토한다.
 상세 규칙은 [recovery §3](../operations/recovery.md).
+
+(2026-10-25 구현) 위 두 항목은 같은 날 엔진에 구현했다(커밋 7fc4b02, fc84679). 기준 시각은 `external_effect.planned_at`이고 `idempotency_retention_ms`도 함께 추가했다. 스키마는 0001에서 직접 바꿨다(사전 출시 규칙). 위의 "구현 전"·"스키마는 바뀌지 않는다"는 당시 기록이다.

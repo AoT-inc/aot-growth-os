@@ -57,15 +57,18 @@ confirmed → compensated (보상 작업이 실행된 경우)
 - 외부 부작용 도구를 쓰는 어댑터는 `supports_idempotency`를 계약에 선언해야 한다 (`tool_contract_version`에 포함).
 - 후보 도구 13개의 지원 여부(문서 조사, 2026-10-25)는 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 있다. 문서로 확인하지 못한 도구는 `false`로 선언한다.
 
-멱등 선언과 재전송 조건 (2026-10-25 사용자 승인. **계약 결정이며 구현 전이다** — 현재 코드의 `EffectTool.supportsIdempotency`는 도구 단위 불리언이고 보존 기간을 모른다)
+멱등 선언과 재전송 조건 (2026-10-25 사용자 승인. **엔진에 구현됨** — 커밋 7fc4b02, fc84679. 실제 어댑터와 어댑터 계약 시험은 아직 없다)
 
-- **선언 단위는 (도구, `action`)이다.** 형식은 `{supported: true, retention_ms}` 또는 `{supported: false}`이고 `supported=true`면 `retention_ms`(키 보존 기간)가 필수다. 선언은 `tool_contract_version`에 포함된다. 같은 서비스도 동작마다 다르다(예: 어떤 서비스는 쓰기 요청만 키를 받고 조회·삭제는 정의상 멱등).
-- **위 표의 "같은 키로 재전송"은 보존 기간 안에서만 한다.** `unknown`에서 재전송하기 전에, 최초 전송 준비(`planned`) 시각부터 경과한 시간이 `retention_ms`의 50%를 넘었으면 그 부작용을 "지원하지 않음" 열처럼 다룬다: `lookup`이 있으면 조회하고, 확인되지 않으면 `needs_review`로 보낸다. 키가 지워진 뒤 같은 키를 쓰면 외부는 새 요청으로 처리해 부작용이 중복될 수 있기 때문이다.
-- **기준 시각.** `external_effect.at`은 전이마다 덮어써지므로 쓸 수 없다. 최초 `planned` 시각을 따로 보관해야 하고 이는 스키마 변경(컬럼 추가)이다. 구현할 때 별도 승인을 받는다.
+- **선언 단위는 (도구, `action`)이다.** 형식은 `{supported: true, retention_ms}` 또는 `{supported: false}`이고 `supported=true`면 `retention_ms`(키 보존 기간)가 필수다. 선언은 `tool_contract_version`에 포함되는 계약 데이터다(해시 계산은 아직 안 한다. `create.ts`는 null을 쓴다). `EffectTool.actions`로 선언하고, 검증은 순수 함수(`validateEffectToolDeclaration`)이며 `retention_ms`는 양의 안전 정수(상한 없음)다. `TaskWorker` 생성자가 잘못된 선언을 `EffectDeclarationError`로 거부한다. 같은 서비스도 동작마다 다르다(예: 어떤 서비스는 쓰기 요청만 키를 받고 조회·삭제는 정의상 멱등).
+- **위 표의 "같은 키로 재전송"은 보존 기간 안에서만 한다.** `unknown`에서 재전송하기 전에, 최초 전송 준비(`planned`) 시각부터 경과한 시간이 `retention_ms`의 50%를 넘었으면 그 부작용을 "지원하지 않음" 열처럼 다룬다: `lookup`이 있으면 조회하고, 확인되지 않으면 `unknown`이 남아 run은 `effect_unknown`, 업무는 `needs_review`가 된다. 키가 지워진 뒤 같은 키를 쓰면 외부는 새 요청으로 처리해 부작용이 중복될 수 있기 때문이다.
+- **기준 시각은 `external_effect.planned_at`이다.** 최초 `planned` INSERT 때만 쓰고 `transitionEffect`는 바꾸지 못한다(`at`은 전이마다 덮어써져 쓸 수 없다). 보존 기간은 INSERT 때 `idempotency_retention_ms`로 스냅숏하고 이후에는 강화(짧게·미지원으로)만 한다. 컬럼은 사전 출시 규칙대로 `migrations/0001_init.sql`과 `docs/schema/schema.sql`에 직접 넣었다.
+- **판정 술어는 하나다.** `resendAllowed`(행의 스냅숏만 본다): 경과 ≤ `floor(retention_ms / 2)`이면 열림(경계 포함). 경과가 음수(시계 역행)거나 `planned_at`·현재 시각이 정규 ISO가 아니면 닫힘(fail closed). `performEffect`, `beginDispatch`(쓰기 트랜잭션 안에서 행을 다시 읽고 정책 관문 앞에서 판정, 코드 `not_resendable`), run 정산(`submitRun`/`failRun`/`killRun`/`stopRunForReview`), 만료 run 인수가 같은 술어를 쓴다. 인수도 직접 판정한다(재큐 없음, 시도 소모 없음).
+- **닫힘 판정은 행에 남긴다.** 닫힌 것으로 판정한 `unknown` 행은 `(supports_idempotency=0, idempotency_retention_ms=NULL)`로 강화한다. 시계가 뒤로 가도 다시 열리지 않는다. `planned_at`은 그대로다. 새 상태·결과값·상태표 변경은 없다.
 - **자연 멱등(고정 외부 ID로 upsert)은 인정하지 않는다.** 키가 없으면 `supported=false`다. 재전송해도 결과가 같다는 것이 "재전송해도 안전"과 같지 않다(그 사이 사람이 고친 값을 덮어쓸 수 있다). 첫 CRM 쓰기 어댑터를 만들 때 다시 정한다. 인정하게 되면 조건은 ① 요청에 `effect_key` 파생 고정 외부 ID를 반드시 쓴다 ② 여러 건 일치는 `failed`가 아니라 `needs_review`로 보낸다 ③ 보존 기간은 "없음"으로 선언한다.
 - **조회형(`supported=false`이고 조회 가능)의 `effect_key` 전달.** 어댑터는 `effect_key`를 외부가 검색할 수 있는 자리에 싣는지 선언한다(`metadata` / `slug` / `property` / `none`). `none`이면 `lookup`은 최근 항목의 내용 대조이며, "찾음"만 `confirmed`의 근거가 된다. "못 찾음"은 정보가 없다는 뜻이라 재전송이나 `failed` 판정의 근거로 쓰지 않는다. 내용 대조의 시간 범위는 `dispatched` 시각 이후로 제한한다. **공개 게시물 본문에는 `effect_key`를 싣지 않는다.**
-- **오류 매핑.** 외부가 "재시도하라"고 안내하거나 일부 동작이 성공했을 수 있다고 밝히는 응답(예: 쓰기 충돌 409, 서버 오류 5xx)은 `failed`(명확한 실패)가 아니라 `unknown`으로 기록한다.
-- 위 규칙은 어댑터 계약 시험(A5)에 ① 보존 기간 초과 시 재전송 안 함 ② 내용 대조 조회의 "못 찾음"이 재전송을 일으키지 않음 ③ "찾음"이 `confirmed`가 됨을 넣는다.
+- **오류 매핑(어댑터를 쓸 때 적용, 아직 없음).** 외부가 "재시도하라"고 안내하거나 일부 동작이 성공했을 수 있다고 밝히는 응답(예: 쓰기 충돌 409, 서버 오류 5xx)은 `failed`(명확한 실패)가 아니라 `unknown`으로 기록한다.
+- 위 규칙의 ① 보존 기간 초과 시 재전송 안 함 ② 내용 대조 조회의 "못 찾음"이 재전송을 일으키지 않음 ③ "찾음"이 `confirmed`가 됨은 가짜 도구를 쓴 엔진 시험으로 고정했다. 실제 어댑터에 대한 계약 시험(A5)은 어댑터를 쓸 때 넣는다.
+- **열린 항목(알려진 틈, 범위 밖).** ① 창 안의 멱등 `unknown`이 있는 채로 `submitRun`하면 업무가 `validating`으로 간다. ② 정산은 `task_run_id` 범위라서, 이전 run의 `unknown`을 새 run이 다시 계획하지 않으면 보이지 않는다(만료 인수 경로는 이제 판정한다).
 
 ## 4. 데몬 재시작 시나리오
 

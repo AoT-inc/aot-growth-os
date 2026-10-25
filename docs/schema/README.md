@@ -47,7 +47,7 @@
 - `evidence.trust_origin`은 필수(NOT NULL, 기본값 없음)이고 `memory_item.trust_origin`과 같은 어휘(`internal`, `external_untrusted`)만 허용한다. 외부 페이지·문서에서 읽은 근거는 `external_untrusted`이며, 이런 근거에서 만든 기억 항목은 신뢰된 것/사실로 편입되지 않는다([memory-item](memory-item.md) 규칙 9). 에이전트(어댑터)가 낸 근거는 어댑터가 무엇을 밝히든 호스트가 `external_untrusted`로 저장한다.
 - `evaluation.outcome='pass'`는 `primary_evidence_refs`가 비어 있지 않아야 하며 에이전트 보고서만으로는 불가.
 - `org_trial_result`는 평가기만 쓸 수 있다. 조직 관리팀은 쓰기 불가.
-- 외부 부작용은 `external_effect`를 `planned`로 기록한 뒤에만 전송한다.
+- 외부 부작용은 `external_effect`를 `planned`로 기록한 뒤에만 전송한다. `planned_at`은 INSERT 때만 쓰고, `idempotency_retention_ms`는 INSERT 때 (도구, action) 선언의 스냅숏이며 강화(짧게·미지원으로)만 된다. `unknown → dispatched`(같은 키 재전송)는 `supports_idempotency=1`이고 `planned_at`부터 `idempotency_retention_ms`의 50% 이내일 때만 가능하다([recovery §3](../operations/recovery.md)).
 - append-only 테이블(`task_transition`, `cost_entry`, `policy_decision`, `human_reauth`)은 UPDATE/DELETE 금지.
 
 ## 미반영 (후속)

@@ -1,6 +1,6 @@
 # 스파이크 Q14: 외부 부작용 도구별 멱등 키 지원
 
-상태: 조사 완료, 결정 3건 승인·1건 보류 (2026-10-25). 구현 전 · 관련: [open-questions Q14](../open-questions.md), [phase-a §5 스파이크 3](../plans/phase-a.md), [recovery §3](../operations/recovery.md), [ADR-0004 Amendment](../adr/0004-events-routines-idempotency.md)
+상태: 조사 완료, 결정 3건 승인·1건 보류 (2026-10-25). 엔진 구현 완료(커밋 7fc4b02, fc84679), 어댑터는 아직 없음 · 관련: [open-questions Q14](../open-questions.md), [phase-a §5 스파이크 3](../plans/phase-a.md), [recovery §3](../operations/recovery.md), [ADR-0004 Amendment](../adr/0004-events-routines-idempotency.md)
 
 문서 조사만 했다. 계정을 만들거나 로그인하지 않았고, 발송·게시·API 호출은 하지 않았다. 확인한 것은 공개 문서 페이지뿐이다.
 
@@ -16,7 +16,7 @@
 
 "조회 가능"의 정도가 도구마다 다르다. 우리 `effect_key`로 정확히 찾을 수 있는 도구는 Postmark(`Metadata`), WordPress(`slug`), HubSpot(고유 속성 검색)뿐이다. X·LinkedIn·Facebook·Slack은 최근 글 목록을 가져와 내용을 대조하는 근사 조회라서, "찾지 못함"이 "보내지 않았음"을 뜻하지 않는다. 그래서 조회형은 전달 확인에만 쓰고 "없음"을 근거로 재전송하지 않는다(미지원 도구는 어차피 재전송하지 않는다).
 
-설계를 바꿀 수 있는 결과 네 가지는 [결정](#결정-2026-10-25-사용자-승인)에서 정했다(사용자 승인, 구현 전).
+설계를 바꿀 수 있는 결과 네 가지는 [결정](#결정-2026-10-25-사용자-승인)에서 정했다(사용자 승인, 같은 날 엔진에 구현).
 
 ## 판정 방법 (시작 전에 고정)
 
@@ -125,14 +125,14 @@
 
 ## 결정 (2026-10-25, 사용자 승인)
 
-조사 때는 아래 네 가지를 계약·스키마·엔진에 닿는다는 이유로 반영하지 않고 권장안과 함께 올렸고, 사용자가 권장안대로 승인했다. 계약 문서에는 반영했고 **코드·스키마는 아직 바꾸지 않았다.**
+조사 때는 아래 네 가지를 계약·스키마·엔진에 닿는다는 이유로 반영하지 않고 권장안과 함께 올렸고, 사용자가 권장안대로 승인했다. 계약 문서에 반영했고 같은 날 엔진에 구현했다(커밋 7fc4b02, 리뷰 반영 fc84679). 실제 어댑터와 어댑터 계약 시험(A5)은 아직 없다.
 
 1. **키 보존 기간 — 선언에 포함하고 재전송을 보존 기간의 50% 안으로 제한한다.** Mastodon은 최대 1시간, Resend·Stripe는 24시간이다. 재시도 대기나 사람 응답으로 시간이 지나 키가 지워진 뒤 같은 키를 보내면 새 요청이 되어 부작용이 중복된다. 한계를 넘으면 그 부작용을 미지원 도구처럼 다룬다(조회, 확인 안 되면 `needs_review`). 50%는 서버가 요청을 받은 시각이 `planned`보다 늦고 시계 오차가 있다는 여유다. 예: Resend 12시간, Mastodon 30분.
 2. **자연 멱등(upsert) — 인정하지 않는다(보류).** 키가 없으면 `supported=false`다. 재전송해도 결과가 같다는 것이 안전과 같지 않다(그 사이 사람이 고친 값을 덮어쓸 수 있다). 첫 CRM 쓰기 어댑터를 만들 때 다시 정한다. 인정하게 되면 조건: ① 요청에 `effect_key` 파생 고정 외부 ID 사용 ② 여러 건 일치는 `needs_review` ③ 보존 기간 "없음".
 3. **선언 단위 — (도구, `action`) 단위.** `external_effect`는 이미 `tool`과 `action`을 기록한다. 도구 단위로 선언하면 가장 약한 동작에 맞춰야 한다. 형식은 `{supported: true, retention_ms}` | `{supported: false}`다. 결정 1과 하나의 계약 변경이다.
 4. **조회형의 `effect_key` 전달 — 전달 방식을 선언한다.** `metadata`(Postmark) / `slug`(WordPress) / `property`(HubSpot) / `none`(X, LinkedIn, Facebook, Slack). `none`은 내용 대조라서 "찾음"만 `confirmed` 근거이고 "못 찾음"은 재전송 근거가 아니다(엔진은 이미 그렇게 동작한다). 내용 대조의 시간 범위는 `dispatched` 이후로 제한하고, 공개 게시물 본문에는 `effect_key`를 싣지 않는다.
 
-구현할 때 정해야 하는 것: 기준 시각이다. `external_effect.at`은 전이마다 덮어써져(`transitions.ts`의 `UPDATE ... SET at = ?`) 최초 `planned` 시각이 남지 않는다. 컬럼 추가는 스키마 변경이라 별도 승인이 필요하다.
+구현에서 정한 것: 기준 시각은 `external_effect.planned_at` 컬럼(INSERT 때만 쓴다)이다. 컬럼 추가는 사용자 승인을 받았다. 구현 중 `idempotency_retention_ms`(INSERT 때 스냅숏, 강화만)도 추가하기로 정했다. 이유: 정산·인수가 도구 등록 없이 같은 트랜잭션에서 행만 보고 재전송 여부를 판정해야 한다.
 
 어댑터를 쓸 때 알아 둘 점(결정 4의 오류 매핑으로 계약에 반영): LinkedIn은 409·500·503에 "재시도하라"고 안내하고 Slack은 `internal_error`에서 일부 동작이 성공했을 수 있다고 경고한다. 이런 응답은 [recovery §3](../operations/recovery.md)의 `failed`가 아니라 `unknown`으로 매핑한다. SES의 `MessageId`는 수락 시점에 발급되므로 발송 확인이 아니다.
 
@@ -144,4 +144,5 @@
 - [recovery §3](../operations/recovery.md): 멱등 선언과 재전송 조건 절 추가. 위 재시도 표는 그대로이고 "같은 키 재전송은 보존 기간 안에서만"이 그 아래에서 덧붙는다.
 - [ADR-0004](../adr/0004-events-routines-idempotency.md) Amendment, [ADR-0005](../adr/0005-agent-adapter-boundary.md) Amendment(2026-10-25).
 - [phase-a](../plans/phase-a.md) §6 종료 조건 3과 A6 완료 기록의 해당 줄.
-- **구현 대기(별도 승인 후):** `EffectTool`을 동작 단위 `{supported, retention_ms}`로, 기준 시각 컬럼(스키마 변경), 재전송 전 만료 확인, 어댑터 계약 시험. 이 스파이크는 스키마·시험·코드를 건드리지 않았다.
+- **구현됨(2026-10-25, 커밋 7fc4b02, fc84679):** `EffectTool.actions`의 (도구, action) 선언과 순수 검증, `planned_at`·`idempotency_retention_ms` 컬럼, 재전송 전 창 판정(`resendAllowed`), 닫힘 판정의 행 보존. 엔진 수준 시험은 가짜 도구로 한다.
+- **아직 없음:** 실제 부작용 어댑터, 실제 어댑터에 대한 계약 시험(A5), 오류 매핑(재시도 안내 응답 → `unknown`)의 적용, `tool_contract_version` 해시 계산. 자연 멱등은 여전히 받지 않는다.

@@ -55,6 +55,7 @@ confirmed → compensated (보상 작업이 실행된 경우)
 
 - 상태가 `unknown`인 부작용이 있는 run은 `outcome='effect_unknown'`으로 닫는다. 멱등 키 미지원 도구면 업무는 `retry_wait`가 아니라 `needs_review`로 간다. 멱등 키 지원 도구면 업무를 `queued`로 돌려 같은 키로 재전송한다(위 표, 2026-10-19 사람 확인).
 - 외부 부작용 도구를 쓰는 어댑터는 `supports_idempotency`를 계약에 선언해야 한다 (`tool_contract_version`에 포함).
+- 후보 도구 13개의 지원 여부(문서 조사, 2026-10-25)는 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 있다. 문서로 확인하지 못한 도구는 `false`로 선언한다. 키 보존 기간이 짧은 도구의 재전송 한계 등 이 절의 계약에 닿는 점은 그 문서의 "사용자 결정 필요"에서 결정 전이며, 위 표와 규칙은 바꾸지 않았다.
 
 ## 4. 데몬 재시작 시나리오
 

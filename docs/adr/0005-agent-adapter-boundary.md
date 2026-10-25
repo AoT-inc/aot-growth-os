@@ -23,3 +23,6 @@
 
 ## Amendment (2026-10-24): 선행 업무 결과 입력과 업무별 어댑터
 어댑터 입력에 선택 필드 `upstream: [{name, task_ref, trust_origin, result}]`를 더했다. 호스트가 명세 `inputs[kind=task_result]`를 실행 직전에 읽어 *완료이고 통과 평가(pass, safety pass)가 있는 업무*의 결과만 넣는다. 항목은 항상 `trust_origin='external_untrusted'` 데이터이며(지시는 `task_spec`에만 있다) 계약 검증과 `start` 프레임 검증이 다른 값을 거부한다. 입력이 충족되지 않으면 어댑터를 시작하지 않고 업무를 `needs_review`로 보낸다. 컨테이너 안 에이전트는 `start` 프레임으로 같은 값을 받으며 모르는 필드는 무시한다(조사 에이전트는 읽지 않는다). 또 어댑터 선택은 워커의 포트(명세 → 어댑터 이름)가 하고 `task_run.adapter`에 실제 쓴 이름이 남는다. 어댑터 선택은 권한이 아니다: 도구는 어댑터와 무관하게 명세와 정책이 정한다. 상세는 [phase-a A6-U11 기록](../plans/phase-a.md).
+
+## Amendment (2026-10-25): 부작용 도구의 `supports_idempotency` 선언
+외부 부작용 도구를 쓰는 어댑터가 계약에 선언할 `supports_idempotency`([recovery §3](../operations/recovery.md))의 후보 도구별 초기 값은 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 문서 근거와 함께 있다. 문서로 확인하지 못한 도구는 `false`다. 이 Amendment는 값의 출처를 가리킬 뿐 계약을 바꾸지 않는다. 키 보존 기간, 자연 멱등(upsert)의 취급, 선언 단위(도구/동작), 조회형 도구의 `effect_key` 전달 규칙은 계약에 닿으므로 사용자 결정 뒤에 이 ADR에 적는다.

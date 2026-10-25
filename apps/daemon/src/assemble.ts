@@ -16,6 +16,8 @@
 // 승인 자체(`strategy_version` 의 show/approve/reject/cancel)는 승인 엔진이 같은 소켓에서 받는다.
 // A6 U16: 사이클에 7단계(실험 주가 끝난 뒤 결과 검토 업무 생성 → 평가 → 결과 기록)를 연결한다 — 팩이 있으면 팩 템플릿 `experiment-result-review@1` 을 풀어 검토 업무를 만들고(생성 게이트는 같은 정책 게이트),
 // 결과 기억의 기본 만료는 현재 정책의 `memory.default_validity` 다. 승격(`promote`)·`experiment` 상태 전략의 `reject`·`reviews` 는 승인 소켓의 같은 인증 경계에서 experiment-review.ts 가 받는다.
+// 효과 해소: 응답을 잃어 `unknown` 이 된 external_effect 를 사람이 confirmed / failed 로 확정하는 `effects`·`resolve-effect` 명령은 항상 승인 소켓에 있다(effect-resolve.ts,
+// 같은 인증 경계, failed 는 승인 엔진의 `reauthenticateInTx` 로 TOTP 재인증 — release 와 같은 잠금을 공유). 소켓 처리기에서 가장 먼저 걸러진다.
 // 옵션이 없으면 기존 동작(주어진 executor)과 같다.
 // task-engine·policy·evaluation 은 서로 모르며(경계 lint), 여기서만 만난다. main.ts 와 다중 프로세스 시험이 같은 조립을 쓴다.
 import { join } from 'node:path';
@@ -31,6 +33,7 @@ import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, ty
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
+import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
@@ -139,7 +142,7 @@ export interface Daemon {
   measurementSignals: readonly MeasurementSignal[];
   /** 주간 사이클 4·5단계 (후보 비교 → strategy_version 제안). `cycle` 옵션이 없으면 null */
   cycle: ExperimentCycle | null;
-  /** 승인 소켓의 요청 하나를 처리한다: `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
+  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
    * 첫 tick 전에 부른다. 컨테이너 어댑터가 설정된 경우에만 Docker 가용성을 확인하고(없으면 DockerUnavailableError, 호스트 실행으로 대체하지 않는다)
@@ -177,8 +180,10 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
       : {}),
   };
   const measure = measurementSignals.length === 0 ? null : createMeasurementHandler({ db: options.db, clock: options.clock, signals: measurementSignals });
+  const resolveEffects = createEffectResolutionHandler({ db: options.db, clock: options.clock, reauth: (tx, actorId, code, purpose) => engine.reauthenticateInTx(tx, actorId, code, purpose) });
   const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
   const handleChannelRequest = (request: unknown): unknown => {
+    if (isEffectResolutionCommand(request)) return resolveEffects(request);
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
     if (isExperimentDecisionCommand(options.db, request)) return decide(request);
     return engine.handle(request);

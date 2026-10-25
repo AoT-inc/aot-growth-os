@@ -1,6 +1,6 @@
 // @aot/task-engine 공개 API 진입점 (단계 A2). 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
 // 책임: 업무 생성(멱등), 스케줄러·폴링, task_run lease·heartbeat·펜싱, external_effect 원장, 재시작 복구, 검증 판정 → validating 전이(A4),
-// 사람의 측정 값 입력과 측정 대기 조건(A6-U13), 승인된 실험의 활성화(루틴 켜기·일회성 업무)와 종료(A6-U15).
+// 사람의 측정 값 입력과 측정 대기 조건(A6-U13), 사람의 unknown 효과 해소(effect-resolution), 승인된 실험의 활성화(루틴 켜기·일회성 업무)와 종료(A6-U15).
 // 의존: @aot/domain 만. 정책 훅은 domain 의 TaskPolicyGate 포트, 검증은 domain 의 TaskValidator 포트(evaluation 이 구현), 실행은 이 패키지의 TaskExecutor 포트(A5 가 구현).
 export { canonicalJson } from './canonical.ts';
 export {
@@ -31,7 +31,15 @@ export {
   type DeclarationError, type DeclarationErrorCode, type EffectActionDeclaration, type EffectKeyCarrier, type IdempotencyDeclaration,
   type IdempotencySnapshot,
 } from './idempotency.ts';
-export { EffectDeclarationError, EffectRefusedError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError } from './errors.ts';
+export {
+  EffectDeclarationError, EffectRefusedError, EffectResolutionError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError,
+  type EffectResolutionCode,
+} from './errors.ts';
+export {
+  EFFECT_RESOLUTION_EVENT, EFFECT_RESOLUTION_KEY_PREFIX, EFFECT_RESOLUTION_OUTCOMES, effectResolutionEventId, effectResolutionKey, listUnresolvedEffects,
+  MAX_RESOLUTION_NOTE_CHARS, resolveUnknownEffect,
+  type EffectResolutionOutcome, type ResolveEffectContext, type ResolveEffectInput, type ResolveEffectResult, type UnresolvedEffect,
+} from './effect-resolution.ts';
 export {
   DATA_QUALITIES, findMeasurement, isoWeekKeyAt, isoWeekPeriod, listMeasurementWaits, MAX_ATTACHMENT_REF_CHARS, MAX_MEASUREMENT_ATTACHMENTS,
   MEASUREMENT_EVENT_SOURCE, MEASUREMENT_EVENT_TYPE, measurementContentHash, measurementInputsOf, previousIsoWeekKey, recordMeasurement,

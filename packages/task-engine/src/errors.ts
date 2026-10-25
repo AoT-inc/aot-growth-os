@@ -90,3 +90,21 @@ export class MeasurementRefusedError extends Error {
     this.code = code;
   }
 }
+
+/** 효과 해소 거부 사유 코드 (effect-resolution.ts) */
+export type EffectResolutionCode =
+  | 'invalid_request' | 'invalid_outcome' | 'note_required' | 'note_too_long' | 'unknown_actor' | 'not_human' | 'not_found' | 'key_in_use'
+  | 'resolved_before' | 'outcome_conflict' | 'not_unknown' | 'run_active' | 'reauth_required';
+
+/** 사람의 `unknown` 효과 해소 거부. `code` 는 사유, `extra` 는 사유별 부가 정보(현재 상태, 이전 해소 기록, 열린 run) */
+export class EffectResolutionError extends Error {
+  readonly code: EffectResolutionCode;
+  readonly extra: Record<string, unknown>;
+
+  constructor(code: EffectResolutionCode, message: string, extra: Record<string, unknown> = {}) {
+    super(`effect resolution refused (${code}): ${message}`);
+    this.name = 'EffectResolutionError';
+    this.code = code;
+    this.extra = extra;
+  }
+}

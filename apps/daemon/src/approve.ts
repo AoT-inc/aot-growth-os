@@ -15,6 +15,10 @@
 //     measure <신호 id> <값> --observations N --quality good|poor --attach <파일> [--attach <파일> ...] [--week YYYY-Www] [--minutes M]
 //             (A6-U13. 첨부 파일은 이 CLI 가 읽어 sha256 과 로컬 참조 `file:<절대 경로>` 만 보낸다. 주를 생략하면 데몬 시계 기준 지난주)
 //     measurements                   (측정 값을 기다리는 업무와 사유, 정의된 신호)
+//     effects                        (응답을 잃어 unknown 으로 남은 외부 효과 목록. 읽기 전용. 요청 본문·키는 보여 주지 않는다)
+//     resolve-effect <효과 id> --outcome confirmed|failed --note 사유 [--totp-stdin]
+//             (unknown 효과를 사람이 확정한다. 바깥(수신함 등)을 확인한 뒤: confirmed = 보냈다, failed = 보내지 않았다(이후 재전송은 정책 판정을 거친다).
+//              failed 는 TOTP 재인증이 필요하다(표준 입력 한 줄). outcome·note 값 검사는 데몬이 한다)
 // 기본값: --socket = $AOT_APPROVAL_SOCKET 또는 $AOT_INSTANCE_DIR/run/approval.sock, --actor = $AOT_ACTOR
 // TOTP 코드는 명령줄 인자로 받지 않는다(프로세스 목록에 보이므로).
 import { createHash } from 'node:crypto';
@@ -124,6 +128,17 @@ async function main(): Promise<void> {
       };
       break;
     }
+    case 'effects':
+      request = { cmd, actor };
+      break;
+    case 'resolve-effect': {
+      const effectId = kindArg ?? fail('resolve-effect needs an effect id'); // 효과 id 는 두 번째 위치 인자다 (kind 자리)
+      if (id !== undefined) fail('resolve-effect takes one effect id');
+      const outcome = flag('outcome') ?? fail('resolve-effect needs --outcome confirmed|failed');
+      const note = flag('note') ?? fail('resolve-effect needs --note <text>');
+      request = { cmd, actor, effect_id: effectId, outcome, note, ...(flags.get('totp-stdin') === true ? { totp: await readStdinLine() } : {}) };
+      break;
+    }
     case 'show':
       needKind();
       request = { cmd, actor, kind, id };
@@ -151,7 +166,7 @@ async function main(): Promise<void> {
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect ...');
   }
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
   process.stdout.write(`${JSON.stringify(response)}\n`);

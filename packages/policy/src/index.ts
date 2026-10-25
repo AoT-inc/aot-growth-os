@@ -15,7 +15,8 @@ export {
   type ParsedPolicy, type PolicyDocument, type PolicyLimits, type PolicyRule, type RiskyChangeParams,
 } from './document.ts';
 export {
-  ApprovalEngine, ApprovalRefusedError, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions, type ApprovalResponse, type ApprovalSubject,
+  ApprovalEngine, ApprovalRefusedError, ReauthRefusedError, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions, type ApprovalResponse,
+  type ApprovalSubject, type ReauthRefusalCode,
 } from './engine.ts';
 export {
   approvalRequirement, constraintsOf, evaluateRequest, globMatch, requestOf, requestsFromSpec, strictest, subjectOf,

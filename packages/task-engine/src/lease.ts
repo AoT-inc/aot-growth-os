@@ -249,16 +249,46 @@ function closeRun(tx: Db, runId: string, outcome: TaskRunOutcome, now: string, r
 }
 
 /**
+ * 업무 범위 unknown 관문 (recovery §3). 이 업무의 `unknown`/`dispatched` 부작용을 run 과 무관하게 훑는다.
+ * 재전송 불가(미지원·창 닫힘) unknown 은 미지원으로 굳히고 unresendable, 다른 run 에 남은 dispatched 는 비정상이라 fail-closed(행은 안 바꾼다),
+ * 창 안 멱등 unknown 은 pendingResendable (행은 안 바꾼다). 다른 업무 행은 보지 않는다. 쓰기 트랜잭션 안에서만 호출.
+ */
+function scanTaskEffects(tx: Db, taskId: string, now: string): { unresendable: boolean; pendingResendable: boolean } {
+  let unresendable = false;
+  let pendingResendable = false;
+  const rows = tx.all<Pick<ExternalEffectRow, 'id' | 'task_run_id' | 'state' | 'supports_idempotency' | 'idempotency_retention_ms' | 'planned_at'>>(
+    "SELECT id, task_run_id, state, supports_idempotency, idempotency_retention_ms, planned_at FROM external_effect WHERE task_id = ? AND state IN ('unknown', 'dispatched')",
+    [taskId],
+  );
+  for (const row of rows) {
+    if (row.state === 'dispatched') unresendable = true;
+    else if (resendAllowed(row, now)) pendingResendable = true;
+    else {
+      closeResendWindowInTx(tx, row.id);
+      unresendable = true;
+    }
+  }
+  return { unresendable, pendingResendable };
+}
+
+/**
  * 실행이 결과를 냈다 (에이전트 자기 보고). running → validating.
- * 재전송할 수 없는 `unknown` 부작용(미지원·창 닫힘)이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
+ * 이 업무에 해결 안 된 `unknown` 부작용이 하나라도 남았으면(어느 run 의 것이든 — 재전송 불가든 창 안 재전송 가능이든) 검증으로 넘기지 않는다:
+ * run 은 effect_unknown, 업무는 needs_review (§3). 다른 run 에 남은 dispatched 는 fail-closed.
  */
 export function submitRun(db: Db, clock: Clock, lease: Lease, result: unknown): RunEnd {
   return db.writeTx((tx) => {
     const now = clock.nowIso();
     assertLeaseHeld(tx, lease, now, 'submit');
-    if (settleRunEffects(tx, lease.runId, now)) {
+    const runBlocked = settleRunEffects(tx, lease.runId, now);
+    const { unresendable, pendingResendable } = scanTaskEffects(tx, lease.taskId, now);
+    if (runBlocked || unresendable || pendingResendable) {
+      const hard = runBlocked || unresendable;
+      const reason = hard
+        ? (pendingResendable ? `${unknownEffectReason(lease.runId)}; ${resendableUnknownReason(lease)}` : unknownEffectReason(lease.runId))
+        : resendableUnknownReason(lease);
       closeRun(tx, lease.runId, 'effect_unknown', now, result);
-      transitionTask(tx, { taskId: lease.taskId, from: 'running', to: 'needs_review', by: 'scheduler', now, reason: unknownEffectReason(lease.runId) });
+      transitionTask(tx, { taskId: lease.taskId, from: 'running', to: 'needs_review', by: 'scheduler', now, reason });
       return { outcome: 'effect_unknown', taskStatus: 'needs_review' };
     }
     closeRun(tx, lease.runId, 'submitted', now, result);
@@ -391,6 +421,9 @@ export function stopRunForReview(tx: Db, lease: Lease, now: string, reason: stri
 
 const unknownEffectReason = (runId: string) =>
   `run ${runId} left an 'unknown' external effect that may not be resent (tool without idempotency keys, or more than 50% of retention_ms since planned_at); not resent automatically (recovery §3)`;
+
+const resendableUnknownReason = (lease: Lease) =>
+  `run ${lease.runId} submitted while an external effect of task ${lease.taskId} is still 'unknown' (resendable with the same key, delivery unconfirmed); not completed automatically (recovery §3)`;
 
 // ===== 만료 인수와 재시도 대기 =====
 

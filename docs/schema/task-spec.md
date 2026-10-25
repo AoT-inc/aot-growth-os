@@ -10,6 +10,7 @@
 | `trigger` | ✔ | `{kind: event\|routine\|manual\|task, ref}` | ref 없음 |
 | `inputs` | ✔ | 입력 데이터와 출처 `[{name, ref, kind}]`. `kind='source_url'`은 조사 대상 URL, `kind='task_result'`는 선행 업무의 결과(아래 "선행 업무 결과 입력"), `kind='measurement'`는 사람이 입력할 주간 측정 값(아래 "측정 값 입력", 업무당 1개), `kind='memory'`는 현재 사실인 기억 항목(아래 "기억 입력", 최대 3개) | 출처 없는 입력, `task_result`의 잘못된 형식·중복·개수 초과, `task_result`의 선행 업무가 `dependencies`에 없음, `measurement`의 잘못된 형식(없는 주·상대 주 포함)·2개 이상, `memory`의 잘못된 형식·이름 중복·3개 초과, 구체 `memory:<id>`가 없거나 현재 사실이 아님 |
 | `expected_quotes` | | 출처 원문에 있어야 하는 인용문 `[{source, text}]`. `source`는 `inputs[]`에서 `kind='source_url'`인 항목의 `name`(같은 이름의 `source_url` 입력이 정확히 하나여야 한다), `text`는 그 출처에 있어야 하는 문장. 상한: 전체 200건, 출처당 10건, 한 문장 500자(앞뒤 공백 제외). 조사 에이전트는 이 목록의 *모든* 문장에 대해 found/not found를 보고하고, 검증기(`quote_in_source`)가 출처 원문에서 다시 확인한다. 승인 대상 해시에 포함된다(실행 인자) | 알 수 없거나 모호한 `source`, 빈 `text`, 상한 초과, 같은 출처의 같은 문장(공백 차이 무시) 중복, `validation.deterministic`에 `quote_in_source`가 없음 |
+| `expected_call_outcome` | | 전화 업무가 남겨야 하는 구조화된 통화 결과의 형식 `{dispositions, required_fields?}` (아래 "통화 결과 기대"). 승인 대상 해시에 포함된다(실행 인자) | `dispositions` 가 비었거나 이름 형식(`[a-z][a-z0-9_]*`, 필수 필드는 `[A-Za-z][A-Za-z0-9_]*`) 위반·중복·상한(20, 30) 초과, 알 수 없는 키, `validation.deterministic` 에 `call_outcome_recorded` 가 없음 |
 | `dependencies` | | 선행 업무 id 목록. 선행이 모두 `completed`가 되기 전에는 실행되지 않는다. `task_result` 입력의 선행 업무는 여기에도 있어야 한다 | 순환 |
 | `allowed_tools` | ✔ | 요청하는 도구와 작업 `[{tool, operations[], scope, impact, target?}]`. `scope`·`impact`는 항목마다 필수(`target`만 선택). 최종 권한은 정책이 결정 | `scope`·`impact` 누락(스키마 검증 단계, 정책 판정 이전), 정책 판정이 deny |
 | `constraints` | ✔ | `{time_limit, network_allowlist, fs_scope, publish_scope, data_classes}`. `time_limit`은 정수 + 단위 하나(`s`·`m`·`h`·`d`, 예 `"30m"`, 최대 `7d`)이며 해석할 수 없으면 생성 거부. 실행 관리가 초과 시 run을 취소하고 `killed`로 닫는다(없으면 데몬 기본 `default_time_limit`, 30분). `network_allowlist`는 명시적 도메인 목록이며 비면 네트워크 없음, `"*"`(전체 허용)은 금지 | 정책 위반, `"*"` 사용 |
@@ -119,6 +120,22 @@
 - **해석(업무를 만드는 시점).** 선택자는 같은 상품(`product`가 없으면 상품 없는 항목)의 가장 최근 **현재 사실** `strategy_record`의 구체 참조로 바뀌고, 없으면 그 입력이 빠진다(선택 입력). 구체 참조는 항목이 있고 지금도 현재 사실이어야 한다 — 반증·만료·대체·미검증·외부 유래(`hypothesis`) 항목이면 생성을 거부한다(`memory_not_current`). 저장되는 명세에는 구체 참조만 남아 승인 해시·감사가 같은 항목을 가리킨다. 같은 트리거·같은 입력의 중복 판정(`dedupe_key`)은 작성자가 낸 입력(선택자 그대로)으로 한다.
 - **내용은 명세에 복사하지 않는다.** 참조만 남는다. 항목 내용을 모델 프롬프트에 어떻게 넣는지(데이터 구획 표시)는 실제 모델 어댑터(Q22 이후)의 몫이다([phase-a A6-U16 열린 항목](../plans/phase-a.md)).
 
+## 통화 결과 기대 (`expected_call_outcome`, ADR-0014)
+
+전화 업무는 "통화를 했다"는 에이전트의 보고가 아니라 통화 기록·발화 기록·구조화된 결과로 완료된다. 결과의 형식(어떤 분류가 허용되는지, 어떤 필드가 필수인지)은 Phone이 아니라 명세가 정한다.
+
+```json
+{
+  "allowed_tools": [{"tool": "phone_call", "operations": ["call"], "scope": "customer", "impact": "external_effect", "target": "+821000000001"}],
+  "validation": {"deterministic": ["call_completed", "call_transcript_present", "call_outcome_recorded", "policy_compliance"], "llm": null, "human": false},
+  "expected_call_outcome": {"dispositions": ["qualified", "not_interested", "callback_requested"], "required_fields": ["budgetKnown", "timeline"]}
+}
+```
+
+- **허용 번호.** `phone_call`·`phone_transfer`의 `target`은 E.164 정확 일치 또는 끝이 `*`인 접두어(`+8210555*`)다. 사람이 승인한 명세의 범위이며(승인 해시에 포함), 이 밖의 번호는 정책을 묻기 전에 거부된다. 대상을 적지 않으면 번호 제한은 없고 전화 정책(`phone:` 섹션)의 일반 한도만 적용된다.
+- **결과의 출처.** 결과는 provider 분석(`provider_analysis`), 추출기(`extractor`), 사람(`human`)이 만든다. 에이전트가 자기 통화의 결과를 기록하는 길은 없다. 상대방의 말에서 나온 값이라 사람이 직접 기록한 것 말고는 `external_untrusted`다.
+- **같은 번호에 두 번.** 같은 업무에서 같은 번호·같은 목적·같은 맥락의 재요청은 같은 통화로 합쳐진다(실패·취소한 통화는 제외). 의도적으로 다시 걸려면 이전 통화가 실패·취소되어야 한다.
+
 ## 결정론적 검사 id (`validation.deterministic`)
 
 `@aot/evaluation`(A4)이 구현한 검사 id. 목록에 없는 id는 "검증할 수 없음"으로 취급되어 평가가 `inconclusive`(업무 `needs_review`)가 된다. 검사 대상이 하나도 없는 검사도 통과가 아니라 "확인 불가"다.
@@ -132,6 +149,9 @@
 | `budget` | 비용 원장 합계가 `cost_budget`(USD, 토큰) 이내 | `cost_entry` |
 | `policy_compliance` | 보낸 외부 부작용마다 허용(또는 승인 대기) 정책 판정이 기록됨. 실패는 안전성 실패 | `external_effect`, `policy_decision` |
 | `uncertainty_listed` | run 결과에 `uncertainties` 필드가 *존재*하고 형식이 유효함(아래). 필드 누락·형식 오류는 `fail`(사유 포함, 평가 `fail` → 재시도 대기). 명세의 `validation.deterministic`에 이 id가 있을 때만 적용된다 | `task_run.result` |
+| `call_completed` | (ADR-0014) 이 업무의 통화 중 `connected`를 거쳐 `completed`된 것이 있다. 통화가 하나도 없거나 모두 연결 없이 끝났으면 `fail`, 아직 열린 통화만 있으면 확인 불가. 통화는 run을 넘어 업무에 속한다 | `call`, `evidence` |
+| `call_transcript_present` | 위 기준 통화의 발화 기록에 턴이 하나 이상 있다. 기준 통화가 없으면 확인 불가 | `call_artifact` |
+| `call_outcome_recorded` | 기준 통화의 구조화된 결과가 있고 명세의 `expected_call_outcome`(허용 disposition, 필수 필드)을 만족한다. 없거나 못 미치면 확인 불가(`inconclusive` → 사람 검토): 결과 추출이 부족하다고 업무를 재시도해 다시 전화하지 않는다. 자유 텍스트 요약만으로는 결과가 아니다 | `call_artifact`, 명세 |
 | `experiment_candidates` | (A6-U14) 기획 업무 결과의 `candidates` 형식이 유효함(아래 "실험 후보"): id 중복 없음, 마케팅 업무 명세는 `validateTaskSpec` 통과, 각 후보의 `measurement.signal_id`가 알려진 측정 신호 정의(팩의 `measurement-signals/`)이고 주기가 같음. 위반은 `fail`(사유 포함). 신호 정의가 평가기에 주어지지 않았으면 신호를 확인할 수 없어 "확인 불가"(`inconclusive`). 이 id가 있는 업무가 곧 *기획 업무*다(데몬의 주간 사이클이 완료된 기획 업무의 후보를 비교한다) | `task_run.result`, 신호 정의 |
 
 보고서의 주장 목록은 `{"claims": [{"id"?, "statement", "source_url", "quote"?}]}` 모양을 읽는다(어댑터 출력 계약은 A5에서 확정). 조사 에이전트는 *찾은* 기대 인용문만 주장으로 올리고, 찾지 못한 것은 `result.sources[].quotes[]`에 `found:false`로 남긴다(출처를 읽지 못했거나 이름이 맞는 출처가 없는 인용문도 `found:false`, 후자는 `result.unmatched_quotes[]`). 주장으로 올라오지 않은 기대 인용문은 검증기가 `fail`로 잡으므로, 일부만 보고한 결과가 `pass`가 될 수 없다. `expected_quotes`가 없고 보고서에 인용문도 없으면 `quote_in_source`는 "확인 불가"다(`inconclusive`). 필수 테스트 결과(`test_result`) 검사는 합격 표현 형식이 정해지지 않아 구현하지 않았다.

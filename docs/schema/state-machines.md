@@ -118,6 +118,31 @@ approved ──► trial ──► active ──► retired
 - (A6-U16) `experiment` 에서 나가는 길: ① 결과 검토 평가가 `pass`이면 사람이 `promote`(`experiment → active`, 위 표) ② 평가가 `fail`이면 시스템(평가기)이 `rejected` + 종료 ③ `inconclusive`·활성화 거부 등은 사람이 사유와 함께 `reject`(`experiment → rejected`). 에이전트는 어느 것도 못 한다. 전이와 결정 기록(event `experiment-decision:<id>`: 주체·사유·이전 `active` 목록)과 실험 종료(루틴 끄기)는 한 쓰기 트랜잭션이다(domain `promoteExperiment`·`rejectExperiment`, task-engine `endExperimentInTx`). 결과 기록·평가 절차는 [evaluation §8](../operations/evaluation.md), [memory-item](memory-item.md).
 - (A6-U16, 남은 문제) 활성화 전에 `cancel`된 `experiment`(승인 취소)는 여전히 `experiment`로 남지만 진행 중으로 세지 않는다. 사람이 `reject`로 정리할 수 있다. 검토 업무가 아직 도는 실험을 사람이 거절하면 그 업무는 취소되지 않고 끝까지 돈다.
 
+## 전화 통화 (`call.status`, ADR-0014)
+
+```
+queued ─► initiated ─► ringing ─► connected ─► completed
+  │           │           │           │  └────► transferred ─► completed
+  └─► failed / cancelled (열린 상태 어디서나)      └────────► failed
+```
+
+| From | To | 주체 | 조건 |
+|---|---|---|---|
+| (none) | queued | 시스템 | 발신 요청이 정책을 통과해 원장에 기록됨 |
+| (none) | initiated / ringing / connected | 시스템 | 인바운드: 알 수 없는 provider 통화의 첫 이벤트 |
+| queued | initiated / ringing / connected / failed / cancelled | 시스템 | provider 접수·이벤트, 접수 거절(`failed`), 접수 전 취소 |
+| initiated | ringing / connected / completed / failed / cancelled | 시스템 | provider 이벤트 |
+| ringing | connected / completed / failed / cancelled | 시스템 | provider 이벤트 |
+| connected | completed / failed / transferred | 시스템 | provider 이벤트, 전환 성공 |
+| transferred | completed / failed | 시스템 | 사람과의 통화가 끝남 |
+
+규칙
+- 전이는 provider 이벤트를 canonical 이벤트로 바꾼 뒤 `applyPhoneEvent`가 일으킨다. 에이전트는 통화 상태를 바꿀 수 없다(요청만 한다).
+- provider 이벤트는 중복·역순·누락으로 온다: 같은 이벤트는 한 번만 적용하고, 앞으로 가는 건너뛰기(`queued → connected`)는 허용하며, 이미 지나간 상태나 종료 상태로 되돌리는 이벤트와 표에 없는 전이(`queued → completed`)는 기록만 하고 상태를 바꾸지 않는다(`stale`).
+- 종료 상태(`completed`, `failed`, `cancelled`)는 되돌아가지 않는다. 종료 뒤 도착한 transcript는 받는다.
+- 마감(최대 통화시간 + 유예)을 넘긴 열린 통화는 provider에 조회하고, 그래도 닫히지 않으면 시스템이 `failed`(`deadline_exceeded`)로 닫는다.
+- 열린 통화가 있는 `validating` 업무는 검증되지 않고 기다린다(전이·시도 소모 없음). 통화 상태는 업무 상태를 직접 바꾸지 않는다.
+
 ## 게시 (`publication.status`)
 
 `draft → pending_approval → published → withdrawn`. `audience`가 `internal`이 아니면 `published` 전환에 승인(`approval`)이 필수다.
@@ -145,3 +170,5 @@ approved ──► trial ──► active ──► retired
 | `strategy_version`: `proposed → active`(사람 승인 없이) | |
 | `strategy_version`: `experiment → active`(결과가 `pass`로 기록되지 않았거나, 사람 아닌 주체로) | 증거 부족·실패는 승격 사유가 아님. 승격은 사람 |
 | `publication`: `draft → published`(audience≠internal, 승인 없이) | |
+| `call`: 에이전트에 의한 모든 전이, 종료 상태(`completed`/`failed`/`cancelled`)에서의 모든 전이 | 통화 상태는 시스템이 provider 이벤트로만 바꾼다 |
+| `call`: `queued → completed`, `queued → transferred`, 뒤로 가는 전이(`connected → ringing`) | 접수·연결 없이 끝날 수 없다. 역순 이벤트는 흡수한다 |

@@ -48,3 +48,6 @@
 ## Amendment (2026-10-24): 실험 결과 검토 (A6-U16)
 - 실험의 결과는 평가기 규칙을 바꾸지 않고 *평가기를 실험 주의 실제 측정 값으로 한 번 더 부르는* 방식으로 판정한다(결과 검토 업무). 합격선은 비교기가 기준선 대비로 정해 검토 기록에 고정한 값이며, 평가기는 그것을 `EffectSignal.passAtLeast`로 읽는다. `pass`·`fail`일 때만 학습 기록(`measurement`·`strategy_record`)을 남기고 `inconclusive`는 사람 검토로 넘긴다(기록하지 않음). 전략의 승격(`experiment → active`)은 평가가 `pass`일 때도 자동으로 하지 않고 사람만 한다 — 평가는 근거이지 승격 권한이 아니다. 규칙의 정본은 [evaluation §8](../operations/evaluation.md).
 
+
+## Amendment (2026-10-25): 통화 증거 검사
+결정론적 검사 `call_completed`·`call_transcript_present`·`call_outcome_recorded`를 더했다([task-spec](../schema/task-spec.md)). 에이전트는 통화 상태도 결과도 쓸 수 없으므로 통화 기록·발화 기록·구조화 결과는 보고서가 아닌 원본 증거이고, 업무에 연결된 통화는 `evidence`(`external_untrusted`)로도 남아 `primary_evidence_refs`에 센다. 통화가 하나도 없으면 `fail`, 아직 열린 통화만 있거나 결과가 명세에 못 미치면 `inconclusive`다(결과 추출이 부족하다고 업무를 재시도해 다시 전화하지 않는다). 열린 통화가 있는 동안 업무 검증은 보류된다([ADR-0014](0014-phone-capability.md) §6).

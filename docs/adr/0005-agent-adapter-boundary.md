@@ -26,3 +26,6 @@
 
 ## Amendment (2026-10-25): 부작용 도구의 `supports_idempotency` 선언
 외부 부작용 도구를 쓰는 어댑터가 계약에 선언할 `supports_idempotency`([recovery §3](../operations/recovery.md))의 후보 도구별 초기 값은 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 문서 근거와 함께 있다. 문서로 확인하지 못한 도구는 `false`다. 이 Amendment는 값의 출처를 가리킬 뿐 계약을 바꾸지 않는다. 키 보존 기간, 자연 멱등(upsert)의 취급, 선언 단위(도구/동작), 조회형 도구의 `effect_key` 전달 규칙은 계약에 닿으므로 사용자 결정 뒤에 이 ADR에 적는다.
+
+## Amendment (2026-10-25): 승인을 원장에 맡기는 도구 선언
+`GatewayToolSpec.approvalViaEffectGate`: 부작용을 부작용 원장(`performEffect`)으로만 보내는 도구가 선언한다. 호출별 정책 판정이 `require_approval`이어도 게이트웨이가 막지 않고 실행기로 넘기며, 사람의 업무 승인은 원장이 전송 직전에 다시 확인한다. `deny`와 외부 입력 영향 부작용 하한은 그대로 막는다. 선언하지 않은 부작용 도구는 계속 막힌다(게이트웨이에는 승인 경로가 없다). 호출 기록에는 정책의 `require_approval`과 위임 사유가 남는다. 첫 사용처는 전화 도구([ADR-0014](0014-phone-capability.md) §8).

@@ -1,6 +1,6 @@
 # ADR-0014 외부 대화 계층과 첫 채널: 전화 (Phone Capability)
 
-상태: proposed (2026-10-25, 구현은 같은 날 `phone-capability` 브랜치. 사람 확인이 필요한 항목은 §10)
+상태: proposed (2026-10-25, 구현됨 — 구현 기록은 문서 끝. 사람 확인이 필요한 항목은 §10)
 
 ## Context
 영업·고객지원·채용 에이전트가 실제 전화를 걸고 받아야 한다. 전화는 (1) 외부 세계에 직접 영향을 주고(`external_effect`, `customer` 범위), (2) 몇 분씩 걸리며, (3) 결과(통화 내용)가 상대방이 한 말이라 신뢰할 수 없고, (4) provider(Vapi, Retell, Twilio)가 바뀔 수 있다. 이 저장소에는 이미 외부 부작용 원장(`external_effect`, `performEffect`), 도구 게이트웨이, 정책 판정, 독립 평가기, 측정 값 대기 조건이 있다. 새 workflow engine이나 독립 서비스는 필요 없다.
@@ -62,7 +62,7 @@ canonical 이벤트: `phone.call.requested|initiated|ringing|connected|transcrip
 
 | id | 확인 | 실패 시 |
 |---|---|---|
-| `call_completed` | 이 run이 만든 Call 중 `connected`를 거쳐 `completed`된 것이 있다 | 종료됐으나 연결 없음 → `fail`, 열린 Call/없음 → `unknown` |
+| `call_completed` | 이 업무의 Call 중 `connected`를 거쳐 `completed`된 것이 있다(Call은 run을 넘어 업무에 속한다) | Call이 없거나 모두 연결 없이 끝남 → `fail`, 열린 Call만 있음 → `unknown` |
 | `call_transcript_present` | 그 Call의 transcript가 있고 비어 있지 않다 | `fail` |
 | `call_outcome_recorded` | 구조화된 outcome이 있고, `disposition`이 명세가 허용한 값이며, 명세가 요구한 `required_fields`가 `structured_data`에 있다. 에이전트의 자기 보고는 outcome이 아니다 | `fail` |
 
@@ -70,10 +70,11 @@ canonical 이벤트: `phone.call.requested|initiated|ringing|connected|transcrip
 outcome은 상대방과의 대화에서 나온 요약이라 `external_untrusted`다(provider 분석이든 추출기든). 사람이 직접 기록한 outcome만 `internal`이다. LLM 검증(요약이 transcript로 뒷받침되는가)은 기존 `LlmVerifier` 포트에 연결할 수 있다 — 실제 모델은 Q22 이후.
 
 ### 8. 정책 경계
-1. 게이트웨이가 호출마다 7요소 판정(`phone_call.call`, `customer`, `external_effect`)을 한다. 기본 정책의 `external-effect-needs-approval` 규칙 때문에 기본값은 막힘이다(게이트웨이에는 승인 경로가 없다). 전화를 쓰려면 인스턴스 정책에서 해당 규칙을 사람 승인으로 바꿔야 하고 이는 위험 변경이다.
-2. 전화 전용 제약은 새 정책 섹션 `phone:`이 정한다(없으면 모든 통화 거부): `allowed_regions`, `denied_numbers`, `caller_ids`, `max_duration_seconds`, `max_calls_per_day`, `business_hours`, `recording`, `transfer_targets`. 판정기는 `PhoneCallPolicy` 포트를 구현한 `@aot/policy`이고 판정은 `policy_decision`에 남는다. 에이전트는 이 섹션을 쓸 수 없다(정책 변경 경로는 승인 CLI뿐). 이 섹션의 변경은 강화임을 증명할 수 없으면 위험 변경이다.
-3. 통화량·비용 한도는 같은 섹션에서 확장한다(비용은 provider가 통화 후에만 알려 주므로 사전 한도가 아니라 `cost_entry`를 쓰는 사후 검사/예산으로 다룬다).
-4. 부작용 직전 `beforeEffect` 재검증(승인 해시, 정책 강화)은 기존 `performEffect`가 한다.
+1. 게이트웨이가 호출마다 7요소 판정(`phone_call.call`, `customer`, `external_effect`)을 한다. 기본 정책의 `external-effect-needs-approval` 규칙 때문에 판정은 `require_approval`이다. 게이트웨이에는 승인 경로가 없으므로 일반 부작용 도구는 여기서 막히지만, 전화 도구는 부작용을 **부작용 원장으로만** 보내므로 `GatewayToolSpec.approvalViaEffectGate`를 선언한다: `require_approval`이면 막지 않고 실행기로 넘기고, 원장이 전송 직전에 정책과 **사람의 업무 승인**(`approved_hash`·cooldown·TOTP 재인증)을 다시 확인한다(`TaskPolicyGate.beforeEffect`). 승인이 없으면 전송하지 않고 run을 멈춘다(`needs_review`). `deny`와 외부 입력 영향 부작용 하한(승인 없이 불가)은 이 선언과 상관없이 그대로다. 호출 기록에는 정책이 말한 `require_approval`과 "원장이 재확인한다"는 사유가 남는다.
+2. **승인 범위.** 사람이 승인하는 것은 업무 명세다. 어떤 번호에 걸 수 있는지는 명세의 `allowed_tools[].target`(E.164 정확 일치 또는 끝이 `*`인 접두어)이 정하고, 승인 해시에 포함된다. Capability는 그 범위 밖 번호를 정책에 묻기 전에 거부하고, 원장에는 명세가 선언한 대상 문자열이 기록되어 `beforeEffect`가 선언과 일치를 확인한다. 대상을 선언하지 않은 명세는 번호 제한이 없으며 전화 정책의 일반 한도(아래)만 적용된다 — 승인자가 번호 범위를 보려면 명세에 대상을 적어야 한다.
+3. 전화 전용 제약은 정책 섹션 `phone:`이 정한다(없으면 모든 통화 거부): `allowed_regions`, `denied_numbers`, `caller_ids`, `max_duration_seconds`, `max_calls_per_day`(최근 24시간), `business_hours`, `recording`(`forbidden`|`allowed`|`required`), `transfer_targets`. 판정기는 `PhoneCallPolicy` 포트를 구현한 `@aot/policy`이고 판정은 `policy_decision`에 마스킹한 번호로 남는다. 에이전트는 이 섹션을 쓸 수 없다(정책 변경 경로는 승인 CLI뿐). 이 섹션의 변경은 통화를 더 허용함을 배제할 수 없으면 위험 변경이다([ADR-0013 Amendment](0013-policy-format.md)).
+4. 비용 한도: provider는 통화 후에만 비용을 알려 준다. 사전 한도는 만들지 못하고, 통화 비용은 `cost_entry`(`external`)로 업무 예산(`budget` 검사)에 합산된다. 사전 한도가 필요하면 `phone:` 섹션에서 확장한다(통화 수·최대 통화시간이 간접 상한이다).
+5. 부작용 직전 `beforeEffect` 재검증(승인 해시, 정책 강화)은 기존 `performEffect`가 한다.
 
 ### 9. 인바운드·전환
 - 인바운드도 같은 Capability와 같은 `call` 테이블이다. provider webhook → 어댑터 → `PhoneEvent` → 알 수 없는 `provider_call_id`의 `initiated`(inbound)이면 Call 생성 → **명시적 라우팅 규칙**(수신 번호, 발신 번호, 영업시간; 첫 일치, 기본 거부) → 에이전트(`org_unit`·`role`·업무 명세 생성기) / 사람 / 거절. 라우팅은 권한을 바꾸지 않는다(trust-boundaries §2-7): 업무 생성과 도구 권한은 여전히 정책이 정한다. 라우팅 규칙은 인스턴스 설정이며 AI 라우터는 만들지 않는다.
@@ -92,3 +93,15 @@ outcome은 상대방과의 대화에서 나온 요약이라 `external_untrusted`
 - 정책 문서 형식에 선택 키(`phone`)가 생긴다. 키가 없는 문서의 내용 해시(정책 버전)는 변하지 않는다.
 - webhook이 없거나 늦으면 업무가 `validating`에 머문다. 마감·조회 보완이 있지만 provider 장애 시에는 사람이 본다.
 - 실제 통화는 단위·통합 테스트에서 일어나지 않는다. 실제 provider 호출은 수동 smoke 절차로만 한다([phone-capability 계획](../plans/phone-capability.md)).
+
+## 구현 기록 (2026-10-25)
+계획과 달라진 점과 확인된 것. 작업 단위와 수동 smoke 절차는 [phone-capability 계획](../plans/phone-capability.md).
+
+- **위치는 계획대로**, 새 패키지 없음. 채널 중립 모듈(`domain/src/conversation/`: 발화 기록·결과 검증·JSON 데이터 검사)과 전화(`domain/src/phone/`)를 나눴다. 일반화(`conversation` 테이블, `channel` 컬럼, 이벤트·검사 이름)는 **두 번째 채널을 구현할 때** 하기로 §0에 적었다.
+- **승인 경로 보완(`approvalViaEffectGate`)은 계획에 없던 변경이다.** 기존 게이트웨이는 `require_approval` 부작용 호출을 항상 막아 외부 부작용 도구를 사람 승인으로 쓸 길이 없었다(읽기 도구만 있어 드러나지 않았다). 선언을 가진 도구만 원장의 전송 직전 재검증으로 승인을 넘기고, 부작용을 원장으로만 보내는 전화 도구가 첫 사용처다. 다른 부작용 도구의 동작은 바뀌지 않는다.
+- **부작용 도구 3개**(`phone_call.call`, `phone_transfer.transfer`, `phone_hangup.hangup`): 게이트웨이 도구 이름과 원장 `tool`이 같아 `policy_compliance` 검사(`<tool>.<action>` 판정 기록)가 그대로 동작한다. 발신·전환은 `supports_idempotency=false`(응답을 잃으면 `unknown` → 자동 재다이얼 금지 → `needs_review`), 끊기는 `true`.
+- **같은 의도 방어선 두 겹:** (1) 원장의 `effect_key`(업무 + 단계 + 요청)로 같은 요청 재시도는 같은 통화, (2) `send`가 같은 업무·번호·목적의 살아 있는/완료된 통화를 찾으면 새로 걸지 않는다 — 정책 변경으로 요청 값(허용 통화시간 등)이 달라져 키가 달라져도 같은 사람에게 두 번 걸지 않는다.
+- **webhook 경합:** provider가 접수 응답보다 먼저 webhook을 보내면 `provider_call_id`를 아직 몰라 알 수 없는 통화로 버려진다(`unknown_call`). 마감 조회(`reconcile`)가 provider 상태를 canonical 이벤트로 다시 가져와 적용하므로 결국 반영된다.
+- **통화 이벤트의 payload에는 전화번호와 발화가 없다.** 본문은 `call_artifact`에만 있고, 프롬프트 역할을 하는 시스템 메시지는 Vapi 어댑터가 transcript에서 뺀다.
+- **구현하지 않은 것:** Retell·Twilio 어댑터, HMAC webhook 서명 검증(Vapi는 비밀 헤더만), 녹음 파일 저장, 요약↔transcript LLM 검증(포트는 있음), 에이전트 대상 인바운드의 업무 템플릿 연결(데몬 설정에는 라우팅 규칙만; 업무 생성기는 코드에서 주입), CRM 같은 후속 외부 상태 갱신 도구.
+- **알려진 한계:** webhook이 영영 오지 않고 provider 조회도 실패하면 마감(최대 통화시간 + 유예, 기본 5분)까지 업무가 `validating`에 머문다. 일일 통화량은 최근 24시간의 롤링 창이다(달력 하루가 아니다).

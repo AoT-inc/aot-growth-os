@@ -29,3 +29,7 @@
 - **`catch_up`:** `skip` = 놓친 슬롯은 버리고 다음 슬롯부터 정상 진행한다. `run_once` = 놓친 슬롯 중 가장 최근 1개만 발화하고 나머지는 버린다. 어느 쪽이든 허용 지연(기본 10분, 설정 가능) 안에 도래한 슬롯은 "놓친" 것이 아니라 "늦은" 것이라 발화한다(긴 업무 실행 중 도래한 슬롯을 잃지 않기 위해). 버린 슬롯은 `routine_firing` 에 기록하지 않는다 — 기준점은 마지막 발화의 `scheduled_for` 이고, 한 번도 발화하지 않은 루틴은 켠 시각(주입값) 또는 프로세스가 처음 본 시각이다. (A6-U15 보완) 켠 시각은 실험 활성화 event(`experiment-activate:<전략 id>`)의 `occurred_at` 으로 기록되며, 기준점은 마지막 발화와 가장 최근 활성화 시각 중 늦은 쪽이다 — 실험 승인으로 켜진 루틴은 활성화 이후 슬롯부터 발화하고, 다시 켜진 루틴은 꺼져 있던 동안의 슬롯을 `catch_up` 으로 끌어오지 않는다. 활성화 기록이 없는 루틴(실험 경로 밖에서 켠 것)만 "처음 본 시각"을 쓴다.
 - **템플릿:** `task_template` 은 `RoutineTemplateSource` 포트가 업무 명세 1개 이상으로 해석한다. 업무끼리는 템플릿 안 이름(`name`, `dependsOn`)으로 의존하고, 발화가 이름을 생성된 업무 id 로 바꿔 `task_dependency` 에 넣는다. 한 발화의 업무 전부와 `routine_firing` 은 한 트랜잭션이라 하나라도 거부되면 발화 기록도 남지 않는다. 형제 업무는 같은 trigger·입력이어도 `dedupe_key` 에 이름이 들어가 하나로 합쳐지지 않는다.
 
+
+## Amendment (2026-10-25): 통화 이벤트와 전화 부작용
+- provider webhook은 canonical `phone.call.*` 이벤트로 바뀌어 기존 `event` 테이블(`source='phone'`)에 남는다. 멱등 키는 `phone:<provider>:<eventId>`이고 어댑터는 같은 이벤트에 같은 `eventId`를 만들어야 한다(어댑터 계약 시험이 확인한다). 중복 전달은 한 번만 적용된다.
+- 전화 발신은 `external_effect`를 거친다. 호출 생성 멱등 키 지원이 문서로 확인되지 않아 `supports_idempotency=false`로 선언하고(Q14 규칙), 응답을 잃으면 자동 재다이얼하지 않는다. 상세는 [ADR-0014](0014-phone-capability.md).

@@ -36,3 +36,6 @@
 - **YAML 부분집합.** 앵커·별칭·태그·블록 스칼라·여러 문서·중첩 흐름·탭 들여쓰기·중복 키는 받지 않는다(`packages/policy/src/yaml.ts`). 검토를 어렵게 하는 기능을 막고 의존성을 더하지 않기 위해서다. `*`로 시작하는 값은 따옴표로 감싼다.
 - **내용 보관.** DB의 `policy_version`은 배포 기록이고 내용은 파일이다. 승인 엔진이 배포 승인 때 내용을 `instance/policies/<해시>.yaml`(0600)로 보관하고, 판정 때마다 해시를 다시 계산해 대조한다. 내용을 찾지 못하거나 해시가 다르면 모든 판정은 거부다.
 - **변경 등급.** 강화임을 증명할 수 없는 변경은 위험 변경이다: `risky_change` 하향(`min_approvers`를 2 이상에서 1로 내리는 변경은 자기 승인이 허용으로 바뀌는 변경이기도 하다), 예산 상한 상향·삭제, `deny` 추가와 `allow` 삭제를 뺀 모든 규칙 변경(`require_approval` 추가도 기본 거부였던 요청을 승인 가능으로 바꾼다). 위험 변경은 현재 정책의 `risky_change`로 승인한다. `memory.default_validity` 변경은 일반 변경이다.
+
+## Amendment (2026-10-25): `phone` 섹션
+선택 키 `phone`(전화 정책, [ADR-0014](0014-phone-capability.md) §8): `allowed_regions`·`caller_ids`·`max_duration_seconds`·`max_calls_per_day` 필수, `denied_numbers`·`business_hours`(`tz` 필수, 하루 안의 창)·`recording`(기본 `forbidden`)·`transfer_targets` 선택. 섹션이 없으면 모든 통화를 거부한다. 키가 없는 문서는 정규화 결과가 이전과 같아 정책 버전(내용 해시)이 바뀌지 않는다. 변경 등급: 섹션 신설, 지역·발신 번호·전환 대상 추가, 금지 번호 삭제, 통화시간·일일 통화량 상향, 영업시간 해제·확대, 녹취 완화는 위험 변경이고 섹션 삭제와 그 밖의 강화는 일반 변경이다.

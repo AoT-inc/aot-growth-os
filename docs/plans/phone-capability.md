@@ -43,7 +43,7 @@ PR 리뷰의 지적을 코드에 비춰 확인해 반영했다.
 
 | 지적 | 처리 |
 |---|---|
-| Vapi 계약 미검증 (P0) | **미해결, 게이트로 막음.** 실제 호출은 이 세션에서 할 수 없다(계정·비밀 없음, 실제 통화는 사람 승인 사항). `phone.vapi_contract_verified_on` 없이는 데몬이 시작하지 않고, `scripts/phone-vapi-smoke.ts`가 실제 전화 한 통으로 확인할 필드를 정제된 보고서로 낸다. 보고서는 PR에 붙인다 |
+| Vapi 계약 미검증 (P0) | **미해결, 게이트로 막음.** 실제 호출은 이 세션에서 할 수 없다(계정·비밀 없음, 실제 통화는 사람 승인 사항). `phone.vapi_contract_verified_on` 없이는 데몬이 시작하지 않고, `scripts/phone-vapi-smoke.ts`가 실제 전화 한 통으로 확인할 필드를 정제된 보고서로 낸다. 실제 사용성 테스트 단계에 들어갈 때 사람이 수행하고(2026-10-25 결정), 정제된 보고서를 이 문서에 기록한다. 그 전에는 게이트가 실제 provider 연결을 막는다 |
 | `phone_transfer` 멱등 false가 위험 (P0) | 사실 확인: `false`는 *재전송 금지*다(원장이 `unknown`을 자동 재전송하지 않음). 위험은 `true`일 때다. 시험으로 고정하고 응답 유실 전환의 사후 확인 `lookup`을 추가 |
 | `max_calls_per_day`가 DB 전체 (P0) | 맞는 지적. 문서에 *인스턴스 전체 총 상한*이라 명시하고, 조직 단위별 `max_calls_per_day_per_org_unit`을 추가(`call.org_unit_id`로 집계). 변경 등급에 반영 |
 | `allowedTargets` 없으면 무제한 (P1) | 맞는 지적. 전화 도구는 `target` 필수(없으면 명세 생성 거부), Capability는 선언 없는 도구를 거부 |
@@ -58,7 +58,7 @@ PR 리뷰의 지적을 코드에 비춰 확인해 반영했다.
 
 단위·통합 시험은 실제 전화를 걸지 않는다. 아래는 어댑터가 문서와 어긋나지 않는지 확인하는 절차이며 **공개 CI에서 돌리지 않는다**([public-repository](../security/public-repository.md)). 확인되지 않은 항목은 어댑터 주석의 `UNVERIFIED`로 표시했다.
 
-0. 가장 빠른 길: `scripts/phone-vapi-smoke.ts`(머리 주석의 환경 변수 참고)가 3·5·6의 일부를 한 번에 확인하고 정제된 JSON 보고서를 낸다(번호·발화·키는 출력하지 않는다). 보고서를 PR에 붙이고 `UNVERIFIED` 항목을 갱신한 뒤 `phone.vapi_contract_verified_on`에 날짜를 적는다. webhook 쪽(4)은 아래 절차로 따로 확인한다.
+0. 가장 빠른 길: `scripts/phone-vapi-smoke.ts`(머리 주석의 환경 변수 참고)가 3·5·6의 일부를 한 번에 확인하고 정제된 JSON 보고서를 낸다(번호·발화·키는 출력하지 않는다). 정제된 보고서를 이 문서에 기록하고 `UNVERIFIED` 항목을 갱신한 뒤 `phone.vapi_contract_verified_on`에 날짜를 적는다. webhook 쪽(4)은 아래 절차로 따로 확인한다.
 1. 준비: 테스트용 Vapi 계정, 발신 번호 1개(`phoneNumberId`), 테스트 assistant 1개(첫 멘트에 AI 통화임을 알린다), 본인 휴대전화. `instance/daemon.config.json`의 `phone`에 환경 변수 이름만 적고 값은 환경에 주입한다. 정책 `phone:` 섹션에 본인 번호의 지역·발신 번호·`max_calls_per_day: 2`·`recording: forbidden`을 두고 승인 CLI로 배포한다.
 2. **호출 생성 필드 확인** (UNVERIFIED): `assistantOverrides.variableValues`, `assistantOverrides.metadata`, `assistantOverrides.artifactPlan.recordingEnabled`가 Vapi에서 400 없이 받아들여지는지, 녹음이 실제로 꺼지는지. 400이면 어댑터의 `startCall` 본문을 문서에 맞게 고친다(시험의 기대 본문도 함께).
 3. **발신 1회:** 명세의 `allowed_tools[].target`에 본인 번호를 적은 업무를 만들고 사람 승인·해제 후 실행한다. 통화가 걸리는지, `call` 행이 `initiated → ringing → connected`로 가는지 본다. 받은 뒤 이야기하고 끊는다.

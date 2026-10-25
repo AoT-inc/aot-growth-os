@@ -6,7 +6,7 @@
 //  - phone_hangup.hangup  : 통화를 끊는다. 끊기는 여러 번 해도 같아서 멱등이다(`supportsIdempotency=true`). 종료는 provider 의 이벤트가 반영한다
 // provider 가 요청을 처리하지 않았음이 확실한 오류(PhoneProviderError.definite)만 `failed` 로, 그 밖의 예외는 던져서 원장이 `unknown` 으로 기록한다.
 import {
-  applyPhoneEvent, createOutboundCall, getCallRow, isE164, PhoneProviderError,
+  applyPhoneEvent, callIntentKey, createOutboundCall, findSameIntentCall, getCallRow, isE164, PhoneProviderError,
   type CallRow, type Clock, type Db, type PhoneFailureCode, type PhonePort,
 } from '@aot/domain';
 
@@ -63,17 +63,15 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
       if (!isCallRequest(call.request)) throw new Error('phone_call: malformed request');
       const request = call.request;
       const run = runOf(db, call.effectKey);
-      // 같은 의도(번호·목적)의 통화가 이 업무에 이미 있으면(실패·취소 제외) 새로 걸지 않고 그 통화를 돌려준다.
+      // 같은 의도(번호·목적·맥락)의 통화가 이 업무에 이미 있으면(실패·취소 제외) 새로 걸지 않고 그 통화를 돌려준다.
       // 정책이 바뀌어 effect_key 가 달라진 재요청이 같은 사람에게 전화를 두 번 걸지 못하게 하는 두 번째 방어선이다.
-      const same = db.get<Pick<CallRow, 'id'>>(
-        "SELECT id FROM call WHERE task_id = ? AND to_number = ? AND objective = ? AND status NOT IN ('failed','cancelled') AND (effect_key IS NULL OR effect_key <> ?) ORDER BY created_at LIMIT 1",
-        [run.taskId, request.to, request.objective, call.effectKey],
-      );
+      const intentKey = callIntentKey(request.to, request.objective, request.context);
+      const same = findSameIntentCall(db, run.taskId, intentKey, call.effectKey);
       if (same) return { status: 'confirmed', responseRef: same.id };
 
       const { call: row } = createOutboundCall(db, clock, {
         provider: port.name, to: request.to, from: request.from, taskId: run.taskId, taskRunId: run.runId, actorId: run.actorId, orgUnitId: run.orgUnitId,
-        objective: request.objective, effectKey: call.effectKey, maxDurationSeconds: request.maxDurationSeconds, allowTransfer: request.allowTransfer, recording: request.recording,
+        objective: request.objective, effectKey: call.effectKey, intentKey, maxDurationSeconds: request.maxDurationSeconds, allowTransfer: request.allowTransfer, recording: request.recording,
       });
       if (row.providerCallId !== null) return { status: 'confirmed', responseRef: row.id }; // 이미 접수됨
       try {
@@ -125,6 +123,19 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
         type: 'phone.call.transferred', eventId: `transfer:${call.effectKey}`, provider: port.name, providerCallId, callId: row.id, occurredAt: clock.nowIso(), target: request.to,
       });
       return { status: 'confirmed', responseRef: row.id };
+    },
+    /**
+     * 응답을 잃은 전환(`unknown`)이 실제로 일어났는지 본다: provider 의 상태 이벤트가 이미 이 업무의 통화를 `transferred` 로 옮겼으면 확인된 것이다.
+     * 통화는 한 번만 전환될 수 있으므로(`connected → transferred`) 업무에 전환된 통화가 정확히 하나일 때만 확인으로 본다. 그 밖에는 "알 수 없음"이고,
+     * 멱등 키가 없는 도구라 자동으로 다시 전환하지 않는다(사람이 본다).
+     */
+    lookup(effectKey) {
+      const effect = db.get<{ task_id: string }>('SELECT task_id FROM external_effect WHERE effect_key = ?', [effectKey]);
+      if (!effect) return Promise.resolve({ found: false });
+      const moved = db.all<{ id: string }>(
+        "SELECT DISTINCT c.id AS id FROM call c JOIN event e ON e.external_id = c.id AND e.type = 'phone.call.transferred' WHERE c.task_id = ?", [effect.task_id],
+      );
+      return Promise.resolve(moved.length === 1 ? { found: true, responseRef: moved[0]!.id } : { found: false });
     },
   };
 

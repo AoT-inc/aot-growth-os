@@ -1,5 +1,7 @@
 // webhook 리스너: 실제 로컬 소켓(127.0.0.1, 임시 포트)으로 경로·메서드·크기 제한과 인증 결과, 인바운드 지시 응답을 확인한다. 외부 접근은 없다.
 import assert from 'node:assert/strict';
+import { request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { test } from 'node:test';
 
 import { createFakePhoneProvider } from '@aot/agent-runtime';
@@ -9,17 +11,17 @@ import { startPhoneWebhookServer } from '../../apps/daemon/src/phone-webhook-ser
 import { OUR_NUMBER, TO } from '../support/phone.ts';
 import { policyEnv } from '../support/policy.ts';
 
-async function listen(t: Parameters<typeof policyEnv>[0], maxBodyBytes?: number) {
+async function listen(t: Parameters<typeof policyEnv>[0], maxBodyBytes?: number, requestTimeoutMs?: number) {
   const env = policyEnv(t);
   const port = createFakePhoneProvider();
   const runtime = createPhoneRuntime({
     db: env.db, clock: env.clock, store: env.store,
     options: { port, inboundRoutes: [{ id: 'closed', target: { kind: 'reject', reason: 'closed' } }] },
   });
-  const server = await startPhoneWebhookServer({ runtime, host: '127.0.0.1', port: 0, path: '/phone/test', ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }) });
+  const server = await startPhoneWebhookServer({ runtime, host: '127.0.0.1', port: 0, path: '/phone/test', ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }), ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }) });
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.port}/phone/test`;
-  return { env, port, url, base: `http://127.0.0.1:${server.port}` };
+  return { env, port, url, base: `http://127.0.0.1:${server.port}`, tcpPort: server.port };
 }
 
 test('only POST on the configured path is accepted', async (t) => {
@@ -52,4 +54,40 @@ test('an inbound call over HTTP is answered with the directive in the provider\'
   const body = await response.json() as { fakeDirective: string };
   assert.equal(body.fakeDirective, 'reject');
   assert.equal(env.db.get<{ status: string }>("SELECT status FROM call WHERE provider_call_id = 'p-3'")?.status, 'cancelled');
+});
+
+test('a body over the limit is refused even when it is sent chunked without a content length', async (t) => {
+  const { tcpPort, env } = await listen(t, 256);
+  const status = await new Promise<number | 'closed'>((resolve) => {
+    const req = httpRequest({ host: '127.0.0.1', port: tcpPort, path: '/phone/test', method: 'POST', headers: { 'transfer-encoding': 'chunked' } }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', () => resolve('closed'));
+    for (let i = 0; i < 20; i += 1) req.write('x'.repeat(100));
+    req.end();
+  });
+  assert.ok(status === 413 || status === 'closed', `refused (got ${String(status)})`);
+  assert.equal(env.db.all("SELECT 1 FROM event WHERE source = 'phone'").length, 0);
+});
+
+test('a client that disconnects mid-body leaves no trace and does not break the server', async (t) => {
+  const { tcpPort, url, port, env } = await listen(t);
+  await new Promise<void>((resolve) => {
+    const socket = connect(tcpPort, '127.0.0.1', () => {
+      socket.write('POST /phone/test HTTP/1.1\r\nhost: x\r\ncontent-length: 500\r\n\r\n{"events":[');
+      setTimeout(() => { socket.destroy(); resolve(); }, 30);
+    });
+  });
+  const ok = port.webhook([{ kind: 'answered', id: 'ab-1', call: 'unknown-call', at: '2026-10-25T01:00:00.000Z' }]);
+  assert.equal((await fetch(url, { method: 'POST', headers: ok.headers as Record<string, string>, body: ok.body })).status, 200, 'the server still answers');
+  assert.equal(env.db.all("SELECT 1 FROM event WHERE source = 'phone'").length, 0);
+});
+
+test('a slow sender (slowloris) is disconnected at the request timeout', async (t) => {
+  const { tcpPort } = await listen(t, undefined, 300);
+  const closed = await new Promise<boolean>((resolve) => {
+    const socket = connect(tcpPort, '127.0.0.1', () => socket.write('POST /phone/test HTTP/1.1\r\nhost: x\r\ncontent-length: 100\r\n\r\n{'));
+    socket.on('close', () => resolve(true));
+    socket.on('error', () => resolve(true));
+    setTimeout(() => { socket.destroy(); resolve(false); }, 3000);
+  });
+  assert.equal(closed, true, 'the server closed the slow connection before the test gave up');
 });

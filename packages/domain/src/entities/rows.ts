@@ -150,7 +150,7 @@ export type PublicationRow = {
 export type CallRow = {
   id: string; provider: string; provider_call_id: string | null; direction: CallDirection; status: CallStatus;
   from_number: string | null; to_number: string; task_id: string | null; task_run_id: string | null; actor_id: string | null;
-  org_unit_id: string | null; objective: string | null; effect_key: string | null; max_duration_seconds: number | null;
+  org_unit_id: string | null; objective: string | null; effect_key: string | null; intent_key: string | null; max_duration_seconds: number | null;
   allow_transfer: number; recording: number; end_reason: string | null; started_at: Iso | null; connected_at: Iso | null;
   ended_at: Iso | null; created_at: Iso; updated_at: Iso;
 }

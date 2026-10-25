@@ -157,6 +157,7 @@ export type PhoneEvent = PhoneEventBase & (
   | { type: 'phone.call.initiated'; direction?: CallDirection | undefined; from?: string | null | undefined; to?: string | undefined }
   | { type: 'phone.call.ringing' }
   | { type: 'phone.call.connected' }
+  /** `turns` 는 *지금까지의 전체 대화*(스냅샷)다, 증분(델타)이 아니다. 더 길거나 같은 길이의 스냅샷이 이전 것을 대체한다. 어댑터는 내용이 다른 스냅샷에 다른 eventId 를 줘야 한다(같은 길이의 수정 포함) */
   | { type: 'phone.call.transcript.updated'; transcript: PhoneTranscriptInput }
   | {
     type: 'phone.call.completed'; endedReason?: string | undefined; durationSeconds?: number | undefined; costUsd?: number | undefined;

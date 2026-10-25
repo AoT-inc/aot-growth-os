@@ -12,6 +12,8 @@ export interface WebhookServerOptions {
   port: number;
   path: string;
   maxBodyBytes?: number;
+  /** 요청 전체(헤더+본문)를 받는 제한 시간(ms). 느리게 보내는 연결(slowloris)을 끊는다. 기본 15초 */
+  requestTimeoutMs?: number;
   onError?: (error: unknown) => void;
 }
 
@@ -22,7 +24,9 @@ export interface WebhookServer {
 
 export function startPhoneWebhookServer(options: WebhookServerOptions): Promise<WebhookServer> {
   const limit = options.maxBodyBytes ?? 1024 * 1024;
-  const server: Server = createServer((request, response) => {
+  const requestTimeout = options.requestTimeoutMs ?? 15_000;
+  // 제한 시간 검사 주기(Node 기본은 30초라 느린 연결을 늦게 끊는다)를 제한 시간에 맞춘다
+  const server: Server = createServer({ connectionsCheckingInterval: Math.max(100, Math.min(5_000, Math.floor(requestTimeout / 2))) }, (request, response) => {
     const reply = (status: number, body?: unknown): void => {
       response.writeHead(status, body === undefined ? {} : { 'content-type': 'application/json' });
       response.end(body === undefined ? undefined : JSON.stringify(body));
@@ -63,6 +67,10 @@ export function startPhoneWebhookServer(options: WebhookServerOptions): Promise<
       );
     });
   });
+  server.requestTimeout = requestTimeout;
+  server.headersTimeout = Math.min(server.requestTimeout, 10_000);
+  server.keepAliveTimeout = 5_000;
+  server.on('clientError', (_error, socket) => socket.destroy()); // 형식이 깨진 요청은 응답 없이 끊는다
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(options.port, options.host, () => {

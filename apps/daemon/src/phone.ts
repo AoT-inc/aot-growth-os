@@ -35,12 +35,9 @@ export interface PhoneRuntime {
   reconcile(): Promise<ReconcileReport>;
 }
 
-/** 명세가 전화 도구에 선언한 대상 목록. 대상이 없는 항목이 하나라도 있으면 그 도구는 제한 없음(null) */
-function declaredTargets(spec: RunContext['spec']): { call: string[] | null; transfer: string[] | null } {
-  const of = (tool: string): string[] | null => {
-    const entries = spec.allowed_tools.filter((entry) => entry.tool === tool);
-    return entries.length === 0 || entries.some((entry) => entry.target === undefined) ? null : entries.map((entry) => entry.target!);
-  };
+/** 명세가 전화 도구에 선언한 대상 목록. 선언이 없으면 빈 목록이고, 그 도구는 어느 번호에도 쓸 수 없다 */
+function declaredTargets(spec: RunContext['spec']): { call: string[]; transfer: string[] } {
+  const of = (tool: string): string[] => spec.allowed_tools.filter((entry) => entry.tool === tool && entry.target !== undefined).map((entry) => entry.target!);
   return { call: of('phone_call'), transfer: of('phone_transfer') };
 }
 

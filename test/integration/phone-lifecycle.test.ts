@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createFakePhoneProvider, type AdapterOutput, type AgentAdapter, type FakeWireEvent } from '@aot/agent-runtime';
+import { createFakePhoneProvider, createPhoneEffectTools, type AdapterOutput, type AgentAdapter, type FakeWireEvent } from '@aot/agent-runtime';
 import { getCall, getCallOutcome, getTranscript, listCallsForTask, type Call } from '@aot/domain';
 import { createTask } from '@aot/task-engine';
 
@@ -203,7 +203,7 @@ test('a provider that clearly refuses (bad request) is a failed call, recorded w
 test('policy: a number outside the allowed regions is denied before anything reaches the provider, and the decision is recorded masked', async (t) => {
   const env = policyEnv(t);
   const rig = phoneRig(env, { adapterConfig: { toolCalls: [{ tool: 'phone_call', args: { ...CALL_ARGS, to: '+15550100123' } }] } });
-  const taskId = createApprovedTask(env, phoneTaskSpec({}, {}));
+  const taskId = createApprovedTask(env, phoneTaskSpec({}, { call: '+1555*' }));
   await rig.tick();
   assert.equal(rig.port.started.length, 0);
   assert.equal(listCallsForTask(env.db, taskId).length, 0);
@@ -389,3 +389,71 @@ test('with a phone section present but the phone runtime absent, nothing is offe
   assert.equal(records.find((r) => r.tool === 'phone_call')?.outcome, 'tool_not_allowed');
 });
 
+
+test('a transfer whose response is lost is "unknown": it is not repeated automatically, and a provider status update lets the ledger confirm it afterwards', async (t) => {
+  const env = policyEnv(t);
+  const port = createFakePhoneProvider();
+  port.loseNextTransferResponse();
+  const holder: { rig: PhoneRig | null } = { rig: null };
+  const rig = phoneRig(env, { port, adapter: escalatingAgent(() => holder.rig!, port) });
+  holder.rig = rig;
+  const taskId = createApprovedTask(env, phoneTaskSpec({}, { call: TO, transfer: TRANSFER_TO }));
+  await rig.tick();
+  const call = onlyCall(env, taskId);
+  assert.equal(port.transfers.length, 1, 'the transfer was attempted once');
+  const effect = env.db.get<{ effect_key: string; state: string; supports_idempotency: number }>("SELECT effect_key, state, supports_idempotency FROM external_effect WHERE tool = 'phone_transfer'")!;
+  assert.deepEqual([effect.state, Number(effect.supports_idempotency)], ['unknown', 0], 'unknown, on a tool that declares no idempotency key: never resent');
+  assert.equal(call.status, 'connected', 'we do not claim a transfer we could not confirm');
+  for (let i = 0; i < 3; i += 1) {
+    env.clock.advance(60_000);
+    await rig.tick();
+  }
+  assert.equal(port.transfers.length, 1, 'no automatic second transfer');
+  assert.equal(taskStatus(env.db, taskId), 'needs_review', 'a person decides');
+
+  // 조회: provider 가 전환 중이라고 알려 오면(상태 이벤트) 원장이 전환을 확인할 수 있다. 확인되기 전에는 "알 수 없음"이다
+  const tools = createPhoneEffectTools({ db: env.db, clock: env.clock, port });
+  assert.deepEqual(await tools.phone_transfer.lookup!(effect.effect_key), { found: false });
+  await rig.webhook([wire('handed_off', 'h-1', call.providerCallId!, { target: TRANSFER_TO })]);
+  assert.equal(getCall(env.db, call.id).status, 'transferred');
+  assert.deepEqual(await tools.phone_transfer.lookup!(effect.effect_key), { found: true, responseRef: call.id });
+  assert.deepEqual(await tools.phone_transfer.lookup!('0'.repeat(64)), { found: false }, 'an unrelated key is not confirmed');
+});
+
+/** 같은 번호로 두 번 거는 에이전트 */
+function dialTwice(second: Record<string, unknown>): AgentAdapter {
+  return {
+    name: 'dial-twice',
+    async run(_input, context): Promise<AdapterOutput> {
+      const first = await context.gateway.call('phone_call', CALL_ARGS as never);
+      const again = await context.gateway.call('phone_call', second as never);
+      return { status: 'submitted', result: { first: first.ok, again: again.ok }, evidence: [], run_log: [], cost: {} };
+    },
+  };
+}
+
+test('dialing the same number for the same purpose twice is one call, even when the requested limits differ (the policy grant is not part of the intent)', async (t) => {
+  const env = policyEnv(t);
+  const port = createFakePhoneProvider();
+  const rig = phoneRig(env, { port, adapter: dialTwice({ ...CALL_ARGS, constraints: { maxDurationSeconds: 300, allowTransfer: false } }) });
+  const taskId = createApprovedTask(env);
+  await rig.tick();
+  assert.equal(port.started.length, 1);
+  assert.equal(listCallsForTask(env.db, taskId).length, 1);
+});
+
+test('the same number with a different context is a different call (e.g. another lead), subject to the daily limit', async (t) => {
+  const env = policyEnv(t);
+  const port = createFakePhoneProvider();
+  const rig = phoneRig(env, { port, adapter: dialTwice({ ...CALL_ARGS, context: { leadId: 'lead_456', companyName: 'Other Corp' } }) });
+  const taskId = createApprovedTask(env);
+  await rig.tick();
+  assert.equal(port.started.length, 2);
+  assert.deepEqual(listCallsForTask(env.db, taskId).map((c) => c.status), ['initiated', 'initiated']);
+});
+
+test('a task that declares no number range cannot be created with a phone tool', async (t) => {
+  const env = policyEnv(t);
+  const { createWithGate } = await import('../support/policy.ts');
+  assert.throws(() => createWithGate(env, phoneTaskSpec({}, {})), /needs a target/);
+});

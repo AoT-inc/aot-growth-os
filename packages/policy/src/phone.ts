@@ -66,7 +66,12 @@ function judgeCall(db: Db, section: PhonePolicySection, call: PhoneCallPolicyReq
   const from = input.from ?? section.caller_ids[0] ?? null;
   if (from === null || !section.caller_ids.includes(from)) return deny('the caller id is not an allowed number');
   const since = new Date(Date.parse(call.now) - windowMs).toISOString();
-  if (countOutboundCallsSince(db, since) >= section.max_calls_per_day) return deny(`the daily call limit (${section.max_calls_per_day}) is reached`);
+  if (countOutboundCallsSince(db, since) >= section.max_calls_per_day) return deny(`the instance-wide daily call limit (${section.max_calls_per_day}) is reached`);
+  if (section.max_calls_per_day_per_org_unit !== undefined) {
+    // 통화를 맡은 업무의 조직 단위별 한도. 업무를 알 수 없으면 조직 단위 없음으로 센다
+    const orgUnitId = call.taskId === null ? null : (db.get<{ org_unit_id: string | null }>('SELECT org_unit_id FROM task WHERE id = ?', [call.taskId])?.org_unit_id ?? null);
+    if (countOutboundCallsSince(db, since, { orgUnitId }) >= section.max_calls_per_day_per_org_unit) return deny(`the daily call limit of this organization unit (${section.max_calls_per_day_per_org_unit}) is reached`);
+  }
   const wantsRecording = input.constraints?.recording === true;
   if (wantsRecording && section.recording === 'forbidden') return deny('recording is forbidden by policy');
   return {

@@ -2,7 +2,7 @@
 // provider 이름을 모른다: 모든 provider 접근은 `PhonePort` 를 쓰는 부작용 도구(effect-tools.ts)가 한다. run 하나에 인스턴스 하나를 만든다(업무·주체가 run 별이다).
 // `call` 은 CallHandle 을 바로 돌려준다. 통화가 끝나길 기다리지 않는다 — 결과는 webhook 이벤트가 Call 상태로 반영하고 업무 검증이 그것을 기다린다 (ADR-0014 §6).
 import {
-  applyPhoneEvent, contentHash, getCall, getCallRow, maskNumber, validateMakeCallInput, validateTransferInput,
+  applyPhoneEvent, callIntentKey, getCall, getCallRow, validateMakeCallInput, validateTransferInput,
   type Call, type CallHandle, type Clock, type Db, type Issue, type PhoneCallPolicy, type PhoneCapability,
 } from '@aot/domain';
 
@@ -46,9 +46,9 @@ export interface PhoneCapabilityDeps {
     subject: string;
     /**
      * 명세 `allowed_tools` 의 전화 도구 `target` 목록(E.164 정확 일치 또는 끝이 `*` 인 접두어). 사람이 승인한 명세에 적힌 대상이므로 이 범위 밖으로는 걸 수 없다.
-     * 목록이 없거나 비면 제한 없음(전화 정책의 일반 한도만 적용된다)
+     * 목록이 비어 있으면 그 도구는 어느 번호에도 쓸 수 없다(기본 거부): 대상을 밝히지 않은 승인은 번호 범위를 승인한 것이 아니다
      */
-    allowedTargets?: { call: readonly string[] | null; transfer: readonly string[] | null } | undefined;
+    allowedTargets: { call: readonly string[]; transfer: readonly string[] };
   };
 }
 
@@ -71,18 +71,11 @@ export function createPhoneCapability(deps: PhoneCapabilityDeps): PhoneCapabilit
     return verdict.grant;
   }
 
-  /** 이 번호를 허용하는 명세의 대상 패턴. 제한이 없으면 undefined, 있는데 맞는 것이 없으면 null */
-  function declaredTarget(kind: 'call' | 'transfer', to: string): string | null | undefined {
-    const targets = run.allowedTargets?.[kind];
-    if (targets === undefined || targets === null || targets.length === 0) return undefined;
-    return targets.find((pattern) => (pattern.endsWith('*') ? to.startsWith(pattern.slice(0, -1)) : pattern === to)) ?? null;
-  }
-
-  /** 부작용 원장에 기록하는 대상. 명세가 대상을 선언했으면 그 선언(정책 재검증이 선언과 일치를 요구한다), 아니면 마스킹한 번호 */
+  /** 부작용 원장에 기록하는 대상 = 이 번호를 허용하는 명세의 대상 선언(정책 재검증이 선언과 일치를 요구한다). 맞는 선언이 없으면 거부한다 */
   function ledgerTarget(kind: 'call' | 'transfer', to: string): string {
-    const declared = declaredTarget(kind, to);
-    if (declared === null) throw new PhoneCapabilityError('not_allowed', 'the number is outside the targets of the approved task');
-    return declared ?? maskNumber(to);
+    const declared = run.allowedTargets[kind].find((pattern) => (pattern.endsWith('*') ? to.startsWith(pattern.slice(0, -1)) : pattern === to));
+    if (declared === undefined) throw new PhoneCapabilityError('not_allowed', 'the number is outside the targets of the approved task (a phone tool without a declared target cannot be used)');
+    return declared;
   }
 
   return {
@@ -97,7 +90,7 @@ export function createPhoneCapability(deps: PhoneCapabilityDeps): PhoneCapabilit
         maxDurationSeconds: grant.maxDurationSeconds, allowTransfer: grant.allowTransfer, recording: grant.recording,
       };
       // 같은 의도(번호·목적·맥락)의 재요청은 같은 단계다: 재시도해도 같은 effect_key 가 나와 전화를 두 번 걸지 않는다
-      const stepId = `phone.call:${contentHash({ to: input.to, objective: input.objective, context: input.context ?? {} }).slice(0, 24)}`;
+      const stepId = `phone.call:${callIntentKey(input.to, input.objective, input.context).slice(0, 24)}`;
       const outcome = await dispatch('phone_call', { stepId, action: 'call', target, request });
       return handleOf(outcome.state, outcome.responseRef, 'call');
     },
@@ -119,7 +112,7 @@ export function createPhoneCapability(deps: PhoneCapabilityDeps): PhoneCapabilit
       await judge('transfer', input.to, null, call.allowTransfer);
       const target = ledgerTarget('transfer', input.to);
       const request = { callId: call.id, to: input.to, ...(input.reason === undefined ? {} : { reason: input.reason }) };
-      const outcome = await dispatch('phone_transfer', { stepId: `phone.transfer:${call.id}:${contentHash(input.to).slice(0, 16)}`, action: 'transfer', target, request });
+      const outcome = await dispatch('phone_transfer', { stepId: `phone.transfer:${call.id}:${callIntentKey(input.to, 'transfer', undefined).slice(0, 16)}`, action: 'transfer', target, request });
       handleOf(outcome.state, outcome.responseRef, 'transfer');
     },
 

@@ -255,3 +255,15 @@ test('review fixes: shared transferred id, independent auth headers, reserved ob
   const parsed = port.parseWebhook(webhook({ type: 'assistant-request', customer: { number: TO } }));
   assert.deepEqual([parsed.events.length, parsed.awaitingDirective], [0, true]);
 });
+
+test('conversation snapshots: the event id follows the content, so a corrected snapshot of the same length is not mistaken for a duplicate', () => {
+  const { port } = adapter();
+  const update = (last: string) => port.parseWebhook(webhook({
+    type: 'conversation-update', call: { id: 'vapi-30' }, timestamp: '2026-10-25T01:00:00.000Z',
+    messages: [{ role: 'system', message: 'prompt' }, { role: 'assistant', message: '안녕하세요' }, { role: 'user', message: last }],
+  })).events[0]!;
+  const a = update('네');
+  assert.equal(a.eventId, update('네').eventId, 'the same snapshot is the same event');
+  assert.notEqual(a.eventId, update('아니요').eventId, 'a corrected snapshot of the same length is a new event');
+  assert.equal(a.type, 'phone.call.transcript.updated');
+});

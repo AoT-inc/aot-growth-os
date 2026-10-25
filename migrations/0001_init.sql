@@ -413,6 +413,7 @@ CREATE TABLE call (
   org_unit_id     TEXT REFERENCES org_unit(id),
   objective       TEXT,                         -- 업무 의도 키 (예: qualify_lead). provider 프롬프트가 아니다
   effect_key      TEXT UNIQUE,                  -- 발신: external_effect.effect_key (같은 요청의 중복 Call 방지)
+  intent_key      TEXT,                         -- 발신: hash(번호, 목적, 맥락). 같은 업무에서 같은 의도의 통화가 살아 있거나 완료됐으면 새로 걸지 않는다
   max_duration_seconds INTEGER,
   allow_transfer  INTEGER NOT NULL DEFAULT 0,
   recording       INTEGER NOT NULL DEFAULT 0,
@@ -425,6 +426,7 @@ CREATE TABLE call (
 );
 CREATE UNIQUE INDEX call_provider_ref ON call(provider, provider_call_id) WHERE provider_call_id IS NOT NULL;
 CREATE INDEX call_task ON call(task_id);
+CREATE INDEX call_task_intent ON call(task_id, intent_key);
 CREATE INDEX call_status ON call(status);
 
 -- 통화 산출물의 본문. evidence 는 참조·해시만 담으므로 본문은 여기에 둔다 (업무에 연결된 Call 은 evidence 행도 함께 남는다).

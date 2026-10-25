@@ -24,7 +24,7 @@ function harness(t: Parameters<typeof seededDb>[0], options: { policy?: PhoneCal
   const capability = createPhoneCapability({
     db, clock, dispatch,
     policy: { judge: (request) => { requests.push(request); return policy.judge(request); } },
-    run: { taskId, runId: null, subject: 'generalist@v1' },
+    run: { taskId, runId: null, subject: 'generalist@v1', allowedTargets: { call: [TO, '+821000000002', '+8210555*'], transfer: ['+82200000009', '+82200000008'] } },
   });
   return { db, clock, taskId, call, steps, requests, capability };
 }
@@ -58,7 +58,7 @@ test('call: a denied or approval-needing verdict stops before the ledger; allowe
   const { tool, step } = h.steps[0]!;
   assert.deepEqual([tool, step.action], ['phone_call', 'call']);
   assert.deepEqual(step.request, { to: TO, from: '+82200000000', objective: 'qualify_lead', context: { leadId: 'lead_1' }, maxDurationSeconds: 300, allowTransfer: true, recording: false });
-  assert.ok(!step.target.includes('0000000'), 'the ledger target is the masked number when the task declares no target');
+  assert.equal(step.target, TO, 'the ledger target is the declaration of the approved task');
   assert.equal(h.requests[0]?.kind, 'call');
 });
 
@@ -80,7 +80,7 @@ test('call: unknown and failed ledger outcomes surface as distinct errors; an un
   await rejects(failed.capability.call({ to: TO, objective: 'qualify_lead' }), 'provider_failed');
 });
 
-test('call: numbers outside the approved task targets are refused before the policy is asked; a declared target is what the ledger sees', async (t) => {
+test('call: numbers outside the approved task targets are refused before the policy is asked (and a task that declares none can call nobody); a declared target is what the ledger sees', async (t) => {
   const { db, clock } = seededDb(t);
   const { taskId, call } = taskWithCall(db, clock);
   const steps: PhoneEffectStep[] = [];
@@ -88,13 +88,22 @@ test('call: numbers outside the approved task targets are refused before the pol
   const capability = createPhoneCapability({
     db, clock, policy: { judge: (r) => { asked.push(r.to); return allow.judge(r); } },
     dispatch: (_tool, step) => { steps.push(step); return Promise.resolve({ state: 'confirmed', effectId: 'e', responseRef: call.id }); },
-    run: { taskId, runId: null, subject: 'generalist@v1', allowedTargets: { call: [TO, '+8210555*'], transfer: null } },
+    run: { taskId, runId: null, subject: 'generalist@v1', allowedTargets: { call: [TO, '+8210555*'], transfer: [] } },
   });
   await rejects(capability.call({ to: '+821000000002', objective: 'qualify_lead' }), 'not_allowed');
   assert.deepEqual(asked, []);
   await capability.call({ to: TO, objective: 'qualify_lead' });
   await capability.call({ to: '+821055512345', objective: 'qualify_lead' });
   assert.deepEqual(steps.map((s) => s.target), [TO, '+8210555*']);
+
+  // 대상을 하나도 선언하지 않은 업무는 어느 번호에도 걸 수 없고, 전환 대상도 마찬가지다 (기본 거부)
+  const none = createPhoneCapability({
+    db, clock, policy: allow, dispatch: () => Promise.reject(new Error('must not dispatch')),
+    run: { taskId, runId: null, subject: 'generalist@v1', allowedTargets: { call: [], transfer: [] } },
+  });
+  await rejects(none.call({ to: TO, objective: 'qualify_lead' }), 'not_allowed');
+  applyPhoneEvent(db, clock, ev('phone.call.connected', 'p-none', clock.nowIso(), { callId: call.id }));
+  await rejects(none.transfer({ callId: call.id, to: '+82200000009' }), 'not_allowed');
 });
 
 test('getCall: only the calls of the run\'s own task are visible', async (t) => {

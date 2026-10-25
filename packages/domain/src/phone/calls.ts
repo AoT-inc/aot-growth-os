@@ -27,6 +27,22 @@ export const PHONE_EVENT_SOURCE = 'phone';
 /** 우리 쪽에서 만드는 이벤트(발신 접수 등)의 provider 이름 */
 export const AOT_EVENT_PROVIDER = 'aot';
 
+/** 발신 의도의 식별자: 같은 번호·목적·맥락이면 같다. 원장의 단계 id 와 `call.intent_key` 가 이 값을 쓴다 */
+export const callIntentKey = (to: string, objective: string, context: Readonly<Record<string, unknown>> | undefined): string =>
+  contentHash({ to, objective, context: context ?? {} });
+
+/**
+ * 같은 업무에서 같은 의도(번호·목적·맥락)의 살아 있거나 완료된 통화. 있으면 새로 걸지 않고 그 통화를 쓴다(실패·취소한 통화는 제외).
+ * 맥락이 다르면 다른 의도다: 같은 번호에 다른 사안으로 거는 것은 별개의 통화다.
+ */
+export function findSameIntentCall(db: Db, taskId: string, intentKey: string, exceptEffectKey: string): Call | null {
+  const row = db.get<CallRow>(
+    "SELECT * FROM call WHERE task_id = ? AND intent_key = ? AND status NOT IN ('failed','cancelled') AND (effect_key IS NULL OR effect_key <> ?) ORDER BY created_at, id LIMIT 1",
+    [taskId, intentKey, exceptEffectKey],
+  );
+  return row ? callOf(row) : null;
+}
+
 export const phoneEventKey = (provider: string, eventId: string): string => `phone:${provider}:${eventId}`;
 
 const RANK: Readonly<Record<CallStatus, number>> = { queued: 0, initiated: 1, ringing: 2, connected: 3, transferred: 4, completed: 5, failed: 5, cancelled: 5 };
@@ -60,10 +76,15 @@ export const listCallsForTask = (db: Db, taskId: string): Call[] =>
 export const hasOpenCall = (db: Db, taskId: string): boolean =>
   db.get("SELECT 1 AS one FROM call WHERE task_id = ? AND status NOT IN ('completed','failed','cancelled') LIMIT 1", [taskId]) !== undefined;
 
-/** `sinceIso` 이후 만든 발신 통화 수 (하루 통화량 한도용). 제공자에 닿지 못하고 실패한 통화는 세지 않는다 */
-export function countOutboundCallsSince(db: Db, sinceIso: string): number {
+/**
+ * `sinceIso` 이후 만든 발신 통화 수 (통화량 한도용). 제공자에 닿지 못하고 실패한 통화는 세지 않는다.
+ * `orgUnitId` 를 주면 그 조직 단위(null = 조직 단위 없는 업무)의 통화만 센다. 생략하면 이 인스턴스 전체다.
+ */
+export function countOutboundCallsSince(db: Db, sinceIso: string, scope: { orgUnitId: string | null } | undefined = undefined): number {
+  const filter = scope === undefined ? '' : scope.orgUnitId === null ? ' AND org_unit_id IS NULL' : ' AND org_unit_id = ?';
   const row = db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM call WHERE direction = 'outbound' AND created_at >= ? AND NOT (status IN ('failed','cancelled') AND provider_call_id IS NULL)", [sinceIso],
+    `SELECT COUNT(*) AS n FROM call WHERE direction = 'outbound' AND created_at >= ? AND NOT (status IN ('failed','cancelled') AND provider_call_id IS NULL)${filter}`,
+    scope?.orgUnitId == null ? [sinceIso] : [sinceIso, scope.orgUnitId],
   );
   return Number(row?.n ?? 0);
 }
@@ -81,6 +102,8 @@ export interface NewOutboundCall {
   objective: string;
   /** external_effect.effect_key — 같은 요청이면 같은 Call 을 돌려준다 */
   effectKey: string;
+  /** `callIntentKey(...)`. 생략하면 번호·목적만으로 만든다(맥락 없음) */
+  intentKey?: string | undefined;
   maxDurationSeconds: number;
   allowTransfer: boolean;
   recording: boolean;
@@ -94,11 +117,11 @@ export function createOutboundCall(db: Db, clock: Clock, input: NewOutboundCall)
     const now = clock.nowIso();
     const id = `call-${input.effectKey.slice(0, 32)}`;
     tx.run(
-      `INSERT INTO call (id, provider, provider_call_id, direction, status, from_number, to_number, task_id, task_run_id, actor_id, org_unit_id, objective, effect_key,
+      `INSERT INTO call (id, provider, provider_call_id, direction, status, from_number, to_number, task_id, task_run_id, actor_id, org_unit_id, objective, effect_key, intent_key,
          max_duration_seconds, allow_transfer, recording, end_reason, started_at, connected_at, ended_at, created_at, updated_at)
-       VALUES (?, ?, NULL, 'outbound', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+       VALUES (?, ?, NULL, 'outbound', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
       [id, input.provider, input.from, input.to, input.taskId, input.taskRunId, input.actorId, input.orgUnitId, input.objective, input.effectKey,
-        input.maxDurationSeconds, input.allowTransfer ? 1 : 0, input.recording ? 1 : 0, now, now],
+        input.intentKey ?? callIntentKey(input.to, input.objective, undefined), input.maxDurationSeconds, input.allowTransfer ? 1 : 0, input.recording ? 1 : 0, now, now],
     );
     insertEvent(tx, now, {
       provider: AOT_EVENT_PROVIDER, eventId: `requested:${id}`, type: 'phone.call.requested', callId: id, occurredAt: now,
@@ -214,9 +237,9 @@ function endReasonOf(event: PhoneEvent): string | null {
 function insertInboundCall(tx: Db, now: string, event: Extract<PhoneEvent, { type: 'phone.call.initiated' }>): CallRow {
   const id = `call-${randomUUID()}`;
   tx.run(
-    `INSERT INTO call (id, provider, provider_call_id, direction, status, from_number, to_number, task_id, task_run_id, actor_id, org_unit_id, objective, effect_key,
+    `INSERT INTO call (id, provider, provider_call_id, direction, status, from_number, to_number, task_id, task_run_id, actor_id, org_unit_id, objective, effect_key, intent_key,
        max_duration_seconds, allow_transfer, recording, end_reason, started_at, connected_at, ended_at, created_at, updated_at)
-     VALUES (?, ?, ?, 'inbound', 'initiated', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, NULL, NULL, ?, ?)`,
+     VALUES (?, ?, ?, 'inbound', 'initiated', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, NULL, NULL, ?, ?)`,
     [id, event.provider, event.providerCallId, event.from ?? null, event.to ?? '', event.occurredAt, now, now],
   );
   return tx.get<CallRow>('SELECT * FROM call WHERE id = ?', [id])!;

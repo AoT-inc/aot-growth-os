@@ -68,6 +68,9 @@ function phoneWidenings(before: PhonePolicySection | undefined, after: PhonePoli
   for (const target of after.transfer_targets) if (!before.transfer_targets.includes(target)) reasons.push('phone.transfer_targets entry added');
   if (after.max_duration_seconds > before.max_duration_seconds) reasons.push(`phone.max_duration_seconds raised ${before.max_duration_seconds} -> ${after.max_duration_seconds}`);
   if (after.max_calls_per_day > before.max_calls_per_day) reasons.push(`phone.max_calls_per_day raised ${before.max_calls_per_day} -> ${after.max_calls_per_day}`);
+  const unitBefore = before.max_calls_per_day_per_org_unit;
+  const unitAfter = after.max_calls_per_day_per_org_unit;
+  if (unitBefore !== undefined && (unitAfter === undefined || unitAfter > unitBefore)) reasons.push(`phone.max_calls_per_day_per_org_unit raised or removed ${unitBefore} -> ${unitAfter ?? 'none'}`);
   if (after.recording !== before.recording && after.recording !== 'forbidden') reasons.push(`phone.recording loosened ${before.recording} -> ${after.recording}`);
   const h0 = before.business_hours;
   const h1 = after.business_hours;

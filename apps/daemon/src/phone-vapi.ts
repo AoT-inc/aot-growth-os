@@ -301,7 +301,7 @@ export function createVapiAdapter(options: VapiAdapterOptions): PhonePort {
           const turns = turnsFromMessages(message['messages']);
           if (turns.length === 0) return { events: [], awaitingDirective: false };
           return {
-            events: [{ type: 'phone.call.transcript.updated', eventId: `${callId}:conversation:${turns.length}`, provider: VAPI_PROVIDER, providerCallId: callId, occurredAt: at, transcript: { turns } }],
+            events: [{ type: 'phone.call.transcript.updated', eventId: `${callId}:conversation:${turns.length}:${createHash('sha256').update(JSON.stringify(turns)).digest('hex').slice(0, 12)}`, provider: VAPI_PROVIDER, providerCallId: callId, occurredAt: at, transcript: { turns } }],
             awaitingDirective: false,
           };
         }

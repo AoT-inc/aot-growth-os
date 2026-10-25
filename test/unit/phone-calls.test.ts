@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  applyPhoneEvent, countOutboundCallsSince, createOutboundCall, expireCall, findCallByProvider, getCall, getCallOutcome, getTranscript, hasOpenCall,
+  applyPhoneEvent, callIntentKey, countOutboundCallsSince, createOutboundCall, findSameIntentCall, expireCall, findCallByProvider, getCall, getCallOutcome, getTranscript, hasOpenCall,
   linkCallToTask, listCallsForTask, overdueOpenCalls, PhoneRuleError, recordCallOutcome, ValidationError, type PhoneEvent,
 } from '@aot/domain';
 
@@ -244,4 +244,34 @@ test('daily volume counts only calls that reached the provider; overdue open cal
   assert.equal(getCall(db, a.id).status, 'failed');
   assert.equal(getCall(db, a.id).endReason, 'deadline_exceeded: no terminal event from the provider before the deadline');
   assert.equal(expireCall(db, clock, a.id).result, 'duplicate');
+});
+
+test('same-intent guard: the same number, objective and context is one call; a different context is a different call; failed calls may be redialed', (t) => {
+  const { db, clock } = seededDb(t);
+  const taskId = queuedTask(db, clock);
+  const mk = (suffix: string, context: Record<string, unknown> | undefined, objective = 'qualify_lead') => createOutboundCall(db, clock, {
+    provider: PROVIDER, to: TO, from: null, taskId, taskRunId: null, actorId: null, orgUnitId: null, objective, effectKey: suffix.padEnd(40, '0'),
+    intentKey: callIntentKey(TO, objective, context), maxDurationSeconds: 60, allowTransfer: false, recording: false,
+  }).call;
+  const first = mk('k1', { leadId: 123 });
+  assert.equal(findSameIntentCall(db, taskId, callIntentKey(TO, 'qualify_lead', { leadId: 123 }), 'k2'.padEnd(40, '0'))?.id, first.id);
+  assert.equal(findSameIntentCall(db, taskId, callIntentKey(TO, 'qualify_lead', { leadId: 456 }), 'k2'.padEnd(40, '0')), null, 'another lead is another intent');
+  assert.equal(findSameIntentCall(db, taskId, callIntentKey(TO, 'follow_up', { leadId: 123 }), 'k2'.padEnd(40, '0')), null, 'another objective is another intent');
+  assert.equal(findSameIntentCall(db, taskId, callIntentKey(TO, 'qualify_lead', { leadId: 123 }), 'k1'.padEnd(40, '0')), null, 'a call is not its own duplicate');
+  assert.equal(callIntentKey(TO, 'qualify_lead', { b: 1, a: 2 }), callIntentKey(TO, 'qualify_lead', { a: 2, b: 1 }), 'key order does not matter');
+  // 실패한 통화는 같은 의도의 재다이얼을 막지 않는다
+  applyPhoneEvent(db, clock, { type: 'phone.call.failed', eventId: 'f', provider: PROVIDER, providerCallId: null, callId: first.id, occurredAt: clock.nowIso(), code: 'rejected' });
+  assert.equal(findSameIntentCall(db, taskId, callIntentKey(TO, 'qualify_lead', { leadId: 123 }), 'k2'.padEnd(40, '0')), null);
+});
+
+test('outbound call counts can be scoped to an organization unit', (t) => {
+  const { db, clock } = seededDb(t);
+  const since = '2026-10-19T00:00:00.000Z';
+  const a = taskWithCall(db, clock).call;
+  const b = taskWithCall(db, clock, { trigger: { kind: 'manual', ref: 'actor:other' } }).call;
+  for (const [call, unit, id] of [[a, 'org-unit-core', 'x1'], [b, null, 'x2']] as const) {
+    db.writeTx((tx) => tx.run('UPDATE call SET org_unit_id = ? WHERE id = ?', [unit, call.id]));
+    applyPhoneEvent(db, clock, ev('phone.call.initiated', id, clock.nowIso(), { callId: call.id }));
+  }
+  assert.deepEqual([countOutboundCallsSince(db, since), countOutboundCallsSince(db, since, { orgUnitId: 'org-unit-core' }), countOutboundCallsSince(db, since, { orgUnitId: null }), countOutboundCallsSince(db, since, { orgUnitId: 'nope' })], [2, 1, 1, 0]);
 });

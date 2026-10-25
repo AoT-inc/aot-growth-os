@@ -6,7 +6,7 @@ import { phoneOptionsFromConfig, type PhoneConfig } from '../../apps/daemon/src/
 
 const ENV = { AOT_TEST_KEY: 'k-not-real', AOT_TEST_SECRET: 's-not-real' };
 const base = (): PhoneConfig => ({
-  provider: 'vapi', api_key_env: 'AOT_TEST_KEY', webhook_secret_env: 'AOT_TEST_SECRET', phone_numbers: { '+82200000000': 'pn-1' },
+  provider: 'vapi', api_key_env: 'AOT_TEST_KEY', webhook_secret_env: 'AOT_TEST_SECRET', vapi_contract_verified_on: '2026-11-01', phone_numbers: { '+82200000000': 'pn-1' },
 });
 
 test('no phone section: nothing is assembled', () => {
@@ -44,4 +44,18 @@ test('config validation is strict about nested values and keys', () => {
   ] as const) {
     assert.throws(() => phoneOptionsFromConfig({ phone: { ...base(), ...patch } as never }, ENV), pattern, JSON.stringify(patch));
   }
+});
+
+test('the Vapi contract must have been verified by a manual smoke before the daemon starts with the real provider', () => {
+  for (const value of [undefined, '', 'yesterday', '2026-1-1', true]) {
+    assert.throws(() => phoneOptionsFromConfig({ phone: { ...base(), vapi_contract_verified_on: value as never } }, ENV), /vapi_contract_verified_on/, String(value));
+  }
+});
+
+test('a listener bound to a non-loopback address must acknowledge that TLS is terminated in front of it', () => {
+  for (const host of ['0.0.0.0', '10.0.0.5', '::']) {
+    assert.throws(() => phoneOptionsFromConfig({ phone: { ...base(), webhook: { host, port: 8787 } } }, ENV), /does not speak TLS/, host);
+  }
+  for (const host of ['127.0.0.1', '::1', 'localhost']) assert.equal(phoneOptionsFromConfig({ phone: { ...base(), webhook: { host, port: 8787 } } }, ENV)!.webhook!.host, host);
+  assert.equal(phoneOptionsFromConfig({ phone: { ...base(), webhook: { host: '0.0.0.0', port: 8787, allow_insecure: true } } }, ENV)!.webhook!.host, '0.0.0.0');
 });

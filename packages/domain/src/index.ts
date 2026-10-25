@@ -20,7 +20,7 @@ export {
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
 export {
-  EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,
+  PHONE_TARGET_TOOLS, EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,
   EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS,
   MAX_MEMORY_INPUTS, MAX_TASK_RESULT_TOTAL_BYTES, MEMORY_INPUT_KIND, MEMORY_LATEST_SELECTOR, MEMORY_REF_PREFIX, parseMemoryRef, resolveExpectedQuotes, SYSTEM_FILLED_FIELDS, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type CostBudget, type ExpectedQuote, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
@@ -99,7 +99,7 @@ export {
   DEFAULT_REJECT, routeInboundCall, validateInboundRoutes, type InboundRoute, type RouteDecision, type RouteTarget,
 } from './phone/routing.ts';
 export {
-  AOT_EVENT_PROVIDER, applyPhoneEvent, countOutboundCallsSince, createOutboundCall, expireCall, findCallByProvider, getCall, getCallOutcome, getCallRow,
+  AOT_EVENT_PROVIDER, applyPhoneEvent, callIntentKey, findSameIntentCall, countOutboundCallsSince, createOutboundCall, expireCall, findCallByProvider, getCall, getCallOutcome, getCallRow,
   getTranscript, hasOpenCall, linkCallToTask, listCallsForTask, overdueOpenCalls, PHONE_EVENT_SOURCE, phoneEventKey, recordCallOutcome,
   type ApplyResult, type CallLink, type NewOutboundCall, type RecordCallOutcomeInput,
 } from './phone/calls.ts';

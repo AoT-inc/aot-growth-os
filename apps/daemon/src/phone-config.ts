@@ -12,6 +12,11 @@ export interface PhoneConfig {
   api_key_env: string;
   /** webhook 비밀이 든 환경 변수 이름 */
   webhook_secret_env: string;
+  /**
+   * Vapi 어댑터의 계약 확인 날짜(YYYY-MM-DD). 필수다: 어댑터는 문서로 확인하지 못한 필드를 쓰므로(phone-vapi.ts `UNVERIFIED`), 사람이 수동 smoke
+   * (`scripts/phone-vapi-smoke.ts`, docs/plans/phone-capability.md)를 마치고 날짜를 적기 전에는 실제 provider 로 데몬을 시작하지 않는다
+   */
+  vapi_contract_verified_on: string;
   /** 발신 번호(E.164) → Vapi phoneNumberId */
   phone_numbers: Record<string, string>;
   /** 업무 의도 키 → Vapi assistantId */
@@ -22,12 +27,12 @@ export interface PhoneConfig {
   /** 최대 통화시간 위에 더하는 유예(ms). 기본 300000 */
   grace_ms?: number;
   /** webhook 수신 리스너. 없으면 열지 않는다 — 노출은 배포 결정이다 (ADR-0014 §10) */
-  webhook?: { host?: string; port: number; path?: string };
+  webhook?: { host?: string; port: number; path?: string; allow_insecure?: boolean };
 }
 
 const isNonEmpty = (value: unknown): boolean => typeof value === 'string' && value !== '';
 
-const KEYS = ['provider', 'api_key_env', 'webhook_secret_env', 'phone_numbers', 'assistants', 'default_assistant_id', 'inbound_routes', 'grace_ms', 'webhook'];
+const KEYS = ['provider', 'api_key_env', 'webhook_secret_env', 'vapi_contract_verified_on', 'phone_numbers', 'assistants', 'default_assistant_id', 'inbound_routes', 'grace_ms', 'webhook'];
 
 export interface BuiltPhoneConfig {
   options: PhoneOptions;
@@ -40,6 +45,9 @@ export function phoneOptionsFromConfig(config: { phone?: PhoneConfig | null }, e
   if (phone === undefined || phone === null) return undefined;
   for (const key of Object.keys(phone)) if (!KEYS.includes(key)) throw new Error(`phone: unknown key '${key}'`);
   if (phone.provider !== 'vapi') throw new Error(`phone.provider '${String(phone.provider)}' is not supported (only 'vapi')`);
+  if (typeof phone.vapi_contract_verified_on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(phone.vapi_contract_verified_on)) {
+    throw new Error('phone.vapi_contract_verified_on (YYYY-MM-DD) is required: run the manual Vapi smoke (scripts/phone-vapi-smoke.ts, docs/plans/phone-capability.md) and record its date before starting the daemon with a real provider');
+  }
   const secret = (name: unknown, label: string): string => {
     if (typeof name !== 'string' || name === '') throw new Error(`phone.${label} must name an environment variable`);
     const value = env[name];
@@ -56,7 +64,7 @@ export function phoneOptionsFromConfig(config: { phone?: PhoneConfig | null }, e
   if (phone.webhook !== undefined) {
     const w = phone.webhook as unknown;
     if (typeof w !== 'object' || w === null) throw new Error('phone.webhook must be an object {host?, port, path?}');
-    for (const key of Object.keys(w)) if (!['host', 'port', 'path'].includes(key)) throw new Error(`phone.webhook: unknown key '${key}'`);
+    for (const key of Object.keys(w)) if (!['host', 'port', 'path', 'allow_insecure'].includes(key)) throw new Error(`phone.webhook: unknown key '${key}'`);
   }
   let routes: InboundRoute[] = [];
   if (phone.inbound_routes !== undefined) {
@@ -69,6 +77,14 @@ export function phoneOptionsFromConfig(config: { phone?: PhoneConfig | null }, e
     ...(phone.assistants === undefined ? {} : { assistants: phone.assistants }),
     ...(phone.default_assistant_id === undefined ? {} : { defaultAssistantId: phone.default_assistant_id }),
   });
+  if (phone.webhook !== undefined) {
+    const host = (phone.webhook as { host?: unknown }).host ?? '127.0.0.1';
+    // 이 리스너는 TLS 를 하지 않는다. 루프백이 아닌 주소에 묶으려면 앞단(프록시·터널)이 TLS 를 끝낸다는 사실을 명시적으로 인정해야 한다 — 비밀이 평문으로 오가는 것을 설정 실수로 열지 않게 한다
+    const loopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+    if (!loopback && (phone.webhook as { allow_insecure?: unknown }).allow_insecure !== true) {
+      throw new Error(`phone.webhook.host '${String(host)}' is not a loopback address: the listener does not speak TLS. Bind to 127.0.0.1 behind a TLS-terminating proxy, or set phone.webhook.allow_insecure=true to acknowledge that TLS is terminated in front of it`);
+    }
+  }
   const webhook = phone.webhook === undefined ? null : { host: phone.webhook.host ?? '127.0.0.1', port: phone.webhook.port, path: phone.webhook.path ?? '/phone/webhook' };
   if (webhook !== null && (!Number.isInteger(webhook.port) || webhook.port < 0 || webhook.port > 65535 || !webhook.path.startsWith('/'))) throw new Error('phone.webhook needs a port and a path starting with /');
   return {

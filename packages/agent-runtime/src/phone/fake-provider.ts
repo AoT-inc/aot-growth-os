@@ -83,6 +83,8 @@ export interface FakePhoneProvider extends PhonePort {
   failNextStart(error: PhoneProviderError): void;
   /** 다음 startCall 은 통화를 접수하지만 응답을 잃는다(타임아웃) — 도달 여부를 알 수 없는 경우 */
   loseNextStartResponse(): void;
+  /** 다음 transfer 는 전환을 수행하지만 응답을 잃는다(타임아웃) */
+  loseNextTransferResponse(): void;
   /** 이 AoT Call id 로 접수된 provider 통화 id */
   providerCallIdOf(callId: string): string | undefined;
   /** `fetchCallEvents` 가 돌려줄 현재 상태 */
@@ -100,6 +102,7 @@ export function createFakePhoneProvider(options: FakePhoneProviderOptions = {}):
   const snapshots = new Map<string, FakeWireEvent[]>();
   let nextFailure: PhoneProviderError | null = null;
   let loseNext = false;
+  let loseNextTransfer = false;
   let counter = 0;
 
   return {
@@ -107,6 +110,7 @@ export function createFakePhoneProvider(options: FakePhoneProviderOptions = {}):
     started, hangups, transfers,
     failNextStart(error) { nextFailure = error; },
     loseNextStartResponse() { loseNext = true; },
+    loseNextTransferResponse() { loseNextTransfer = true; },
     providerCallIdOf: (callId) => byCall.get(callId),
     setSnapshot(providerCallId, events) { snapshots.set(providerCallId, events); },
     webhook(events, opts = {}) {
@@ -139,6 +143,10 @@ export function createFakePhoneProvider(options: FakePhoneProviderOptions = {}):
     },
     transfer(providerCallId, request) {
       transfers.push({ providerCallId, request });
+      if (loseNextTransfer) {
+        loseNextTransfer = false;
+        return Promise.reject(new PhoneProviderError('timeout', 'transfer: no response'));
+      }
       return Promise.resolve();
     },
     fetchCallEvents(providerCallId) {

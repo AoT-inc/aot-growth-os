@@ -5,8 +5,10 @@ import { test } from 'node:test';
 import {
   CALL_MACHINE, CALL_STATUSES, checkTransition, isE164, isCallOpen, maskNumber, missingOutcomeFields, normalizeTranscriptTurns, PhoneProviderError,
   providerErrorFromHttp, reachableFrom, routeInboundCall, validateConversationOutcome, validateInboundRoutes, validateMakeCallInput, validatePhoneEvent,
-  validateTransferInput, withinBusinessHours, checkBusinessHours, IssueCollector, type CallStatus,
+  validateTransferInput, withinBusinessHours, checkBusinessHours, IssueCollector, validateTaskSpec, type CallStatus,
 } from '@aot/domain';
+
+import { minimalDraft } from '../support/spec-fixtures.ts';
 
 const NUMBER = '+821000000001';
 
@@ -151,4 +153,18 @@ test('route configuration is validated: unknown keys, duplicate ids, bad numbers
   const codes = bad.ok ? [] : bad.errors.map((e) => `${e.path}:${e.code}`);
   assert.ok(codes.includes('routes[0].extra:unknown_key') && codes.includes('routes[0].to:format') && codes.includes('routes[1].id:duplicate'));
   assert.ok(codes.includes('routes[1].target.objective:format') && codes.includes('routes[2].target.kind:enum'));
+});
+
+test('task_spec: a phone tool must declare the number range the person approves (E.164 or a prefix ending in *)', () => {
+  const spec = (target: unknown, tool = 'phone_call') => ({
+    ...minimalDraft(),
+    allowed_tools: [{ tool, operations: ['call'], scope: 'customer', impact: 'external_effect', ...(target === undefined ? {} : { target }) }],
+  });
+  for (const ok of [NUMBER, '+8210555*', '+82*']) assert.ok(validateTaskSpec(spec(ok), 'draft').ok, String(ok));
+  for (const bad of [undefined, '', '010-1234', '*', '+82', '82*', '+8210 555*']) {
+    const checked = validateTaskSpec(spec(bad), 'draft');
+    assert.ok(!checked.ok && checked.errors.some((e) => e.code === 'phone_target' || e.path.endsWith('target')), String(bad));
+  }
+  assert.ok(!validateTaskSpec(spec(undefined, 'phone_transfer'), 'draft').ok);
+  assert.ok(validateTaskSpec({ ...minimalDraft() }, 'draft').ok, 'other tools are unaffected');
 });

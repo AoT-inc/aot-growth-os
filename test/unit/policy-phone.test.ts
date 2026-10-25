@@ -158,3 +158,50 @@ test('transfer: only to listed targets and only for calls created with transfer 
   assert.equal(transfer('+82200000009', false).decision, 'deny');
   assert.equal(transfer('+82200000001', true).decision, 'deny');
 });
+
+test('daily limits: max_calls_per_day is an instance-wide ceiling, max_calls_per_day_per_org_unit counts each organization unit separately', (t) => {
+  const env = policyEnv(t);
+  deployDirect(env, withPhone(PHONE_SECTION.replace('max_calls_per_day: 2', 'max_calls_per_day: 3\n  max_calls_per_day_per_org_unit: 1')));
+  const policy = createPhoneCallPolicy({ db: env.db, store: env.store });
+  env.db.writeTx((tx) => tx.run("INSERT INTO org_unit (id, parent_id, slug, lifecycle, name, responsibility, created_at) VALUES ('unit-b', NULL, 'unit-b', 'active', 'B', 'second unit', ?)", [env.clock.nowIso()]));
+  const taskA = queuedTask(env.db, env.clock);
+  const taskB = queuedTask(env.db, env.clock, { trigger: { kind: 'manual', ref: 'actor:other' } });
+  env.db.writeTx((tx) => { tx.run("UPDATE task SET org_unit_id = 'unit-b' WHERE id = ?", [taskB]); });
+  const unitA = env.db.get<{ org_unit_id: string }>('SELECT org_unit_id FROM task WHERE id = ?', [taskA])!.org_unit_id;
+  assert.notEqual(unitA, 'unit-b');
+  const later = new Date(Date.parse(env.clock.nowIso()) + 3600_000).toISOString(); // 월 10:00 KST
+  const ask = (taskId: string) => policy.judge(request(later, { taskId }));
+  assert.equal(ask(taskA).decision, 'allow');
+  // 조직 A 가 하루 한 통을 쓰면 A 의 다음 요청은 거부되지만 B 는 아직 쓸 수 있다
+  const { call } = createOutboundCall(env.db, env.clock, {
+    provider: PROVIDER, to: TO, from: FROM, taskId: taskA, taskRunId: null, actorId: null, orgUnitId: unitA, objective: 'qualify_lead',
+    effectKey: 'a'.repeat(40), maxDurationSeconds: 60, allowTransfer: false, recording: false,
+  });
+  applyPhoneEvent(env.db, env.clock, ev('phone.call.initiated', 'pa', env.clock.nowIso(), { callId: call.id }));
+  const denied = ask(taskA);
+  assert.equal(denied.decision, 'deny');
+  assert.match(denied.decision === 'deny' ? denied.reason : '', /organization unit/);
+  assert.equal(ask(taskB).decision, 'allow', 'one organization unit cannot exhaust another one\'s quota');
+  // 총 상한은 모두를 합쳐 센다
+  for (const [index, [taskId, unit]] of ([[taskB, 'unit-b'], [taskB, 'unit-b']] as const).entries()) {
+    const created = createOutboundCall(env.db, env.clock, {
+      provider: PROVIDER, to: TO, from: FROM, taskId, taskRunId: null, actorId: null, orgUnitId: unit, objective: `qualify_${index}`,
+      effectKey: `b${index}`.padEnd(40, '0'), maxDurationSeconds: 60, allowTransfer: false, recording: false,
+    }).call;
+    applyPhoneEvent(env.db, env.clock, ev('phone.call.initiated', `pb${index}`, env.clock.nowIso(), { callId: created.id }));
+  }
+  const ceiling = ask(taskB);
+  assert.equal(ceiling.decision, 'deny');
+  assert.match(ceiling.decision === 'deny' ? ceiling.reason : '', /instance-wide/);
+});
+
+test('the per-org-unit limit is validated, and loosening it (raising or removing) is a risky policy change', () => {
+  const withUnit = (n: string) => withPhone(PHONE_SECTION.replace('max_calls_per_day: 2', `max_calls_per_day: 5\n  max_calls_per_day_per_org_unit: ${n}`));
+  assert.ok(!parsePolicy(withUnit('0')).ok);
+  assert.ok(!parsePolicy(withUnit('1.5')).ok);
+  const base = parse(withUnit('2')).document;
+  assert.equal(classifyChange(base, parse(withUnit('3')).document).changeClass, 'risky');
+  assert.equal(classifyChange(base, parse(withUnit('1')).document).changeClass, 'normal');
+  assert.equal(classifyChange(base, parse(withPhone(PHONE_SECTION.replace('max_calls_per_day: 2', 'max_calls_per_day: 5'))).document).changeClass, 'risky', 'removing the per-unit limit widens');
+  assert.equal(classifyChange(parse(withPhone(PHONE_SECTION.replace('max_calls_per_day: 2', 'max_calls_per_day: 5'))).document, base).changeClass, 'normal', 'adding a per-unit limit tightens');
+});

@@ -10,7 +10,7 @@ export const PROVIDER = 'fake';
 
 /** 통화 요청을 가진 업무 명세 덧씀 (전화 도구와 통화 검사) */
 export const phoneSpecOverrides = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
-  allowed_tools: [{ tool: 'phone_call', operations: ['call'], scope: 'customer', impact: 'external_effect' }],
+  allowed_tools: [{ tool: 'phone_call', operations: ['call'], scope: 'customer', impact: 'external_effect', target: TO }],
   validation: { deterministic: ['call_completed', 'call_transcript_present', 'call_outcome_recorded', 'policy_compliance'], llm: null, human: false },
   expected_call_outcome: { dispositions: ['qualified', 'not_interested'], required_fields: ['budgetKnown'] },
   constraints: { time_limit: '30m', publish_scope: 'customer' },

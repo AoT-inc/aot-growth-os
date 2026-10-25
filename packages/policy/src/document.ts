@@ -76,8 +76,10 @@ export interface PhonePolicySection {
   /** 발신 번호로 쓸 수 있는 번호. 요청이 번호를 밝히지 않으면 첫 번호를 쓴다 */
   caller_ids: string[];
   max_duration_seconds: number;
-  /** 최근 24시간 발신 통화 수 상한 */
+  /** 최근 24시간 발신 통화 수 상한 — 이 인스턴스 전체의 *총 상한*이다(조직·에이전트를 가리지 않는다). 한 조직이 전체를 소진하지 못하게 하려면 아래 조직 단위 상한을 더한다 */
   max_calls_per_day: number;
+  /** 최근 24시간 발신 통화 수 상한 — 조직 단위(통화를 맡은 업무의 org_unit)별. 총 상한 안에서 조직마다 따로 센다. 생략하면 조직별 제한 없음 */
+  max_calls_per_day_per_org_unit?: number;
   business_hours?: BusinessHours;
   recording: PhoneRecordingMode;
   /** 전환(사람에게 넘기기) 대상 번호 */
@@ -296,7 +298,7 @@ function checkPhone(value: unknown, out: IssueCollector): PhonePolicySection | n
     out.add('phone', 'type', 'phone must be a mapping');
     return null;
   }
-  unknownKeys(value, ['allowed_regions', 'denied_numbers', 'caller_ids', 'max_duration_seconds', 'max_calls_per_day', 'business_hours', 'recording', 'transfer_targets'], 'phone', out);
+  unknownKeys(value, ['allowed_regions', 'denied_numbers', 'caller_ids', 'max_duration_seconds', 'max_calls_per_day', 'max_calls_per_day_per_org_unit', 'business_hours', 'recording', 'transfer_targets'], 'phone', out);
   const list = (key: string, required: boolean, ok: (item: string) => boolean, what: string): string[] => {
     const raw = value[key];
     const path = `phone.${key}`;
@@ -325,6 +327,11 @@ function checkPhone(value: unknown, out: IssueCollector): PhonePolicySection | n
   const perDay = value['max_calls_per_day'];
   if (!Number.isInteger(perDay) || (perDay as number) < 1 || (perDay as number) > 10_000) out.add('phone.max_calls_per_day', 'range', 'max_calls_per_day must be an integer in [1, 10000]');
   else section.max_calls_per_day = perDay as number;
+  if ('max_calls_per_day_per_org_unit' in value) {
+    const perUnit = value['max_calls_per_day_per_org_unit'];
+    if (!Number.isInteger(perUnit) || (perUnit as number) < 1 || (perUnit as number) > 10_000) out.add('phone.max_calls_per_day_per_org_unit', 'range', 'max_calls_per_day_per_org_unit must be an integer in [1, 10000]');
+    else section.max_calls_per_day_per_org_unit = perUnit as number;
+  }
   if ('recording' in value) {
     if (!(PHONE_RECORDING_MODES as readonly unknown[]).includes(value['recording'])) out.add('phone.recording', 'enum', `recording must be one of ${PHONE_RECORDING_MODES.join('|')}`);
     else section.recording = value['recording'] as PhoneRecordingMode;

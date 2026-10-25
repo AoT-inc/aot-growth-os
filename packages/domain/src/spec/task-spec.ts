@@ -402,8 +402,20 @@ function checkAllowedTools(value: unknown, out: IssueCollector): void {
     if (!('impact' in item)) out.add(joinPath(path, 'impact'), 'required', `impact is required (${IMPACTS.join('|')}): a tool request without an impact cannot be judged by the policy and is rejected`);
     else if (!(IMPACTS as readonly unknown[]).includes(item['impact'])) out.add(joinPath(path, 'impact'), 'enum', `impact must be one of ${IMPACTS.join('|')}`);
     if ('target' in item) requiredText(item, 'target', path, out);
+    // 전화 도구는 사람이 승인하는 번호 범위(target)를 반드시 밝힌다 (ADR-0014 §8): 대상이 없는 명세는 어떤 번호든 걸 수 있는 명세가 되므로 거부한다
+    if (typeof item['tool'] === 'string' && PHONE_TARGET_TOOLS.includes(item['tool'])) {
+      const target = item['target'];
+      if (typeof target !== 'string' || !(PHONE_TARGET_EXACT.test(target) || PHONE_TARGET_PREFIX.test(target))) {
+        out.add(joinPath(path, 'target'), 'phone_target', `'${item['tool']}' needs a target: an E.164 number (+821000000001) or a prefix ending in * (+8210555*); the person approves this range`);
+      }
+    }
   });
 }
+
+/** 번호 범위를 target 으로 선언해야 하는 전화 도구 */
+export const PHONE_TARGET_TOOLS: readonly string[] = ['phone_call', 'phone_transfer'];
+const PHONE_TARGET_EXACT = /^\+[1-9][0-9]{6,14}$/;
+const PHONE_TARGET_PREFIX = /^\+[1-9][0-9]{0,13}\*$/;
 
 function checkConstraints(value: unknown, out: IssueCollector): void {
   if (!isPlainObject(value)) return void out.add('constraints', 'required', 'constraints must be an object');

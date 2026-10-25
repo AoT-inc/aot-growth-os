@@ -11,8 +11,8 @@ export { ApprovalChannelError, MAX_REQUEST_BYTES, prepareSocketDir, sendApproval
 export { classifyChange, type PolicyChange } from './change.ts';
 export { recordDecision, type DecisionRecord } from './decisions.ts';
 export {
-  memoryDefaultValidity, parseDuration, parsePolicy, POLICY_FORMAT, policyHash, policyVersionIdOf, RISKY_CHANGE_RANGE, validatePolicyDocument,
-  type ParsedPolicy, type PolicyDocument, type PolicyLimits, type PolicyRule, type RiskyChangeParams,
+  memoryDefaultValidity, parseDuration, parsePolicy, PHONE_RECORDING_MODES, POLICY_FORMAT, policyHash, policyVersionIdOf, RISKY_CHANGE_RANGE, validatePolicyDocument,
+  type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits, type PolicyRule, type RiskyChangeParams,
 } from './document.ts';
 export {
   ApprovalEngine, ApprovalRefusedError, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions, type ApprovalResponse, type ApprovalSubject,
@@ -30,3 +30,4 @@ export {
   TotpSecretStore, totpStep, verifyTotp,
 } from './totp.ts';
 export { parseYaml, YamlError, type YamlValue } from './yaml.ts';
+export { createPhoneCallPolicy, type PhoneCallPolicyOptions, type SyncPhoneCallPolicy } from './phone.ts';

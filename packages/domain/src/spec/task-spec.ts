@@ -59,6 +59,17 @@ export interface ExpectedQuote { source: string; text: string }
 export const MAX_EXPECTED_QUOTES = 200;
 export const MAX_EXPECTED_QUOTES_PER_SOURCE = 10;
 export const MAX_EXPECTED_QUOTE_CHARS = 500;
+/**
+ * 전화 업무가 요구하는 통화 결과의 형식 (ADR-0014 §7). Phone 이 영업 절차를 하드코딩하지 않도록 허용 disposition 과 필수 필드는 명세가 정한다.
+ * 승인 대상 해시에 포함된다(실행 인자).
+ */
+export interface ExpectedCallOutcome { dispositions: string[]; required_fields?: string[] }
+
+export const MAX_OUTCOME_DISPOSITIONS = 20;
+export const MAX_OUTCOME_REQUIRED_FIELDS = 30;
+/** `expected_call_outcome` 을 두려면 `validation.deterministic` 에 있어야 하는 검사 */
+export const EXPECTED_CALL_OUTCOME_CHECK_ID = 'call_outcome_recorded';
+
 /** `expected_quotes` 를 두려면 `validation.deterministic` 에 있어야 하는 검사. 없으면 기대 인용문이 아무도 확인하지 않는 채로 남는다 */
 export const EXPECTED_QUOTES_CHECK_ID = 'quote_in_source';
 
@@ -106,6 +117,8 @@ export interface TaskSpecDraft {
   inputs: TaskInput[];
   /** 출처 원문에 있어야 하는 인용문 (선택). 조사 에이전트는 모두에 대해 found/not found 를 보고하고, 검증기가 원문에서 다시 확인한다 */
   expected_quotes?: ExpectedQuote[];
+  /** 통화 업무가 남겨야 하는 구조화된 결과의 형식 (선택, 전화 업무). 검사 `call_outcome_recorded` 가 확인한다 */
+  expected_call_outcome?: ExpectedCallOutcome;
   dependencies?: string[];
   allowed_tools: ToolRequest[];
   constraints: TaskConstraints;
@@ -125,7 +138,7 @@ export interface TaskSpec extends TaskSpecDraft {
 export type TaskSpecStage = 'draft' | 'stored';
 
 const DRAFT_KEYS = [
-  'objective', 'department', 'role', 'product', 'trigger', 'inputs', 'expected_quotes', 'dependencies', 'allowed_tools',
+  'objective', 'department', 'role', 'product', 'trigger', 'inputs', 'expected_quotes', 'expected_call_outcome', 'dependencies', 'allowed_tools',
   'constraints', 'acceptance_criteria', 'validation', 'evidence_refs', 'cost_budget',
 ] as const;
 /** 시스템만 채우는 필드 */
@@ -155,6 +168,7 @@ export function validateTaskSpec(input: unknown, stage: TaskSpecStage): Validati
   checkTrigger(input['trigger'], out);
   checkInputs(input['inputs'], out);
   checkExpectedQuotes(input['expected_quotes'], input['inputs'], input['validation'], out);
+  checkExpectedCallOutcome(input['expected_call_outcome'], input['validation'], out);
   checkDependencies(input['dependencies'], out);
   checkAllowedTools(input['allowed_tools'], out);
   checkConstraints(input['constraints'], out);
@@ -320,6 +334,35 @@ function checkExpectedQuotes(value: unknown, inputs: unknown, validation: unknow
   // 기대 인용문은 `quote_in_source` 검사가 확인한다. 검사 목록에 없으면 적어 두기만 하고 아무도 확인하지 않으므로 거부한다.
   if (value.length > 0 && isPlainObject(validation) && Array.isArray(validation['deterministic']) && !validation['deterministic'].includes(EXPECTED_QUOTES_CHECK_ID)) {
     out.add('validation.deterministic', 'check_required', `expected_quotes needs '${EXPECTED_QUOTES_CHECK_ID}' in validation.deterministic (otherwise nothing verifies the quotations)`);
+  }
+}
+
+const OUTCOME_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+/** 필수 필드 이름은 structured_data 의 키다 (예: budgetKnown) */
+const OUTCOME_FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+function checkExpectedCallOutcome(value: unknown, validation: unknown, out: IssueCollector): void {
+  if (value === undefined) return;
+  if (!isPlainObject(value)) return void out.add('expected_call_outcome', 'type', 'expected_call_outcome must be {dispositions, required_fields?}');
+  rejectUnknownKeys(value, ['dispositions', 'required_fields'], 'expected_call_outcome', out);
+  const names = (key: 'dispositions' | 'required_fields', max: number, required: boolean, pattern: RegExp): void => {
+    const list = value[key];
+    const path = joinPath('expected_call_outcome', key);
+    if (list === undefined && !required) return;
+    if (!Array.isArray(list) || (required && list.length === 0)) return void out.add(path, 'type', `${key} must be a${required ? ' non-empty' : ''} list of names (${key === 'dispositions' ? '[a-z][a-z0-9_]*' : '[A-Za-z][A-Za-z0-9_]*'})`);
+    if (list.length > max) out.add(path, 'too_many', `${key} has more than ${max} entries`);
+    const seen = new Set<string>();
+    list.forEach((item: unknown, index) => {
+      if (typeof item !== 'string' || !pattern.test(item)) return void out.add(joinPath(path, index), 'format', `name must match ${pattern.source}`);
+      if (seen.has(item)) out.add(joinPath(path, index), 'duplicate', `duplicate name '${item}'`);
+      seen.add(item);
+    });
+  };
+  names('dispositions', MAX_OUTCOME_DISPOSITIONS, true, OUTCOME_NAME);
+  names('required_fields', MAX_OUTCOME_REQUIRED_FIELDS, false, OUTCOME_FIELD_NAME);
+  // 형식을 정해 두고 확인하는 검사가 없으면 아무도 지키지 않는다 (expected_quotes 와 같은 이유)
+  if (isPlainObject(validation) && Array.isArray(validation['deterministic']) && !validation['deterministic'].includes(EXPECTED_CALL_OUTCOME_CHECK_ID)) {
+    out.add('validation.deterministic', 'check_required', `expected_call_outcome needs '${EXPECTED_CALL_OUTCOME_CHECK_ID}' in validation.deterministic (otherwise nothing verifies the outcome)`);
   }
 }
 

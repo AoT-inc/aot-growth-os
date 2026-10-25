@@ -46,6 +46,12 @@ export interface GatewayToolSpec {
   unitCost?: AdapterCost;
   /** 이 도구의 타임아웃(밀리초). 생략하면 게이트웨이의 `toolTimeoutMs` */
   timeoutMs?: number;
+  /**
+   * 이 도구의 실행기가 부작용을 부작용 원장(performEffect)으로만 보낸다는 선언이다. 원장은 전송 직전마다 정책과 *업무 승인*(approved_hash, cooldown, 재인증)을
+   * 다시 확인하므로(`TaskPolicyGate.beforeEffect`), 호출별 정책 판정이 `require_approval` 이어도 여기서 막지 않고 실행기로 넘긴다 — 승인이 없으면 원장이 보내지 않고 run 을 멈춘다.
+   * `deny` 는 그대로 막고, 외부 입력의 영향을 받은 run 의 부작용 호출은 이 선언과 상관없이 막는다(하한). 선언하지 않은 부작용 도구는 `require_approval` 이면 막힌다(게이트웨이에는 승인 경로가 없다).
+   */
+  approvalViaEffectGate?: boolean;
 }
 
 /** 실행기에 넘기는 요청. `args` 는 동결된 사본이라 바꿀 수 없다 */
@@ -338,24 +344,30 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
         verdict = { decision: 'require_approval', reason: 'gateway: side-effect call influenced by external input needs approval' };
       }
       if (verdict.decision === 'deny') return done({ ...base, outcome: 'policy_denied', decision: 'deny', reason: verdict.reason, response: refuse('policy_denied') });
+      // 기록에는 정책이 실제로 말한 판정을 남긴다: 승인을 원장에 맡긴 호출은 require_approval 이 기록되고 사유에 그 사실이 붙는다
+      let recorded: PolicyDecisionValue = 'allow';
+      let deferredReason: string | undefined;
       if (verdict.decision === 'require_approval') {
-        return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: verdict.reason, response: refuse('approval_required') });
+        const deferred = spec.approvalViaEffectGate === true && !(spec.sideEffect && influenced);
+        if (!deferred) return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: verdict.reason, response: refuse('approval_required') });
+        recorded = 'require_approval';
+        deferredReason = `${verdict.reason}; approval is re-checked by the effect ledger before the side effect is sent`;
       }
-      if (runSignal.aborted) return done({ ...base, outcome: 'run_cancelled', decision: 'allow', response: refuse('run_cancelled') });
+      if (runSignal.aborted) return done({ ...base, outcome: 'run_cancelled', decision: recorded, response: refuse('run_cancelled') });
 
       const outcome = await execute(spec, executor, snapshot);
       const unitCost = spec.unitCost ?? {};
       switch (outcome.kind) {
         case 'timeout':
-          return done({ ...base, outcome: 'tool_timeout', decision: 'allow', reason: `no result within ${spec.timeoutMs ?? options.toolTimeoutMs} ms`, cost: applyCost(unitCost), response: refuse('tool_timeout') });
+          return done({ ...base, outcome: 'tool_timeout', decision: recorded, reason: `no result within ${spec.timeoutMs ?? options.toolTimeoutMs} ms`, cost: applyCost(unitCost), response: refuse('tool_timeout') });
         case 'cancelled':
-          return done({ ...base, outcome: 'run_cancelled', decision: 'allow', cost: applyCost(unitCost), response: refuse('run_cancelled') });
+          return done({ ...base, outcome: 'run_cancelled', decision: recorded, cost: applyCost(unitCost), response: refuse('run_cancelled') });
         case 'error':
-          return done({ ...base, outcome: 'tool_error', decision: 'allow', reason: errorText(outcome.error), cost: applyCost(unitCost), response: refuse('tool_error') });
+          return done({ ...base, outcome: 'tool_error', decision: recorded, reason: errorText(outcome.error), cost: applyCost(unitCost), response: refuse('tool_error') });
         case 'done': {
           const value = outcome.value;
           if (!isExecutionResult(value)) {
-            return done({ ...base, outcome: 'tool_error', decision: 'allow', reason: 'executor returned an invalid result', cost: applyCost(unitCost), response: refuse('tool_error') });
+            return done({ ...base, outcome: 'tool_error', decision: recorded, reason: 'executor returned an invalid result', cost: applyCost(unitCost), response: refuse('tool_error') });
           }
           const cost = applyCost(validCost(value.cost) ?? unitCost);
           // 결과가 에이전트에 전달되는 이 시점부터 이후의 모든 호출이 외부 입력 영향 호출이다 (동기: 다음 호출이 오기 전에 표시된다)
@@ -363,7 +375,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
           const fitted = fitResult(value.result);
           const preview = previewJson(value.result, RECORD_PREVIEW_CHARS).text;
           return done({
-            ...base, outcome: 'ok', decision: 'allow', cost, resultPreview: preview, resultBytes: fitted.bytes, truncated: fitted.truncated,
+            ...base, outcome: 'ok', decision: recorded, ...(deferredReason === undefined ? {} : { reason: deferredReason }), cost, resultPreview: preview, resultBytes: fitted.bytes, truncated: fitted.truncated,
             response: { ok: true, result: fitted.value },
           });
         }

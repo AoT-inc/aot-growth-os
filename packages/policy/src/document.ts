@@ -2,8 +2,8 @@
 // 정규화: 기간은 초(정수), 집합 성격의 목록(scope, impact, subject, action, resource)은 정렬, 규칙은 id 순.
 // 그래서 주석·공백·키 순서·규칙 순서는 정책 버전(content_hash)을 바꾸지 않는다.
 import {
-  contentHash, IMPACTS, IssueCollector, isPlainObject, MEMORY_KINDS, POLICY_DECISIONS, SCOPES,
-  type Impact, type MemoryKind, type PlainObject, type PolicyDecisionValue, type Scope, type ValidationResult,
+  checkBusinessHours, contentHash, IMPACTS, isE164, IssueCollector, isPlainObject, MEMORY_KINDS, POLICY_DECISIONS, SCOPES,
+  type BusinessHours, type Impact, type MemoryKind, type PlainObject, type PolicyDecisionValue, type Scope, type ValidationResult,
 } from '@aot/domain';
 
 import { parseYaml, YamlError } from './yaml.ts';
@@ -60,6 +60,32 @@ export interface PolicyLimits {
   max_tokens_per_task?: number;
 }
 
+/** 녹취 정책: 금지 / 요청 시 허용 / 항상 */
+export const PHONE_RECORDING_MODES = ['forbidden', 'allowed', 'required'] as const;
+export type PhoneRecordingMode = (typeof PHONE_RECORDING_MODES)[number];
+
+/**
+ * 전화 정책 섹션 (ADR-0014 §8, 선택). 섹션이 없으면 모든 통화를 거부한다(기본 거부). 이 섹션은 일반 7요소 판정에 더하는 전화 전용 제약이며,
+ * 키가 없는 정책 문서의 내용 해시(정책 버전)는 이 섹션이 생기기 전과 같다.
+ */
+export interface PhonePolicySection {
+  /** 발신을 허용하는 국가/지역 번호 접두어 (예: +82) */
+  allowed_regions: string[];
+  /** 발신 금지 번호 (E.164 정확 일치. 수신거부 등) */
+  denied_numbers: string[];
+  /** 발신 번호로 쓸 수 있는 번호. 요청이 번호를 밝히지 않으면 첫 번호를 쓴다 */
+  caller_ids: string[];
+  max_duration_seconds: number;
+  /** 최근 24시간 발신 통화 수 상한 — 이 인스턴스 전체의 *총 상한*이다(조직·에이전트를 가리지 않는다). 한 조직이 전체를 소진하지 못하게 하려면 아래 조직 단위 상한을 더한다 */
+  max_calls_per_day: number;
+  /** 최근 24시간 발신 통화 수 상한 — 조직 단위(통화를 맡은 업무의 org_unit)별. 총 상한 안에서 조직마다 따로 센다. 생략하면 조직별 제한 없음 */
+  max_calls_per_day_per_org_unit?: number;
+  business_hours?: BusinessHours;
+  recording: PhoneRecordingMode;
+  /** 전환(사람에게 넘기기) 대상 번호 */
+  transfer_targets: string[];
+}
+
 export interface PolicyDocument {
   format: typeof POLICY_FORMAT;
   default: 'deny';
@@ -67,6 +93,7 @@ export interface PolicyDocument {
   rules: PolicyRule[];
   risky_change: RiskyChangeParams;
   memory: { default_validity: Partial<Record<MemoryKind, number>> };
+  phone?: PhonePolicySection;
 }
 
 /** 값 범위 (D3: min_approvers ≥ 1). 상한은 오타로 승인이 불가능해지는 것을 막는 정도로 둔다. */
@@ -118,7 +145,7 @@ export function validatePolicyDocument(input: unknown): ValidationResult<PolicyD
     out.add('', 'type', 'a policy must be a mapping');
     return out.result(input as PolicyDocument);
   }
-  unknownKeys(input, ['format', 'default', 'limits', 'rules', 'risky_change', 'memory'], '', out);
+  unknownKeys(input, ['format', 'default', 'limits', 'rules', 'risky_change', 'memory', 'phone'], '', out);
   if (input['format'] !== POLICY_FORMAT) out.add('format', 'format', `format must be '${POLICY_FORMAT}'`);
   if (input['default'] !== 'deny') out.add('default', 'default_deny', "default must be 'deny' (anything not matched by a rule is denied)");
 
@@ -126,8 +153,9 @@ export function validatePolicyDocument(input: unknown): ValidationResult<PolicyD
   const rules = checkRules(input['rules'], out);
   const risky = checkRiskyChange(input['risky_change'], out);
   const memory = checkMemory(input['memory'], out);
+  const phone = checkPhone(input['phone'], out);
 
-  const document: PolicyDocument = { format: POLICY_FORMAT, default: 'deny', limits, rules, risky_change: risky, memory };
+  const document: PolicyDocument = { format: POLICY_FORMAT, default: 'deny', limits, rules, risky_change: risky, memory, ...(phone === null ? {} : { phone }) };
   return out.result(document);
 }
 
@@ -260,6 +288,59 @@ function checkMemory(value: unknown, out: IssueCollector): PolicyDocument['memor
     else memory.default_validity[kind as MemoryKind] = seconds;
   }
   return memory;
+}
+
+const REGION_PREFIX = /^\+[1-9][0-9]{0,7}$/;
+
+function checkPhone(value: unknown, out: IssueCollector): PhonePolicySection | null {
+  if (value === undefined) return null;
+  if (!isPlainObject(value)) {
+    out.add('phone', 'type', 'phone must be a mapping');
+    return null;
+  }
+  unknownKeys(value, ['allowed_regions', 'denied_numbers', 'caller_ids', 'max_duration_seconds', 'max_calls_per_day', 'max_calls_per_day_per_org_unit', 'business_hours', 'recording', 'transfer_targets'], 'phone', out);
+  const list = (key: string, required: boolean, ok: (item: string) => boolean, what: string): string[] => {
+    const raw = value[key];
+    const path = `phone.${key}`;
+    if (raw === undefined) {
+      if (required) out.add(path, 'required', `${key} is required (${what})`);
+      return [];
+    }
+    if (!Array.isArray(raw) || (required && raw.length === 0) || !raw.every((item) => typeof item === 'string' && ok(item))) {
+      out.add(path, 'format', `${key} must be ${required ? 'a non-empty' : 'a'} list of ${what}`);
+      return [];
+    }
+    return [...new Set(raw as string[])].sort();
+  };
+  const section: PhonePolicySection = {
+    allowed_regions: list('allowed_regions', true, (item) => REGION_PREFIX.test(item), 'calling-code prefixes such as +82'),
+    denied_numbers: list('denied_numbers', false, isE164, 'E.164 numbers'),
+    caller_ids: list('caller_ids', true, isE164, 'E.164 numbers'),
+    max_duration_seconds: 0,
+    max_calls_per_day: 0,
+    recording: 'forbidden',
+    transfer_targets: list('transfer_targets', false, isE164, 'E.164 numbers'),
+  };
+  const seconds = value['max_duration_seconds'];
+  if (!Number.isInteger(seconds) || (seconds as number) < 10 || (seconds as number) > 14_400) out.add('phone.max_duration_seconds', 'range', 'max_duration_seconds must be an integer in [10, 14400]');
+  else section.max_duration_seconds = seconds as number;
+  const perDay = value['max_calls_per_day'];
+  if (!Number.isInteger(perDay) || (perDay as number) < 1 || (perDay as number) > 10_000) out.add('phone.max_calls_per_day', 'range', 'max_calls_per_day must be an integer in [1, 10000]');
+  else section.max_calls_per_day = perDay as number;
+  if ('max_calls_per_day_per_org_unit' in value) {
+    const perUnit = value['max_calls_per_day_per_org_unit'];
+    if (!Number.isInteger(perUnit) || (perUnit as number) < 1 || (perUnit as number) > 10_000) out.add('phone.max_calls_per_day_per_org_unit', 'range', 'max_calls_per_day_per_org_unit must be an integer in [1, 10000]');
+    else section.max_calls_per_day_per_org_unit = perUnit as number;
+  }
+  if ('recording' in value) {
+    if (!(PHONE_RECORDING_MODES as readonly unknown[]).includes(value['recording'])) out.add('phone.recording', 'enum', `recording must be one of ${PHONE_RECORDING_MODES.join('|')}`);
+    else section.recording = value['recording'] as PhoneRecordingMode;
+  }
+  if (value['business_hours'] !== undefined) {
+    const hours = checkBusinessHours(value['business_hours'], 'phone.business_hours', out);
+    if (hours) section.business_hours = hours;
+  }
+  return section;
 }
 
 /** memory-item 규칙 5: 정책의 기본 만료 기간 → domain MemoryContext.defaultValiditySeconds */

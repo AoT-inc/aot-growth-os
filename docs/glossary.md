@@ -32,6 +32,11 @@
 | 승인 | `approval` | 사람이 특정 대상(업무·전략·게시)에 내린 판단 기록 | |
 | 비용 원장 | `cost_entry` | 업무/실행 단위로 쌓이는 비용 기록 | |
 | 게시 | `publication` | 외부 공개 행위와 그 공개 범위 | 내부 작업과 분리 |
+| 외부 대화 | `conversation` | 에이전트가 외부 사람과 나누는 대화. 전화·이메일·채팅의 상위 개념이고 채널(phone 등) 아래에 있다. 공개 게시(`publication`)는 대화가 아니다 | 채널 중립 부분(발화 기록·결과)만 먼저 분리했다 ([ADR-0014](adr/0014-phone-capability.md) §0) |
+| 통화 | `call` | 전화 통화 하나. 업무 실행 중 일어난 외부 상호작용. AoT canonical 상태(queued … completed/failed/cancelled/transferred)를 가진다 | 업무(`task`)가 아님. 업무 1 : 통화 N |
+| 전화 포트 | `PhonePort` | 전화 provider(Vapi 등)가 구현하는 계약. 어댑터가 webhook·상태를 canonical 이벤트로 바꾼다 | 에이전트 어댑터(`agent_adapter`)와 다르다 |
+| 발화 기록 | `transcript` | 통화 내용을 화자별 턴(agent/customer/system)으로 정규화한 산출물. 상대방의 말은 신뢰할 수 없는 데이터다 | provider 원본 transcript 가 아님(저장하지 않는다) |
+| 통화 결과 | `call_outcome` | 통화 뒤 남는 구조화 결과(disposition·summary·structured_data·next_action). 필수 필드는 업무 명세가 정한다 | 에이전트의 자기 보고가 아니다 |
 | 워크벤치 | workbench | Claude Desktop 등 개발·감독 도구. 상태를 소유하지 않음 | 운영 주체가 아님 |
 
 ## 상태 용어

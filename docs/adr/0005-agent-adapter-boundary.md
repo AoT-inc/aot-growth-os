@@ -25,6 +25,18 @@
 어댑터 입력에 선택 필드 `upstream: [{name, task_ref, trust_origin, result}]`를 더했다. 호스트가 명세 `inputs[kind=task_result]`를 실행 직전에 읽어 *완료이고 통과 평가(pass, safety pass)가 있는 업무*의 결과만 넣는다. 항목은 항상 `trust_origin='external_untrusted'` 데이터이며(지시는 `task_spec`에만 있다) 계약 검증과 `start` 프레임 검증이 다른 값을 거부한다. 입력이 충족되지 않으면 어댑터를 시작하지 않고 업무를 `needs_review`로 보낸다. 컨테이너 안 에이전트는 `start` 프레임으로 같은 값을 받으며 모르는 필드는 무시한다(조사 에이전트는 읽지 않는다). 또 어댑터 선택은 워커의 포트(명세 → 어댑터 이름)가 하고 `task_run.adapter`에 실제 쓴 이름이 남는다. 어댑터 선택은 권한이 아니다: 도구는 어댑터와 무관하게 명세와 정책이 정한다. 상세는 [phase-a A6-U11 기록](../plans/phase-a.md).
 
 ## Amendment (2026-10-25): 부작용 도구의 `supports_idempotency` 선언
+외부 부작용 도구를 쓰는 어댑터가 계약에 선언할 `supports_idempotency`([recovery §3](../operations/recovery.md))의 후보 도구별 초기 값은 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 문서 근거와 함께 있다. 문서로 확인하지 못한 도구는 `false`다. 이 Amendment는 값의 출처를 가리킬 뿐 계약을 바꾸지 않는다. 키 보존 기간, 자연 멱등(upsert)의 취급, 선언 단위(도구/동작), 조회형 도구의 `effect_key` 전달 규칙은 계약에 닿으므로 사용자 결정 뒤에 이 ADR에 적는다.
+
+## Amendment (2026-10-25): 승인을 부작용 원장에 넘기는 실행기 (`bindToEffectLedger`)
+게이트웨이는 호출별 정책 판정이 `require_approval`이면 호출을 막는다(게이트웨이에는 승인 경로가 없다). 유일한 예외는 `bindToEffectLedger`(`packages/agent-runtime/src/effect-ledger.ts`)로 만든 실행기다: 부작용을 부작용 원장(`performEffect`)으로만 보내는 실행기는 원장이 전송 직전마다 정책과 *사람의 업무 승인*(`approved_hash`·cooldown·재인증)을 다시 확인하므로(`TaskPolicyGate.beforeEffect`), 게이트웨이가 승인 판정을 원장에 넘겨도 승인 없이 전송되지 않는다. 승인이 없으면 원장이 보내지 않고 run을 멈춘다(`needs_review`).
+
+이 예외를 스펙의 불리언 선언으로 두었던 첫 구현은 **승인 우회 수단이 될 수 있어** 구조로 바꿨다(PR 리뷰 지적):
+- **위조 불가:** 표시는 실행기 함수 자체에 붙고 모듈 비공개 `WeakSet`에만 등록된다. 스펙·설정·JSON 필드, 같은 모양의 속성을 가진 함수, 묶인 실행기를 감싼 래퍼는 인정되지 않는다.
+- **원장을 거치지 않으면 오류:** 실행기 본문은 `perform`(원장 호출)을 인자로 받고, `perform`도 `perform.noEffect(이유)`(provider에 닿지 않은 통화의 로컬 취소처럼 외부 부작용이 없는 길을 명시)도 부르지 않고 끝나면 성공이 아니라 `tool_error`다.
+- **적용 범위 제한:** 묶인 실행기는 `sideEffect=true`이고 영향이 `external_effect`인 도구에만 받는다(그 밖은 게이트웨이 시작 때 거부).
+- **하한 유지:** `deny`와 외부 입력의 영향을 받은 run의 부작용 호출(승인 없이 불가)은 이 예외와 무관하게 막힌다. 호출 기록에는 정책의 `require_approval`과 "원장이 재확인한다"는 사유가 남는다.
+- **한계:** 본문이 `perform` 없이 직접 외부에 접근하는 것까지 막지는 못한다. 실행기는 호스트가 조립하는 신뢰된 코드(에이전트는 닿지 못한다)이고, 이 구조는 설정 오류와 실수를 잡는다. 첫 사용처는 전화 도구([ADR-0014](0014-phone-capability.md) §8). 시험: `agent-runtime-gateway-effect-gate`, `phone-lifecycle`(승인 뒤 정책이 바뀌면 원장이 거부).
+
 외부 부작용 도구를 쓰는 어댑터가 계약에 선언할 `supports_idempotency`([recovery §3](../operations/recovery.md))의 후보 도구별 초기 값은 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 문서 근거와 함께 있다. 문서로 확인하지 못한 도구는 `false`다. 사용자 승인(2026-10-25)으로 어댑터 계약에 다음을 더한다(구현은 첫 부작용 어댑터 전).
 - **선언 단위와 보존 기간.** 멱등 선언은 (도구, `action`) 단위의 `{supported, retention_ms}`다. 재전송 규칙은 [ADR-0004 Amendment](0004-events-routines-idempotency.md)와 [recovery §3](../operations/recovery.md).
 - **조회형 어댑터는 `effect_key`를 어디에 싣는지 선언한다**(`metadata` / `slug` / `property` / `none`). `none`의 `lookup`은 내용 대조이며 "찾음"만 `confirmed` 근거다. 공개 게시물 본문에는 `effect_key`를 싣지 않는다.

@@ -21,6 +21,7 @@ import { isNonBlankString, SCOPES } from '@aot/domain';
 import type { Clock, Impact, PolicyDecisionValue, Scope, ToolCallConstraints, ToolCallPolicy, ToolCallPolicyRequest, ToolCallPolicyVerdict } from '@aot/domain';
 
 import type { AdapterCost, AdapterInput, CostProgressEvent, JsonObject, JsonValue, RunLogEntry, ToolGateway, ToolGatewayResponse } from './contract.ts';
+import { isEffectLedgerBound } from './effect-ledger.ts';
 import { MAX_FRAME_BYTES } from './frames.ts';
 import { maskString, previewJson } from './mask.ts';
 import { isJsonObject, isJsonValue } from './validate.ts';
@@ -338,24 +339,31 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
         verdict = { decision: 'require_approval', reason: 'gateway: side-effect call influenced by external input needs approval' };
       }
       if (verdict.decision === 'deny') return done({ ...base, outcome: 'policy_denied', decision: 'deny', reason: verdict.reason, response: refuse('policy_denied') });
+      // 기록에는 정책이 실제로 말한 판정을 남긴다: 승인을 원장에 맡긴 호출은 require_approval 이 기록되고 사유에 그 사실이 붙는다
+      let recorded: PolicyDecisionValue = 'allow';
+      let deferredReason: string | undefined;
       if (verdict.decision === 'require_approval') {
-        return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: verdict.reason, response: refuse('approval_required') });
+        // 승인 판정을 원장에 넘길 수 있는 것은 `bindToEffectLedger` 로 만든 실행기뿐이다 (effect-ledger.ts). 스펙의 표시가 아니다. 외부 입력의 영향을 받은 run 은 그래도 막는다(하한)
+        const deferred = isEffectLedgerBound(executor) && !influenced;
+        if (!deferred) return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: verdict.reason, response: refuse('approval_required') });
+        recorded = 'require_approval';
+        deferredReason = `${verdict.reason}; approval is re-checked by the effect ledger before the side effect is sent`;
       }
-      if (runSignal.aborted) return done({ ...base, outcome: 'run_cancelled', decision: 'allow', response: refuse('run_cancelled') });
+      if (runSignal.aborted) return done({ ...base, outcome: 'run_cancelled', decision: recorded, response: refuse('run_cancelled') });
 
       const outcome = await execute(spec, executor, snapshot);
       const unitCost = spec.unitCost ?? {};
       switch (outcome.kind) {
         case 'timeout':
-          return done({ ...base, outcome: 'tool_timeout', decision: 'allow', reason: `no result within ${spec.timeoutMs ?? options.toolTimeoutMs} ms`, cost: applyCost(unitCost), response: refuse('tool_timeout') });
+          return done({ ...base, outcome: 'tool_timeout', decision: recorded, reason: `no result within ${spec.timeoutMs ?? options.toolTimeoutMs} ms`, cost: applyCost(unitCost), response: refuse('tool_timeout') });
         case 'cancelled':
-          return done({ ...base, outcome: 'run_cancelled', decision: 'allow', cost: applyCost(unitCost), response: refuse('run_cancelled') });
+          return done({ ...base, outcome: 'run_cancelled', decision: recorded, cost: applyCost(unitCost), response: refuse('run_cancelled') });
         case 'error':
-          return done({ ...base, outcome: 'tool_error', decision: 'allow', reason: errorText(outcome.error), cost: applyCost(unitCost), response: refuse('tool_error') });
+          return done({ ...base, outcome: 'tool_error', decision: recorded, reason: errorText(outcome.error), cost: applyCost(unitCost), response: refuse('tool_error') });
         case 'done': {
           const value = outcome.value;
           if (!isExecutionResult(value)) {
-            return done({ ...base, outcome: 'tool_error', decision: 'allow', reason: 'executor returned an invalid result', cost: applyCost(unitCost), response: refuse('tool_error') });
+            return done({ ...base, outcome: 'tool_error', decision: recorded, reason: 'executor returned an invalid result', cost: applyCost(unitCost), response: refuse('tool_error') });
           }
           const cost = applyCost(validCost(value.cost) ?? unitCost);
           // 결과가 에이전트에 전달되는 이 시점부터 이후의 모든 호출이 외부 입력 영향 호출이다 (동기: 다음 호출이 오기 전에 표시된다)
@@ -363,7 +371,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
           const fitted = fitResult(value.result);
           const preview = previewJson(value.result, RECORD_PREVIEW_CHARS).text;
           return done({
-            ...base, outcome: 'ok', decision: 'allow', cost, resultPreview: preview, resultBytes: fitted.bytes, truncated: fitted.truncated,
+            ...base, outcome: 'ok', decision: recorded, ...(deferredReason === undefined ? {} : { reason: deferredReason }), cost, resultPreview: preview, resultBytes: fitted.bytes, truncated: fitted.truncated,
             response: { ok: true, result: fitted.value },
           });
         }
@@ -400,6 +408,10 @@ function indexTools(options: ToolGatewayOptions): ReadonlyMap<string, GatewayToo
     if (spec.timeoutMs !== undefined && !isPositiveFinite(spec.timeoutMs)) problems.push(`${label}: timeoutMs must be a positive finite number`);
     if (spec.unitCost !== undefined && validCost(spec.unitCost) === null) problems.push(`${label}: unitCost must be non-negative (tokens an integer)`);
     if (!options.executors.has(spec.tool)) problems.push(`${label} has no executor`);
+    // 원장에 묶인 실행기는 외부 부작용 도구에만 둘 수 있다: 승인을 원장에 넘기는 예외가 읽기 도구 등에 번지지 않게 한다
+    if (isEffectLedgerBound(options.executors.get(spec.tool)) && !(spec.sideEffect === true && impactOf(spec) === 'external_effect')) {
+      problems.push(`${label}: an effect-ledger-bound executor needs sideEffect=true and impact external_effect`);
+    }
   }
   if (problems.length > 0) throw new Error(`invalid tool gateway configuration: ${problems.join('; ')}`);
   return index;

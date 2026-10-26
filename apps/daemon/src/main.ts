@@ -26,11 +26,15 @@ import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolli
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
+import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
+import { startPhoneWebhookServer } from './phone-webhook-server.ts';
 import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts';
 
 /** 에이전트 쪽 키(container_agent·research_agent·instance_id·run_log_dir·default_time_limit)는 AgentRuntimeConfig 에 있다 */
 /** 팩 키(pack_dir·pack_values)는 PackConfig 에, 주간 사이클 키(experiment_cycle)는 CycleConfig 에 있다 */
 interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
+  /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
+  phone?: PhoneConfig | null;
   db_path: string;
   busy_timeout_ms?: number;
   worker_id: string;
@@ -67,6 +71,7 @@ async function main(): Promise<void> {
   const { agent, evaluation } = buildAgentRuntime(config, instanceDir);
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
+  const phone = phoneOptionsFromConfig(config);
   const daemon = assembleDaemon({
     db,
     clock: systemClock,
@@ -83,6 +88,7 @@ async function main(): Promise<void> {
     ...(evaluation === undefined ? {} : { evaluation }),
     ...(pack === undefined ? {} : { pack }),
     ...(cycle === undefined ? {} : { cycle }),
+    ...(phone === undefined ? {} : { phone: phone.options }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
   });
@@ -99,6 +105,11 @@ async function main(): Promise<void> {
   const channel = await daemon.startApprovalChannel((name) => console.error(`approval channel: ${String(name)}`));
   const { worker } = daemon;
   const experimentCycle = daemon.cycle;
+  const phoneRuntime = daemon.phone;
+  const webhookServer = phone?.webhook != null && phoneRuntime !== null
+    ? await startPhoneWebhookServer({ runtime: phoneRuntime, ...phone.webhook, onError: (error) => console.error('phone webhook:', error) })
+    : null;
+  if (webhookServer !== null) console.log(`phone webhook listening on port ${webhookServer.port} (${phone!.webhook!.host}${phone!.webhook!.path}; terminate TLS in front of it)`);
 
   const stop = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stop.abort());
@@ -114,8 +125,19 @@ async function main(): Promise<void> {
       for (const f of report.validationFailed) console.error(`validation failed ${f.taskId}: ${f.error}`);
       if (report.executed) console.log(`executed ${report.executed.taskId} attempt ${report.executed.attempt}: ${JSON.stringify(report.executed.end)}`);
     },
-    ...(experimentCycle === null ? {} : {
+    ...(experimentCycle === null && phoneRuntime === null ? {} : {
       afterTick: async () => {
+        if (phoneRuntime !== null) {
+          // webhook 이 늦거나 오지 않은 통화를 provider 에 조회하고, 마감을 넘기면 닫는다 (업무 검증 보류가 영원히 이어지지 않게)
+          try {
+            const calls = await phoneRuntime.reconcile();
+            for (const id of calls.closedByProvider) console.log(`call ${id}: ended according to the provider (webhook was missing)`);
+            for (const id of calls.expired) console.error(`call ${id}: closed at its deadline without a terminal event (deadline_exceeded)`);
+          } catch (error) {
+            console.error('call reconciliation failed:', error); // 전화 provider 문제가 주간 사이클을 멈추지 않게 한다
+          }
+        }
+        if (experimentCycle === null) return;
         const report = await experimentCycle.advance();
         for (const c of report.compared) {
           console.log(`experiment comparison ${c.planningTaskId}: ${c.outcome}${c.strategyVersionId === null ? ' (waiting for a person to review)' : ` -> strategy_version ${c.strategyVersionId} proposed`}`);
@@ -135,6 +157,7 @@ async function main(): Promise<void> {
     }),
     onError: (error) => console.error('tick failed:', error),
   });
+  await webhookServer?.close();
   await channel.close();
   db.close();
   console.log(`aot-daemon ${config.worker_id}: stopped`);

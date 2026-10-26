@@ -32,6 +32,7 @@ import {
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
+import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
@@ -104,6 +105,11 @@ export interface AssembleOptions {
    * 생략하면 null(이전 동작). 위험 판정은 현재 정책(이 조립의 정책 보관소)과 팩 템플릿으로 한다.
    */
   cycle?: ExperimentCycleOptions;
+  /**
+   * 전화 Capability (ADR-0014). 주면 전화 부작용 도구가 워커의 `tools` 에 합쳐지고, 에이전트 실행기가 있으면 게이트웨이에 전화 도구(phone_call 등)가 열린다.
+   * 도구가 열려도 명세의 `allowed_tools`, 도구 호출별 정책 판정, 전화 정책(`phone:` 섹션; 없으면 모든 통화 거부)이 모두 통과해야 통화가 일어난다.
+   */
+  phone?: PhoneOptions;
 }
 
 /**
@@ -119,6 +125,20 @@ function adapterSelectorOf(agent: NonNullable<AssembleOptions['agent']>, default
     if (name === null) return null;
     if (name !== defaultAdapter && !registered.has(name)) throw new Error(`adapter '${String(name)}' is not registered`);
     return name;
+  };
+}
+
+/** 전화 도구 선언과 run 별 실행기를 에이전트 옵션에 더한다. 같은 이름의 도구가 이미 있으면 거부한다 */
+function withPhone(agent: NonNullable<AssembleOptions['agent']>, phone: PhoneRuntime): NonNullable<AssembleOptions['agent']> {
+  const existing = agent.tools ?? [];
+  for (const spec of phone.toolSpecs) {
+    if (existing.some((tool) => tool.tool === spec.tool)) throw new Error(`tool '${spec.tool}' is already configured; the phone capability provides it`);
+  }
+  const previous = agent.runExecutors;
+  return {
+    ...agent,
+    tools: [...existing, ...phone.toolSpecs],
+    runExecutors: (context) => new Map([...(previous?.(context) ?? []), ...phone.executorsFor(context)]),
   };
 }
 
@@ -142,6 +162,8 @@ export interface Daemon {
   measurementSignals: readonly MeasurementSignal[];
   /** 주간 사이클 4·5단계 (후보 비교 → strategy_version 제안). `cycle` 옵션이 없으면 null */
   cycle: ExperimentCycle | null;
+  /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
+  phone: PhoneRuntime | null;
   /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
@@ -160,9 +182,12 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const gate = createPolicyGate({ store });
   const engine = new ApprovalEngine({ db: options.db, clock: options.clock, store, totp: new TotpSecretStore(options.paths.totpDir) });
   const toolCallPolicy = createToolCallPolicy({ db: options.db, store });
-  const executor = options.executor ?? (options.agent === undefined
+  const phone = options.phone === undefined ? null : createPhoneRuntime({ db: options.db, clock: options.clock, store, options: options.phone });
+  const agentOptions = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
+  const tools = phone === null ? options.tools : { ...(options.tools ?? {}), ...phone.effectTools };
+  const executor = options.executor ?? (agentOptions === undefined
     ? undefined
-    : createAgentExecutor({ db: options.db, clock: options.clock, agent: options.agent, toolCallPolicy }));
+    : createAgentExecutor({ db: options.db, clock: options.clock, agent: agentOptions, toolCallPolicy }));
   if (executor === undefined) throw new Error('assembleDaemon needs an executor or an agent');
   const defaultAdapter = options.adapter ?? options.agent?.adapter.name ?? 'unconfigured';
   const adapterFor = options.agent === undefined ? undefined : adapterSelectorOf(options.agent, defaultAdapter);
@@ -208,7 +233,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     executor,
     gate,
     ...(evaluation === undefined ? {} : { validator: createTaskValidator({ db: options.db, clock: options.clock, ...evaluation }) }),
-    ...(options.tools === undefined ? {} : { tools: options.tools }),
+    ...(tools === undefined ? {} : { tools }),
     ...(options.lease === undefined ? {} : { lease: options.lease }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
     ...(options.timers === undefined ? {} : { timers: options.timers }),
@@ -224,6 +249,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     packSync,
     measurementSignals,
     cycle,
+    phone,
     handleChannelRequest,
     async prepareAgentRuntime() {
       const docker = options.agent?.docker;

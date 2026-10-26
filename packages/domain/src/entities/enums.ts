@@ -101,3 +101,18 @@ export type TrustOrigin = (typeof TRUST_ORIGINS)[number];
 
 export const PUBLICATION_STATUSES = ['draft', 'pending_approval', 'published', 'withdrawn'] as const;
 export type PublicationStatus = (typeof PUBLICATION_STATUSES)[number];
+
+/** 전화 통화 방향 (ADR-0014). 사용자 표기는 소문자 그대로다 */
+export const CALL_DIRECTIONS = ['inbound', 'outbound'] as const;
+export type CallDirection = (typeof CALL_DIRECTIONS)[number];
+
+/** AoT canonical 통화 상태. provider 의 상태 이름은 어댑터 밖으로 나오지 않는다 */
+export const CALL_STATUSES = ['queued', 'initiated', 'ringing', 'connected', 'completed', 'failed', 'cancelled', 'transferred'] as const;
+export type CallStatus = (typeof CALL_STATUSES)[number];
+
+export const CALL_ARTIFACT_KINDS = ['transcript', 'outcome'] as const;
+export type CallArtifactKind = (typeof CALL_ARTIFACT_KINDS)[number];
+
+/** 산출물이 어디서 왔는가. provider_* 와 extractor 는 상대방의 말에서 나온 요약이라 신뢰할 수 없는 데이터다 */
+export const CALL_ARTIFACT_SOURCES = ['provider_transcript', 'provider_analysis', 'extractor', 'human'] as const;
+export type CallArtifactSource = (typeof CALL_ARTIFACT_SOURCES)[number];

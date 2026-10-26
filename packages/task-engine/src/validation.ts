@@ -7,7 +7,7 @@
 //   inconclusive  → needs_review   (증거 부족. 사용자 결정 2026-10-21)
 // 평가 기록과 전이는 별개 트랜잭션이다(검증에 외부 접근이 있어 트랜잭션 밖에서 하므로). 둘 사이에서 죽어도 평가는 UNIQUE 로 흡수되므로
 // 다음 tick 의 재검증이 같은 평가를 돌려받아 전이만 이어서 한다.
-import type { Clock, Db, EvaluationRow, TaskRow, TaskRunRow, TaskSpec, TaskStatus, TaskValidationVerdict, TaskValidator } from '@aot/domain';
+import { CALL_MACHINE, type Clock, type Db, type EvaluationRow, type TaskRow, type TaskRunRow, type TaskSpec, type TaskStatus, type TaskValidationVerdict, type TaskValidator } from '@aot/domain';
 
 import { StaleStateError } from './errors.ts';
 import { isoAfter } from './params.ts';
@@ -98,8 +98,35 @@ export async function validateTask(db: Db, options: ValidationOptions, taskId: s
   }
 }
 
-/** 가장 오래된 `validating` 업무 하나 (제외 목록 밖에서). 없으면 null */
+// 열린 통화가 있는 업무는 검증하지 않는다 (ADR-0014 §6, 측정 값 대기와 같은 성격): 에이전트는 통화를 걸고 바로 결과를 제출했지만 통화는 아직 진행 중이다.
+// 전이도 시도 소모도 없이 `validating` 에 머물고, webhook 이 통화를 종료시키면 다음 tick 에 검증된다. SQL 조건이라 다른 업무의 검증을 막지 않는다.
+// 이 패키지는 `call` 테이블의 상태만 알고 provider 는 모른다. 마감을 넘긴 통화는 데몬이 조회·종료한다(domain 의 expireCall).
+const OPEN_CALL_STATUS_LIST = CALL_MACHINE.states.filter((status) => !CALL_MACHINE.terminal.includes(status)).map((status) => `'${status}'`).join(', ');
+const NO_OPEN_CALL_SQL = `NOT EXISTS (SELECT 1 FROM call WHERE call.task_id = task.id AND call.status IN (${OPEN_CALL_STATUS_LIST}))`;
+
+/** 가장 오래된 `validating` 업무 하나 (제외 목록 밖에서, 열린 통화가 없는 것만). 없으면 null */
 export function nextValidatingTask(db: Db, exclude: ReadonlySet<string> = new Set()): string | null {
-  const rows = db.all<{ id: string }>("SELECT id FROM task WHERE status = 'validating' ORDER BY updated_at, rowid LIMIT 50");
+  const rows = db.all<{ id: string }>(`SELECT id FROM task WHERE status = 'validating' AND ${NO_OPEN_CALL_SQL} ORDER BY updated_at, rowid LIMIT 50`);
   return rows.find((row) => !exclude.has(row.id))?.id ?? null;
+}
+
+export interface CallWait {
+  taskId: string;
+  /** 아직 끝나지 않은 통화와 그 상태 */
+  calls: { callId: string; status: string; createdAt: string }[];
+}
+
+/** 열린 통화 때문에 검증이 보류된 업무 (진단·승인 CLI용) */
+export function listCallWaits(db: Db): CallWait[] {
+  const rows = db.all<{ task_id: string; id: string; status: string; created_at: string }>(
+    `SELECT call.task_id AS task_id, call.id AS id, call.status AS status, call.created_at AS created_at FROM call JOIN task ON task.id = call.task_id
+     WHERE task.status = 'validating' AND call.status IN (${OPEN_CALL_STATUS_LIST}) ORDER BY call.created_at, call.id`,
+  );
+  const waits = new Map<string, CallWait>();
+  for (const row of rows) {
+    const wait = waits.get(row.task_id) ?? { taskId: row.task_id, calls: [] };
+    wait.calls.push({ callId: row.id, status: row.status, createdAt: row.created_at });
+    waits.set(row.task_id, wait);
+  }
+  return [...waits.values()];
 }

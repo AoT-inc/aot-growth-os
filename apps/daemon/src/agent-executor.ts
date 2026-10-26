@@ -31,6 +31,11 @@ export interface AgentOptions {
   tools?: readonly GatewayToolSpec[];
   /** 도구 이름 → 실행기 (비밀값은 실행기가 안에서 주입한다) */
   executors?: ReadonlyMap<string, ToolExecutor>;
+  /**
+   * run 마다 만드는 도구 실행기 (전화 Capability 처럼 run 의 업무·부작용 원장에 묶이는 도구, ADR-0014). 정적 `executors` 와 합쳐지고 이름이 겹치면 거부한다 —
+   * 같은 이름의 도구를 run 이 조용히 바꿔치기하지 못하게 한다.
+   */
+  runExecutors?: (context: RunContext) => ReadonlyMap<string, ToolExecutor>;
   /** 도구 호출 타임아웃 기본값. 기본 30초 */
   toolTimeoutMs?: number;
   /** 도구 호출·시간 제한·종료 유예에 쓰는 타이머. 시험은 손으로 돌리는 타이머를 넣는다 */
@@ -92,8 +97,13 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
   return {
     async execute(ctx) {
       const spec = ctx.spec;
+      const executors = new Map<string, ToolExecutor>(agent.executors ?? []);
+      for (const [name, runExecutor] of agent.runExecutors?.(ctx) ?? []) {
+        if (executors.has(name)) throw new Error(`tool '${name}' is provided both as a static executor and as a run executor`);
+        executors.set(name, runExecutor);
+      }
       // 명세가 요청한 도구 중 게이트웨이가 내줄 수 있는 것만 연다
-      const offered = (agent.tools ?? []).filter((tool) => agent.executors?.has(tool.tool) === true && spec.allowed_tools.some((requested) => requested.tool === tool.tool && requested.operations.includes(tool.operation)));
+      const offered = (agent.tools ?? []).filter((tool) => executors.has(tool.tool) && spec.allowed_tools.some((requested) => requested.tool === tool.tool && requested.operations.includes(tool.operation)));
       // 선행 업무 결과(A6-U11): 호스트(task-engine)가 통과 평가가 있는 완료 업무에서 읽은 것만 온다. 신뢰 표시는 여기서 붙인다 —
       // 선행 결과는 다른 에이전트가 낸 산출물이라 항상 external_untrusted 데이터다(DB 값이 아니라 이 코드가 정한다).
       const upstream = ctx.upstream.map((entry) => ({ name: entry.name, task_ref: entry.taskRef, trust_origin: 'external_untrusted' as const, result: entry.result as JsonObject }));
@@ -111,7 +121,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         adapter,
         input,
         createGateway: (hooks) => createToolGateway({
-          runId: ctx.lease.runId, taskId: ctx.taskId, subject: subjectOf(spec), tools: offered, executors: agent.executors ?? new Map(),
+          runId: ctx.lease.runId, taskId: ctx.taskId, subject: subjectOf(spec), tools: offered, executors,
           policy: deps.toolCallPolicy, clock: deps.clock, constraints: toolCallConstraintsOf(input), toolTimeoutMs: agent.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
           signal: hooks.signal, onCostProgress: hooks.onCostProgress, ...(upstream.length === 0 ? {} : { externalInput: true }), ...(agent.timers === undefined ? {} : { timers: agent.timers }),
           ...(agent.recorder === undefined ? {} : { recorder: agent.recorder }),

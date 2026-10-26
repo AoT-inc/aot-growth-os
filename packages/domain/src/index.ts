@@ -15,10 +15,12 @@ export {
   type TransitionRequirement, type TransitionRule,
 } from './state/machine.ts';
 export {
+  CALL_MACHINE, CALL_OPEN_STATUSES, CALL_TERMINAL_STATUSES, isCallOpen,
   EXTERNAL_EFFECT_MACHINE, isTaskTerminal, ORG_PROPOSAL_MACHINE, PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE,
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
 export {
+  PHONE_TARGET_TOOLS, EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,
   EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS,
   MAX_MEMORY_INPUTS, MAX_TASK_RESULT_TOTAL_BYTES, MEMORY_INPUT_KIND, MEMORY_LATEST_SELECTOR, MEMORY_REF_PREFIX, parseMemoryRef, resolveExpectedQuotes, SYSTEM_FILLED_FIELDS, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type CostBudget, type ExpectedQuote, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
@@ -73,3 +75,38 @@ export {
   currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
   taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,
 } from './seed.ts';
+// 외부 대화 계층(ADR-0014 §0): 채널 중립 발화 기록·구조화 결과, 그리고 첫 채널인 전화(canonical 모델·검증·통화 저장·이벤트 적용·인바운드 라우팅).
+export { isJsonData, jsonBytes } from './conversation/json.ts';
+export {
+  MAX_TRANSCRIPT_TURNS, MAX_TURN_CHARS, normalizeTranscriptTurns, TRANSCRIPT_SPEAKERS,
+  type RawTranscriptTurn, type TranscriptSpeaker, type TranscriptTurn,
+} from './conversation/transcript.ts';
+export {
+  MAX_OUTCOME_SUMMARY_CHARS, MAX_STRUCTURED_DATA_BYTES, missingOutcomeFields, NAME_PATTERN, validateConversationOutcome, type ConversationOutcome,
+} from './conversation/outcome.ts';
+export {
+  callOf, E164_PATTERN, isE164, maskNumber, PHONE_EVENT_TYPES, PHONE_FAILURE_CODES,
+  type Call, type CallConstraints, type CallHandle, type CallOutcome, type InboundDirective, type MakeCallInput, type PhoneAnalysisInput, type PhoneCapability,
+  type PhoneEvent, type PhoneEventType, type PhoneFailureCode, type PhoneTranscriptInput, type Transcript, type TransferCallInput,
+} from './phone/model.ts';
+export {
+  PhoneProviderError, PhoneRuleError, PhoneWebhookError, PROVIDER_ERROR_CODES, providerErrorFromHttp,
+  type PhoneProviderErrorCode, type PhoneRuleCode,
+} from './phone/errors.ts';
+export { checkBusinessHours, withinBusinessHours, type BusinessHours } from './phone/hours.ts';
+export { MAX_CALL_DURATION_SECONDS, MAX_CONTEXT_BYTES, MAX_REASON_CHARS, validateMakeCallInput, validatePhoneEvent, validateTransferInput } from './phone/validate.ts';
+export {
+  DEFAULT_REJECT, routeInboundCall, validateInboundRoutes, type InboundRoute, type RouteDecision, type RouteTarget,
+} from './phone/routing.ts';
+export {
+  AOT_EVENT_PROVIDER, applyPhoneEvent, callIntentKey, findSameIntentCall, countOutboundCallsSince, createOutboundCall, expireCall, findCallByProvider, getCall, getCallOutcome, getCallRow,
+  getTranscript, hasOpenCall, linkCallToTask, listCallsForTask, overdueOpenCalls, PHONE_EVENT_SOURCE, phoneEventKey, recordCallOutcome,
+  type ApplyResult, type CallLink, type NewOutboundCall, type RecordCallOutcomeInput,
+} from './phone/calls.ts';
+export type {
+  PhonePort, PhoneStartCallRequest, PhoneStartCallResult, PhoneTransferRequest, PhoneWebhookRequest, PhoneWebhookResult,
+} from './ports/phone-port.ts';
+export {
+  DENY_ALL_PHONE_CALL_POLICY,
+  type PhoneCallGrant, type PhoneCallPolicy, type PhoneCallPolicyRequest, type PhoneCallPolicyVerdict,
+} from './ports/phone-call-policy.ts';

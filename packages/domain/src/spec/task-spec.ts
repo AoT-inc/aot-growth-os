@@ -59,6 +59,17 @@ export interface ExpectedQuote { source: string; text: string }
 export const MAX_EXPECTED_QUOTES = 200;
 export const MAX_EXPECTED_QUOTES_PER_SOURCE = 10;
 export const MAX_EXPECTED_QUOTE_CHARS = 500;
+/**
+ * 전화 업무가 요구하는 통화 결과의 형식 (ADR-0014 §7). Phone 이 영업 절차를 하드코딩하지 않도록 허용 disposition 과 필수 필드는 명세가 정한다.
+ * 승인 대상 해시에 포함된다(실행 인자).
+ */
+export interface ExpectedCallOutcome { dispositions: string[]; required_fields?: string[] }
+
+export const MAX_OUTCOME_DISPOSITIONS = 20;
+export const MAX_OUTCOME_REQUIRED_FIELDS = 30;
+/** `expected_call_outcome` 을 두려면 `validation.deterministic` 에 있어야 하는 검사 */
+export const EXPECTED_CALL_OUTCOME_CHECK_ID = 'call_outcome_recorded';
+
 /** `expected_quotes` 를 두려면 `validation.deterministic` 에 있어야 하는 검사. 없으면 기대 인용문이 아무도 확인하지 않는 채로 남는다 */
 export const EXPECTED_QUOTES_CHECK_ID = 'quote_in_source';
 
@@ -106,6 +117,8 @@ export interface TaskSpecDraft {
   inputs: TaskInput[];
   /** 출처 원문에 있어야 하는 인용문 (선택). 조사 에이전트는 모두에 대해 found/not found 를 보고하고, 검증기가 원문에서 다시 확인한다 */
   expected_quotes?: ExpectedQuote[];
+  /** 통화 업무가 남겨야 하는 구조화된 결과의 형식 (선택, 전화 업무). 검사 `call_outcome_recorded` 가 확인한다 */
+  expected_call_outcome?: ExpectedCallOutcome;
   dependencies?: string[];
   allowed_tools: ToolRequest[];
   constraints: TaskConstraints;
@@ -125,7 +138,7 @@ export interface TaskSpec extends TaskSpecDraft {
 export type TaskSpecStage = 'draft' | 'stored';
 
 const DRAFT_KEYS = [
-  'objective', 'department', 'role', 'product', 'trigger', 'inputs', 'expected_quotes', 'dependencies', 'allowed_tools',
+  'objective', 'department', 'role', 'product', 'trigger', 'inputs', 'expected_quotes', 'expected_call_outcome', 'dependencies', 'allowed_tools',
   'constraints', 'acceptance_criteria', 'validation', 'evidence_refs', 'cost_budget',
 ] as const;
 /** 시스템만 채우는 필드 */
@@ -155,6 +168,7 @@ export function validateTaskSpec(input: unknown, stage: TaskSpecStage): Validati
   checkTrigger(input['trigger'], out);
   checkInputs(input['inputs'], out);
   checkExpectedQuotes(input['expected_quotes'], input['inputs'], input['validation'], out);
+  checkExpectedCallOutcome(input['expected_call_outcome'], input['validation'], out);
   checkDependencies(input['dependencies'], out);
   checkAllowedTools(input['allowed_tools'], out);
   checkConstraints(input['constraints'], out);
@@ -323,6 +337,35 @@ function checkExpectedQuotes(value: unknown, inputs: unknown, validation: unknow
   }
 }
 
+const OUTCOME_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+/** 필수 필드 이름은 structured_data 의 키다 (예: budgetKnown) */
+const OUTCOME_FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+function checkExpectedCallOutcome(value: unknown, validation: unknown, out: IssueCollector): void {
+  if (value === undefined) return;
+  if (!isPlainObject(value)) return void out.add('expected_call_outcome', 'type', 'expected_call_outcome must be {dispositions, required_fields?}');
+  rejectUnknownKeys(value, ['dispositions', 'required_fields'], 'expected_call_outcome', out);
+  const names = (key: 'dispositions' | 'required_fields', max: number, required: boolean, pattern: RegExp): void => {
+    const list = value[key];
+    const path = joinPath('expected_call_outcome', key);
+    if (list === undefined && !required) return;
+    if (!Array.isArray(list) || (required && list.length === 0)) return void out.add(path, 'type', `${key} must be a${required ? ' non-empty' : ''} list of names (${key === 'dispositions' ? '[a-z][a-z0-9_]*' : '[A-Za-z][A-Za-z0-9_]*'})`);
+    if (list.length > max) out.add(path, 'too_many', `${key} has more than ${max} entries`);
+    const seen = new Set<string>();
+    list.forEach((item: unknown, index) => {
+      if (typeof item !== 'string' || !pattern.test(item)) return void out.add(joinPath(path, index), 'format', `name must match ${pattern.source}`);
+      if (seen.has(item)) out.add(joinPath(path, index), 'duplicate', `duplicate name '${item}'`);
+      seen.add(item);
+    });
+  };
+  names('dispositions', MAX_OUTCOME_DISPOSITIONS, true, OUTCOME_NAME);
+  names('required_fields', MAX_OUTCOME_REQUIRED_FIELDS, false, OUTCOME_FIELD_NAME);
+  // 형식을 정해 두고 확인하는 검사가 없으면 아무도 지키지 않는다 (expected_quotes 와 같은 이유)
+  if (isPlainObject(validation) && Array.isArray(validation['deterministic']) && !validation['deterministic'].includes(EXPECTED_CALL_OUTCOME_CHECK_ID)) {
+    out.add('validation.deterministic', 'check_required', `expected_call_outcome needs '${EXPECTED_CALL_OUTCOME_CHECK_ID}' in validation.deterministic (otherwise nothing verifies the outcome)`);
+  }
+}
+
 /** 기대 인용문을 출처 URL 로 풀어 낸다. `validateTaskSpec` 을 통과한 명세를 받는다고 가정하며, 풀리지 않는 항목은 건너뛴다 */
 export function resolveExpectedQuotes(spec: Pick<TaskSpecDraft, 'inputs' | 'expected_quotes'>): { source: string; url: string; text: string }[] {
   const resolved: { source: string; url: string; text: string }[] = [];
@@ -359,8 +402,20 @@ function checkAllowedTools(value: unknown, out: IssueCollector): void {
     if (!('impact' in item)) out.add(joinPath(path, 'impact'), 'required', `impact is required (${IMPACTS.join('|')}): a tool request without an impact cannot be judged by the policy and is rejected`);
     else if (!(IMPACTS as readonly unknown[]).includes(item['impact'])) out.add(joinPath(path, 'impact'), 'enum', `impact must be one of ${IMPACTS.join('|')}`);
     if ('target' in item) requiredText(item, 'target', path, out);
+    // 전화 도구는 사람이 승인하는 번호 범위(target)를 반드시 밝힌다 (ADR-0014 §8): 대상이 없는 명세는 어떤 번호든 걸 수 있는 명세가 되므로 거부한다
+    if (typeof item['tool'] === 'string' && PHONE_TARGET_TOOLS.includes(item['tool'])) {
+      const target = item['target'];
+      if (typeof target !== 'string' || !(PHONE_TARGET_EXACT.test(target) || PHONE_TARGET_PREFIX.test(target))) {
+        out.add(joinPath(path, 'target'), 'phone_target', `'${item['tool']}' needs a target: an E.164 number (+821000000001) or a prefix ending in * (+8210555*); the person approves this range`);
+      }
+    }
   });
 }
+
+/** 번호 범위를 target 으로 선언해야 하는 전화 도구 */
+export const PHONE_TARGET_TOOLS: readonly string[] = ['phone_call', 'phone_transfer'];
+const PHONE_TARGET_EXACT = /^\+[1-9][0-9]{6,14}$/;
+const PHONE_TARGET_PREFIX = /^\+[1-9][0-9]{0,13}\*$/;
 
 function checkConstraints(value: unknown, out: IssueCollector): void {
   if (!isPlainObject(value)) return void out.add('constraints', 'required', 'constraints must be an object');

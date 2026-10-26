@@ -2,7 +2,7 @@
 // `terminal` 은 문서가 "종료 상태" 로 명시한 업무(task)에만 채운다. 다른 기계는 나가는 전이가 없는 상태가 곧 끝이다.
 // 시험(test/unit/state-machines.test.ts)이 문서의 "금지된 전이" 절을 그대로 고정한다.
 import type {
-  ExternalEffectState, OrgProposalStatus, ProductLifecycleStage, ProductRegistrationStatus, PublicationStatus, Lifecycle,
+  CallStatus, ExternalEffectState, OrgProposalStatus, ProductLifecycleStage, ProductRegistrationStatus, PublicationStatus, Lifecycle,
   StrategyStatus, TaskStatus,
 } from '../entities/enums.ts';
 import {
@@ -156,7 +156,37 @@ export const EXTERNAL_EFFECT_MACHINE: StateMachine<ExternalEffectState> = {
   ],
 };
 
+// ===== 전화 통화 (call.status, ADR-0014) =====
+// 전이는 시스템이 provider 이벤트를 canonical 이벤트로 바꿔 적용한다(applyPhoneEvent). 에이전트는 통화 상태를 바꾸지 못한다.
+// provider 이벤트는 중복·역순·누락으로 올 수 있으므로 앞으로 가는 건너뛰기(예: queued → connected)를 허용하고, 뒤로 가는 이벤트는 적용기가 `stale` 로 흡수한다.
+// `transferred` 는 사람에게 넘긴 상태이고 이후 통화가 끝나면 completed/failed 가 된다. 종료 상태는 되돌아가지 않는다.
+const CALL_OPEN = ['queued', 'initiated', 'ringing', 'connected', 'transferred'] as const satisfies readonly CallStatus[];
+const callRules = (from: CallStatus, to: readonly CallStatus[]): TransitionRule<CallStatus>[] => to.map((target) => rule<CallStatus>(from, target, ['system']));
+
+export const CALL_MACHINE: StateMachine<CallStatus> = {
+  name: 'call',
+  states: ['queued', 'initiated', 'ringing', 'connected', 'completed', 'failed', 'cancelled', 'transferred'],
+  terminal: ['completed', 'failed', 'cancelled'],
+  rules: [
+    rule<CallStatus>(null, 'queued', ['system'], { preconditions: '발신 요청(정책 허용). 인바운드는 initiated/ringing/connected 에서 시작한다' }),
+    rule<CallStatus>(null, 'initiated', ['system']),
+    rule<CallStatus>(null, 'ringing', ['system']),
+    rule<CallStatus>(null, 'connected', ['system']),
+    ...callRules('queued', ['initiated', 'ringing', 'connected', 'failed', 'cancelled']),
+    ...callRules('initiated', ['ringing', 'connected', 'completed', 'failed', 'cancelled']),
+    ...callRules('ringing', ['connected', 'completed', 'failed', 'cancelled']),
+    ...callRules('connected', ['completed', 'failed', 'transferred']),
+    ...callRules('transferred', ['completed', 'failed']),
+  ],
+};
+
+/** 아직 끝나지 않은 통화 상태 (업무 검증 보류와 마감 확인의 기준) */
+export const CALL_OPEN_STATUSES: readonly CallStatus[] = CALL_OPEN;
+export const CALL_TERMINAL_STATUSES: readonly CallStatus[] = CALL_MACHINE.terminal;
+export const isCallOpen = (status: CallStatus): boolean => !CALL_MACHINE.terminal.includes(status);
+
 export const STATE_MACHINES = {
+  call: CALL_MACHINE,
   task: TASK_MACHINE,
   org_proposal: ORG_PROPOSAL_MACHINE,
   role: ROLE_MACHINE,

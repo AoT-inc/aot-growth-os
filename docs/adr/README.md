@@ -18,3 +18,4 @@
 | [0011](0011-adaptive-organization.md) | 적응형 조직 구성 (조직 관리팀) | proposed |
 | [0012](0012-extension-unit-contract.md) | 확장 단위 계약: 선언형 도메인 팩과 커넥터 | accepted |
 | [0013](0013-policy-format.md) | 정책 표현: YAML + 결정론적 판정기 | accepted |
+| [0014](0014-phone-capability.md) | 외부 대화 계층과 첫 채널: 전화 (Phone Capability) | proposed |

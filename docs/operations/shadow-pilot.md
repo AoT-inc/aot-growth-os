@@ -71,6 +71,8 @@ approve.ts product pilot                            # 언제든: 지금까지의
 
 ## 7. 알려진 한계
 
+(아래 한계 중 일부는 [준비 마무리 작업](../plans/handoff-pilot-prep.md)이 해소한다: `product remove`, 실행 중 반려, 수집 사실 반영.)
+
 - **잘못 올린 후보를 채널로 고치거나 지울 수 없다.** 경로를 잘못 적었으면 `start` 전에는 데이터베이스에서 직접 정리해야 한다(후속: `product remove`). `start`는 경로를 다시 검사한다.
 - **검증 업무가 실행 중이면 반려할 수 없다**(`task_active`) — 읽기 접근도 그 사이에는 회수되지 않는다. `needs_review`에 닿기를 기다리거나 업무를 취소한다.
 - 일반 `reject task`로 업무만 반려하면 상품은 `pending_approval`·`read`로 남는다. 상품도 `product decide reject`로 마무리한다.

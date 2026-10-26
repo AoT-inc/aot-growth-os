@@ -19,17 +19,18 @@ import { fileURLToPath } from 'node:url';
 import type { Clock } from '@aot/domain';
 
 import type { AdapterContext, AdapterCost, AllowedTool, AdapterInput, AdapterOutput, AgentAdapter, EvidenceItem, RunLogEntry } from '../contract.ts';
-import { nodeProcessPort, type ProcessPort, type SpawnedProcess } from '../docker.ts';
+import { nodeProcessPort, type ProcessPort } from '../docker.ts';
 import { startFrameOf } from '../frames.ts';
 import { realGatewayTimers, type GatewayTimers } from '../gateway.ts';
-import { createLineReader } from '../line-reader.ts';
 import { maskString } from '../mask.ts';
+import { createClaudeCodeGate, type ClaudeCodeGate } from './gate.ts';
 import { serveGatewaySocket, type GatewaySocket } from './gateway-socket.ts';
 import {
   buildBridgeTools, buildClaudeArgs, buildClaudeEnv, buildMcpConfig, buildPrompt, buildWorkdirFiles, BUILTIN_TOOLS, GATEWAY_TOOL_NAME, mcpToolName, TASK_INSTRUCTIONS,
   GATEWAY_SERVER_NAME, type ClaudeEnvInput,
 } from './invocation.ts';
-import { applyStreamEvent, checkInit, classifyRun, newStreamState, parseStreamLine, summarizeStreamEvent, type StreamState } from './stream.ts';
+import { runClaudeProcess } from './process-run.ts';
+import { classifyRun } from './stream.ts';
 
 /** `task_run.adapter` 에 기록되는 이름 */
 export const CLAUDE_CODE_ADAPTER_NAME = 'claude-code-cli';
@@ -75,11 +76,16 @@ export interface ClaudeCodeCliOptions {
    * 사람 우선 게이트: 직전 run 이 본 창별 사용률이 여기 적은 값 이상이면(그 창이 아직 리셋되지 않았을 때) 새 run 을 시작하지 않고
    * `usage_deferred` 로 끝낸다(CLI 를 띄우지 않으므로 사용량을 쓰지 않는다). 구독 한도를 사람이 직접 쓰는 에이전트와 나눠 쓰기 때문이다.
    * 창 이름은 `rate_limit_event.unifiedWindows` 의 키(`five_hour`, `seven_day`). 0~1 (1 을 넘으면 퍼센트). 기본 꺼짐.
-   * 사용률은 메모리에만 두므로 데몬을 다시 띄우면 첫 run 이 측정한다. 리셋 시각을 모르면 읽은 지 15분 뒤에 낡은 값으로 본다.
+   * 사용률은 메모리에만 두므로 데몬을 다시 띄우면 첫 run 이 측정한다. 리셋 시각을 모르면 읽은 지 15분 뒤에 낡은 값으로 본다. `gate` 를 주면 무시한다.
    */
   yieldUtilization?: Readonly<Record<string, number>>;
-  /** 동시 실행 수 (가드레일 2). 기본 1 */
+  /** 동시 실행 수 (가드레일 2). 기본 1. `gate` 를 주면 무시한다 */
   maxConcurrent?: number;
+  /**
+   * 구독 풀을 쓰는 다른 호출(검증기)과 나눠 쓰는 게이트. 주면 `maxConcurrent`·`yieldUtilization` 대신 이 게이트의 한도를 쓴다 (Q22 d).
+   * 생략하면 이 어댑터만 쓰는 게이트를 `maxConcurrent`·`yieldUtilization` 으로 만든다.
+   */
+  gate?: ClaudeCodeGate;
   /** run 디렉터리를 끝난 뒤에도 남긴다(디버깅). 기본 false */
   keepRunDir?: boolean;
   versionTimeoutMs?: number;
@@ -95,59 +101,6 @@ export interface ClaudeCodeCliOptions {
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 /** 리눅스의 인자 하나 상한은 128 KiB 다. 여유를 둔다 */
 const MAX_PROMPT_BYTES = 100_000;
-const MAX_RUN_LOG_LINES = 2000;
-
-type Ending =
-  | { kind: 'closed' }
-  | { kind: 'spawn_error'; message: string }
-  | { kind: 'cancelled' }
-  | { kind: 'turn_limit'; turns: number }
-  | { kind: 'init_problem'; code: 'gateway_unavailable' | 'isolation_violation'; message: string }
-  | { kind: 'output_limit'; message: string };
-
-interface Deferred { promise: Promise<void>; resolve(): void }
-function deferred(): Deferred {
-  let resolve!: () => void;
-  const promise = new Promise<void>((res) => { resolve = res; });
-  return { promise, resolve };
-}
-
-/** 동시 실행 수를 제한하는 대기열 (먼저 온 순서). 기다리는 중 취소되면 자리를 받지 않고 false */
-function createSlots(max: number): { acquire(signal: AbortSignal): Promise<boolean>; release(): void } {
-  let used = 0;
-  const waiting: { grant: () => void; signal: AbortSignal; onAbort: () => void; settle: (ok: boolean) => void }[] = [];
-  return {
-    acquire(signal) {
-      if (signal.aborted) return Promise.resolve(false);
-      if (used < max) {
-        used += 1;
-        return Promise.resolve(true);
-      }
-      return new Promise<boolean>((resolve) => {
-        const entry = {
-          signal,
-          grant: () => { used += 1; entry.settle(true); },
-          onAbort: () => {
-            const index = waiting.indexOf(entry);
-            if (index !== -1) waiting.splice(index, 1);
-            entry.settle(false);
-          },
-          settle: (ok: boolean) => {
-            signal.removeEventListener('abort', entry.onAbort);
-            resolve(ok);
-          },
-        };
-        signal.addEventListener('abort', entry.onAbort, { once: true });
-        waiting.push(entry);
-      });
-    },
-    release() {
-      used -= 1;
-      const next = waiting.shift();
-      if (next !== undefined) next.grant();
-    },
-  };
-}
 
 export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): AgentAdapter {
   if (!isAbsolute(options.claudePath) || /[\0\r\n]/.test(options.claudePath)) throw new Error('claudePath must be an absolute path (it is never looked up on PATH)');
@@ -165,13 +118,11 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
   const maxOutputBytes = options.maxOutputBytes ?? 64 * 1024 * 1024;
   const maxLineBytes = options.maxLineBytes ?? 8 * 1024 * 1024;
   if (!(Number.isInteger(maxTurns) && maxTurns > 0)) throw new Error('maxTurns must be a positive integer');
-  const maxConcurrent = options.maxConcurrent ?? 1;
-  if (!(Number.isInteger(maxConcurrent) && maxConcurrent > 0)) throw new Error('maxConcurrent must be a positive integer');
-  const slots = createSlots(maxConcurrent);
+  const gate = options.gate ?? createClaudeCodeGate({
+    clock, ...(options.maxConcurrent === undefined ? {} : { maxConcurrent: options.maxConcurrent }), ...(options.yieldUtilization === undefined ? {} : { yieldUtilization: options.yieldUtilization }),
+  });
+  const processOptions = { claudePath: options.claudePath, env, port, timers, maxTurns, closeGraceMs, maxStderrBytes, maxOutputBytes, maxLineBytes };
   let versionNote: string | null = null;
-  const yieldAt = normalizeYield(options.yieldUtilization);
-  /** 직전 run 이 마지막으로 본 창별 사용률 (사람 우선 게이트) */
-  let lastWindows: { seenAtMs: number; windows: Record<string, { utilization: number; resetsAtMs: number | null }> } | null = null;
 
   async function run(input: AdapterInput, context: AdapterContext): Promise<AdapterOutput> {
     const runLog: RunLogEntry[] = [];
@@ -206,19 +157,19 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
       return cancelled();
     }
 
-    if (!(await slots.acquire(context.signal))) {
+    if (!(await gate.acquire(context.signal))) {
       note('cancelled while waiting for a free slot');
       return cancelled();
     }
     try {
       return await runWithSlot();
     } finally {
-      slots.release();
+      gate.release();
     }
 
     async function runWithSlot(): Promise<AdapterOutput> {
       // ----- 사람 우선 게이트: 사용자가 쓸 구독 몫을 남긴다 (CLI 를 띄우기 전에 거절하므로 사용량을 쓰지 않는다) -----
-      const deferral = usageDeferral(yieldAt, lastWindows, clock.nowMs());
+      const deferral = gate.deferral();
       if (deferral !== null) return refuse('usage_deferred', deferral);
       // ----- CLI 확인 (버전 기록) -----
       if (versionNote === null) {
@@ -283,128 +234,14 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
     }
 
     async function execute(args: string[], workdir: string, gatewayToolNames: readonly string[]): Promise<AdapterOutput> {
-      const state: StreamState = newStreamState();
-      const seenMessages = new Set<string>();
-      let logged = 0;
-      let omitted = 0;
-      let stderrText = '';
-      let stderrTruncated = false;
-      let totalBytes = 0;
-      let exit: { code: number | null; signal: string | null } = { code: null, signal: null };
-      let ending: Ending | null = null;
-      let isClosed = false;
-      // `result` 메시지를 받은 뒤에도 CLI 가 닫히지 않으면 `closeGraceMs` 뒤에 정리 단계로 넘어간다(정리가 SIGTERM·SIGKILL 을 보낸다)
-      let resultGraceHandle: unknown = null;
-      const ended = deferred();
-      const closed = deferred();
-      const finish = (value: Ending): void => {
-        if (ending !== null) return;
-        ending = value;
-        ended.resolve();
-      };
-
-      let proc: SpawnedProcess;
-      try {
-        proc = port.spawn(options.claudePath, args, { env, cwd: workdir });
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : 'spawn failed';
-        return refuse('cli_unavailable', `the claude CLI could not be started: ${message.slice(0, 200)}`);
-      }
-      proc.endStdin(); // `-p` 는 stdin 을 기다린다(경고 3초): 입력이 없으니 바로 닫는다
-      note('claude started');
-
-      proc.onStderr((chunk) => {
-        if (stderrTruncated) return;
-        const room = maxStderrBytes - Buffer.byteLength(stderrText, 'utf8');
-        const text = chunk.toString('utf8');
-        if (Buffer.byteLength(text, 'utf8') > room) {
-          stderrText = maskString(stderrText + chunk.subarray(0, Math.max(0, room)).toString('utf8'));
-          stderrTruncated = true;
-        } else stderrText = maskString(stderrText + text);
+      const processed = await runClaudeProcess(processOptions, {
+        args, cwd: workdir, signal: context.signal, note,
+        expected: { gatewayServer: GATEWAY_SERVER_NAME, gatewayTools: gatewayToolNames.map(mcpToolName), builtinTools: BUILTIN_TOOLS },
       });
-      proc.onError((cause) => {
-        if (!isClosed) {
-          isClosed = true;
-          closed.resolve();
-        }
-        finish({ kind: 'spawn_error', message: cause.message });
-      });
-      proc.onClose((code, signal) => {
-        exit = { code, signal };
-        isClosed = true;
-        closed.resolve();
-        finish({ kind: 'closed' });
-      });
-
-      const expected = { gatewayServer: GATEWAY_SERVER_NAME, gatewayTools: gatewayToolNames.map(mcpToolName), builtinTools: BUILTIN_TOOLS };
-      const onEvent = (line: string): void => {
-        const event = parseStreamLine(line);
-        if (event === null) {
-          if (logged < MAX_RUN_LOG_LINES) {
-            logged += 1;
-            note(`unparsed output line (${line.length} chars)`);
-          } else omitted += 1;
-          return;
-        }
-        const hadInit = state.init !== null;
-        applyStreamEvent(state, event, seenMessages);
-        const summary = summarizeStreamEvent(event);
-        if (summary !== null) {
-          if (logged < MAX_RUN_LOG_LINES) {
-            logged += 1;
-            note(summary);
-          } else omitted += 1;
-        }
-        if (!hadInit && state.init !== null) {
-          // 게이트웨이 연결 실패와 격리 위반은 종료 코드 0 이므로 init 에서만 드러난다. 기대와 다르면 업무를 진행하지 않는다
-          const problems = checkInit(state.init, expected);
-          if (problems.isolationProblems.length > 0) finish({ kind: 'init_problem', code: 'isolation_violation', message: `the CLI is not isolated as expected: ${problems.isolationProblems.join('; ')}` });
-          else if (problems.gatewayProblems.length > 0) finish({ kind: 'init_problem', code: 'gateway_unavailable', message: problems.gatewayProblems.join('; ') });
-        }
-        if (state.result === null && state.assistantTurns > maxTurns) finish({ kind: 'turn_limit', turns: state.assistantTurns });
-        if (state.result !== null && resultGraceHandle === null) resultGraceHandle = timers.setTimeout(() => finish({ kind: 'closed' }), closeGraceMs);
-      };
-
-      const reader = createLineReader(maxLineBytes);
-      proc.onStdout((chunk) => {
-        if (ending !== null) return;
-        totalBytes += chunk.length;
-        if (totalBytes > maxOutputBytes) return finish({ kind: 'output_limit', message: `the CLI wrote more than ${maxOutputBytes} bytes` });
-        for (const event of reader.push(chunk)) {
-          if (ending !== null) return;
-          if (event.kind === 'too_long') return finish({ kind: 'output_limit', message: `an output line exceeded ${maxLineBytes} bytes` });
-          onEvent(event.line);
-        }
-      });
-
-      const onAbort = (): void => finish({ kind: 'cancelled' });
-      context.signal.addEventListener('abort', onAbort, { once: true });
-      if (context.signal.aborted) onAbort();
-
-      // `result` 메시지가 오면 CLI 가 곧 끝난다. 끝나기를 기다린다(아래 정리 단계가 상한을 건다)
-      await ended.promise;
-      context.signal.removeEventListener('abort', onAbort);
-      if (resultGraceHandle !== null) timers.clearTimeout(resultGraceHandle);
-
-      // ----- 정리: CLI 가 아직 살아 있으면 끝낸다 -----
-      const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> => new Promise((resolve) => {
-        const handle = timers.setTimeout(() => resolve(false), ms);
-        void promise.then(() => { timers.clearTimeout(handle); resolve(true); });
-      });
-      if (!isClosed) {
-        proc.kill('SIGTERM');
-        if (!(await settlesWithin(closed.promise, closeGraceMs))) {
-          note(`claude did not exit ${closeGraceMs} ms after SIGTERM; sending SIGKILL`);
-          proc.kill('SIGKILL');
-          if (!(await settlesWithin(closed.promise, closeGraceMs))) note('claude could not be confirmed stopped');
-        }
-      }
-      if (omitted > 0) note(`(${omitted} more output events were not logged)`);
-      if (stderrText.trim() !== '') note(`stderr${stderrTruncated ? ' (truncated)' : ''}: ${stderrText.trim().slice(0, 600)}`);
+      const { state, exit, stderrText } = processed;
       const how = exit.signal !== null ? `signal ${exit.signal}` : `exit code ${String(exit.code)}`;
       const tokens = state.result?.tokens ?? null;
-      const final = ending as Ending | null;
-      if (final === null) throw new Error('unreachable: the run ended without a reason');
+      const final = processed.ending;
 
       switch (final.kind) {
         case 'cancelled':
@@ -432,11 +269,7 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
         ...(options.serverLimitPatterns === undefined ? {} : { serverLimitPatterns: options.serverLimitPatterns }),
       });
       if (classified.estimatedUsd !== null) note(`estimated cost (subscription estimate at list prices, not a bill): ${classified.estimatedUsd} USD, ${String(classified.tokens)} tokens`);
-      if (state.rateLimit !== null) {
-        const windows: Record<string, { utilization: number; resetsAtMs: number | null }> = {};
-        for (const [name, value] of Object.entries(state.rateLimit.utilization)) windows[name] = { utilization: value, resetsAtMs: state.rateLimit.windowResetsMs[name] ?? null };
-        lastWindows = { seenAtMs: clock.nowMs(), windows };
-      }
+      gate.observe(state);
       const utilization = state.maxUtilization;
       // 사용률은 0~1 또는 0~100 으로 보고될 수 있다(미확인): 1 을 넘으면 퍼센트로 본다
       if (utilization !== null && (utilization > 1 ? utilization / 100 : utilization) >= warnUtilization) {
@@ -456,35 +289,4 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
   }
 
   return { name: CLAUDE_CODE_ADAPTER_NAME, run };
-}
-
-const STALE_USAGE_MS = 15 * 60_000;
-
-function normalizeYield(value: Readonly<Record<string, number>> | undefined): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const [name, raw] of Object.entries(value ?? {})) {
-    if (!(Number.isFinite(raw) && raw > 0 && raw <= 100)) throw new Error(`yieldUtilization['${name}'] must be a number in (0, 100] (0~1, or a percentage when above 1)`);
-    out[name] = raw > 1 ? raw / 100 : raw;
-  }
-  return out;
-}
-
-/** 새 run 을 미뤄야 하면 이유 문구, 아니면 null. 이미 리셋된 창(또는 낡은 값)은 보지 않는다 */
-function usageDeferral(
-  yieldAt: Readonly<Record<string, number>>,
-  last: { seenAtMs: number; windows: Record<string, { utilization: number; resetsAtMs: number | null }> } | null,
-  nowMs: number,
-): string | null {
-  if (last === null) return null;
-  for (const [name, limit] of Object.entries(yieldAt)) {
-    const seen = last.windows[name];
-    if (seen === undefined) continue;
-    const utilization = seen.utilization > 1 ? seen.utilization / 100 : seen.utilization;
-    if (utilization < limit) continue;
-    const validUntil = seen.resetsAtMs ?? last.seenAtMs + STALE_USAGE_MS;
-    if (validUntil <= nowMs) continue;
-    const until = new Date(validUntil).toISOString();
-    return `the '${name}' subscription window was at ${Math.round(utilization * 100)}% (yield threshold ${Math.round(limit * 100)}%); this run is deferred to leave the rest for the person using the same subscription${seen.resetsAtMs === null ? ` (reading treated as stale after ${until})` : ` (window resets ${until})`}`;
-  }
-  return null;
 }

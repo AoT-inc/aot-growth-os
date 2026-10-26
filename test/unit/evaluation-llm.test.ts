@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  buildIsolatedInput, evaluateRun, ISOLATED_INPUT_KEYS, IsolationError, MAX_STATEMENT_CHARS,
+  buildIsolatedInput, costForRun, evaluateRun, recordCost, ISOLATED_INPUT_KEYS, IsolationError, MAX_STATEMENT_CHARS,
   type ClaimStatement, type IsolatedVerificationInput, type LlmVerifier,
 } from '@aot/evaluation';
 
@@ -146,4 +146,26 @@ test('no verifier configured, a verifier that throws, or isolated_context=false:
   const c = await evaluateRun({ db: shared.db, clock: shared.clock, fetcher: shared.fetcher, llm }, { taskId: shared.run.taskId, taskRunId: shared.run.runId });
   assert.equal(c.evaluation.outcome, 'inconclusive');
   assert.equal(llm.inputs.length, 0, 'a verifier that would share the executor context is never called');
+});
+
+test('a subscription verifier reports tokens, not USD: the ledger gets a token-only validation entry and the note shows the ratio to the run tokens', async (t) => {
+  const { db, clock, run, fetcher } = setup(t);
+  db.writeTx((tx) => recordCost(tx, clock, { taskId: run.taskId, taskRunId: run.runId, category: 'llm', amountUsd: 0, units: { source: 'adapter', tokens: 10_000 } }));
+  const llm = new FakeLlm({ verdict: 'supported', note: 'all claims are supported', tokens: 1500 });
+  const { evaluation } = await evaluateRun({ db, clock, fetcher, llm }, { taskId: run.taskId, taskRunId: run.runId });
+  assert.equal(evaluation.outcome, 'pass');
+  assert.match(evaluation.quality_note ?? '', /\[verifier tokens: 1500, 15% of the run's 10000\]/);
+  assert.equal(evaluation.total_cost_usd, 0);
+  const validation = db.all<{ amount_usd: number; units: string }>("SELECT amount_usd, units FROM cost_entry WHERE task_run_id = ? ORDER BY at, id", [run.runId]).filter((row) => JSON.parse(row.units).source === 'validation');
+  assert.equal(validation.length, 1);
+  assert.deepEqual([Number(validation[0]!.amount_usd), JSON.parse(validation[0]!.units).tokens, JSON.parse(validation[0]!.units).verifier], [0, 1500, 'fake-verifier@v1']);
+  assert.equal(costForRun(db, run.runId).tokens, 11_500);
+});
+
+test('a verifier that reports no usable token count adds no ledger entry', async (t) => {
+  for (const tokens of [0, -5, Number.NaN]) {
+    const { db, clock, run, fetcher } = setup(t);
+    await evaluateRun({ db, clock, fetcher, llm: new FakeLlm({ verdict: 'supported', note: 'ok', tokens }) }, { taskId: run.taskId, taskRunId: run.runId });
+    assert.equal(db.get<{ n: number }>('SELECT count(*) AS n FROM cost_entry WHERE task_run_id = ?', [run.runId])!.n, 0);
+  }
 });

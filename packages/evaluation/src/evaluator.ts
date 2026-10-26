@@ -187,6 +187,11 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
 
   const runCost = costForRun(db, run.id);
   const verificationCostUsd = llm.verdict?.costUsd ?? 0;
+  // 구독 검증은 USD 가 아니라 토큰으로 센다(Q22 c): 원장에는 토큰만 남기고, 실행 토큰 대비 비율을 평가 메모에 적어 파일럿이 상한(시작값 20%)을 조정할 수 있게 한다
+  const verificationTokens = typeof llm.verdict?.tokens === 'number' && Number.isFinite(llm.verdict.tokens) && llm.verdict.tokens > 0 ? llm.verdict.tokens : 0;
+  const llmNote = verificationTokens > 0
+    ? `${llm.note} [verifier tokens: ${verificationTokens}${runCost.tokens > 0 ? `, ${Math.round((verificationTokens / runCost.tokens) * 100)}% of the run's ${runCost.tokens}` : ''}]`
+    : llm.note;
   const totalCostUsd = round(runCost.totalUsd + verificationCostUsd);
 
   const verifiedAfter = (row: EvidenceRow): boolean => deterministic.evidence.get(row.id)?.verified ?? Number(row.verified) === 1;
@@ -206,7 +211,7 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
 
   const reportUsed = claims.length > 0 || evidenceClaims.length > 0;
   const row = buildRow({
-    deps, task, run, spec, deterministic, llmState: llm.state, llmNote: llm.note, effect, decision, primary, evidence, totalCostUsd, humanMinutes: runCost.humanMinutes, reportUsed,
+    deps, task, run, spec, deterministic, llmState: llm.state, llmNote, effect, decision, primary, evidence, totalCostUsd, humanMinutes: runCost.humanMinutes, reportUsed,
   });
   assertEvaluationInvariants(row);
 
@@ -214,10 +219,10 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
     const raced = findEvaluation(tx, task.id, run.id);
     if (raced) return { evaluation: raced, created: false };
     applyEvidenceVerification(tx, deterministic.evidence);
-    if (verificationCostUsd > 0) {
+    if (verificationCostUsd > 0 || verificationTokens > 0) {
       recordCost(tx, clock, {
         taskId: task.id, taskRunId: run.id, category: 'llm', amountUsd: verificationCostUsd,
-        units: { source: 'validation', verifier: deps.llm?.id ?? 'unknown' },
+        units: { source: 'validation', verifier: deps.llm?.id ?? 'unknown', ...(verificationTokens > 0 ? { tokens: verificationTokens } : {}) },
       });
     }
     tx.run(

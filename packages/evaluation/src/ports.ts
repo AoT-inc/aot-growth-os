@@ -70,6 +70,8 @@ export type LlmVerdict = {
   note: string;
   /** 이 검증 호출의 비용 (있으면 검증 단계 비용으로 별도 `cost_entry`에 남는다) */
   costUsd?: number;
+  /** 이 검증 호출이 쓴 토큰 수 (구독 호출은 USD 가 아니라 토큰으로 센다, Q22 c). 있으면 검증 단계 `cost_entry` 의 `units.tokens` 로 남는다 */
+  tokens?: number;
 };
 
 /**

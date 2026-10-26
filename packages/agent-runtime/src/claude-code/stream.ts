@@ -317,6 +317,8 @@ const LOGIN_PATTERNS: readonly RegExp[] = [
 export interface ClassifyOptions {
   limitPatterns?: readonly RegExp[];
   serverLimitPatterns?: readonly RegExp[];
+  /** 구조화 출력을 읽는 함수. 기본은 업무용 `{result, evidence}` (`parseStructuredOutput`). 검증기는 자기 모양을 읽는다 */
+  parseOutput?: (output: JsonObject) => { ok: true; result: JsonObject; evidence: ParsedEvidence[] } | { ok: false; message: string };
 }
 
 export type ClassifiedRun =
@@ -391,7 +393,7 @@ export function classifyRun(state: StreamState, exit: { code: number | null; sig
     return fail('permission_denied', `the agent tried tools it was not allowed to use (${r.permissionDenials.length} denied: ${names}); the result is not trusted`);
   }
   if (r.structuredOutput === null) return fail('no_structured_output', 'the CLI finished without a structured output');
-  const parsed = parseStructuredOutput(r.structuredOutput);
+  const parsed = (options.parseOutput ?? parseStructuredOutput)(r.structuredOutput);
   if (!parsed.ok) return fail('invalid_structured_output', parsed.message);
   return { ok: true, result: parsed.result, evidence: parsed.evidence, tokens, estimatedUsd };
 }

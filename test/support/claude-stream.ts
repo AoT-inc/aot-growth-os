@@ -110,3 +110,18 @@ export const SESSION_LIMIT = resultEvent({ isError: true, subtype: 'success', re
 export const WEEKLY_LIMIT = resultEvent({ isError: true, subtype: 'success', result: "You've hit your weekly limit", terminalReason: 'api_error', apiErrorStatus: null, structured: null });
 /** UNVERIFIED: 서버 쪽 제한 */
 export const SERVER_LIMITING = resultEvent({ isError: true, subtype: 'success', result: 'Server is temporarily limiting requests', terminalReason: 'api_error', apiErrorStatus: 429, structured: null });
+
+// ----- 검증기 (도구 없는 별도 호출) -----
+/** 검증기 호출의 정상 init: 내장 도구·MCP 서버가 없고 구조화 출력 도구만 있다 (2.1.310 에서 `--tools ""` 와 빈 MCP 설정으로 관찰한 모양) */
+export const verifierInit = (): JsonObject => initEvent({ tools: ['StructuredOutput'], mcpServers: [] });
+
+export type VerdictEntry = { id: string; verdict: string; reason?: string };
+
+/** 주장별 판정을 담은 성공 결과 */
+export function verdictResult(entries: readonly VerdictEntry[], options: ResultOptions = {}): JsonObject {
+  return resultEvent({ structured: { claims: entries.map((entry) => ({ id: entry.id, verdict: entry.verdict, reason: entry.reason ?? 'ok' })) }, ...options });
+}
+
+export const verifierStream = (entries: readonly VerdictEntry[], options: ResultOptions = {}): JsonObject[] => [
+  verifierInit(), rateLimitEvent(), toolUseEvent('m1', 'StructuredOutput', {}), assistantEvent('m2', 'done'), verdictResult(entries, options),
+];

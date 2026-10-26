@@ -18,7 +18,7 @@ Phase A의 A6(주간 사이클 1~7단계 통합)까지 구현·검증을 마쳤�
 
 ## 확정된 결정 (A6, 2026-10-24)
 - Q5 측정 신호 = 랜딩 페이지 1개의 주간 전환 수. Phase A는 사람이 값을 입력하고 근거를 `evidence`로 첨부(분석 API 연결은 후속).
-- `require_approval` 호출은 게이트웨이에서 막힘 유지. LLM 검증기는 `kind:"stub"`만(실제 모델은 Q22 후속).
+- `require_approval` 호출은 게이트웨이에서 막힘 유지. LLM 검증기는 `kind:"stub"`와 `kind:"claude_code_cli"`(2026-10-26, Q22; PC 구독 로그인 확인과 섀도 파일럿은 남음).
 - 측정 값은 대기 조건(입력 전에는 업무를 집지 않음). 실험 판정 단위 = 1주·관측 1. 실험(`strategy_version`) 승인 = 사람 1인, 상태 허용표에 `experiment → rejected` 추가.
 
 ## 작업 규칙

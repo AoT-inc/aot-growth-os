@@ -9,7 +9,7 @@ Phase A의 A6(주간 사이클 1~7단계 통합)까지 구현·검증을 마쳤�
 
 ## 남은 일
 1. **종료 조건 미충족** ([phase-a.md §6](phase-a.md) 현황 참고)
-   - 스파이크 Q14(외부 부작용 도구별 멱등 키 지원 조사)는 2026-10-25 문서 조사로 기록했다([q14](../spikes/q14-idempotency-support.md)). 계약·엔진에 닿는 결정 4건(키 보존 기간 등)이 사용자 결정 대기다.
+   - 스파이크 Q14(외부 부작용 도구별 멱등 키 지원 조사)는 2026-10-25 문서 조사로 기록했고 계약 결정(동작 단위 `{supported, retention_ms}`, 재전송은 보존 기간의 50% 안, 조회형 `effect_key` 전달 선언)을 승인받았다([q14](../spikes/q14-idempotency-support.md)). 엔진 구현은 같은 날 끝났다(커밋 7fc4b02, fc84679: 동작 단위 선언, `planned_at`·`idempotency_retention_ms`, 재전송 창 판정). 남은 것: 실제 부작용 어댑터, 어댑터 계약 시험(A5), 오류 매핑 적용, `tool_contract_version` 해시 계산. 알려진 틈 둘은 닫혔다(4e7238a, c69454e). 사람이 `unknown` 효과를 `confirmed`/`failed`로 확정하는 경로는 만들었다(커밋 62056a6: 승인 CLI `effects`·`resolve-effect`; 확정 뒤 `needs_review` 업무는 기존 `approve`로 재큐). 열린 것(사용자 결정): 해소 뒤 재전송이 다시 `unknown`이 되면 두 번째 해소 불가(`resolved_before`), `failed`의 다중 승인자·cooldown은 스키마 변경 필요. TOTP 잠금은 프로세스 메모리(기존). [recovery §3](../operations/recovery.md).
    - 상품 등록 업무 수행 준비: Q22(검증 모델 등급·비용 비율)와 저장소 읽기·비밀값 스캐너 도구 어댑터가 없다.
 2. **설계 결정이 필요한 틈** (사용자 결정 후 진행)
    - 출하된 조사 템플릿(`packs/example-marketing/workflows/`)에 `expected_quotes`가 없고 `validation.llm`이 `null`이라, 실제 조사 에이전트로는 항상 `inconclusive`가 된다(시험은 팩 사본에 두 필드를 더해 돌린다).

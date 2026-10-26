@@ -246,7 +246,7 @@ test("a failed effect is resent only when the policy decision is 'allow' (recove
   const env = policyEnv(t);
   let calls = 0;
   const flaky: EffectTool = {
-    name: 'notify-tool', supportsIdempotency: true,
+    name: 'notify-tool', actions: { send: { idempotency: { supported: true, retention_ms: 86_400_000 } } },
     send: () => (calls += 1) === 1 ? { status: 'failed', responseRef: null } : { status: 'confirmed', responseRef: `delivery-${calls}` },
   };
   const step = { stepId: 'notify', action: 'send', target: 'mailbox:example', request: { n: 1 } };

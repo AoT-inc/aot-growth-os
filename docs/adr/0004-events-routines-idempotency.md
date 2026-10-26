@@ -33,3 +33,12 @@
 ## Amendment (2026-10-25): 통화 이벤트와 전화 부작용
 - provider webhook은 canonical `phone.call.*` 이벤트로 바뀌어 기존 `event` 테이블(`source='phone'`)에 남는다. 멱등 키는 `phone:<provider>:<eventId>`이고 어댑터는 같은 이벤트에 같은 `eventId`를 만들어야 한다(어댑터 계약 시험이 확인한다). 중복 전달은 한 번만 적용된다.
 - 전화 발신은 `external_effect`를 거친다. 호출 생성 멱등 키 지원이 문서로 확인되지 않아 `supports_idempotency=false`로 선언하고(Q14 규칙), 응답을 잃으면 자동 재다이얼하지 않는다. 상세는 [ADR-0014](0014-phone-capability.md).
+
+## Amendment (2026-10-25): 멱등 키 보존 기간과 선언 단위
+[스파이크 Q14](../spikes/q14-idempotency-support.md)의 결과로 부작용 재전송 규칙을 둘 정한다(사용자 승인, 구현 전). 스키마는 이 Amendment로 바뀌지 않는다.
+- **선언은 (도구, `action`) 단위이고 키 보존 기간을 포함한다.** 외부의 멱등 키는 영구하지 않다(조사한 후보에서 1시간~24시간). 같은 키 재전송은 보존 기간의 50% 안에서만 허용하고, 넘으면 미지원 도구처럼 조회하거나 `needs_review`로 보낸다. 키가 지워진 뒤의 같은 키는 새 요청이 되어 부작용이 중복되기 때문이다.
+- **기준 시각에는 최초 `planned` 시각이 필요하다.** `external_effect.at`은 전이마다 덮어써지므로 쓸 수 없다. 컬럼 추가는 스키마 변경이라 구현 때 별도 승인을 받는다.
+- **자연 멱등(upsert)은 아직 인정하지 않는다.** 첫 CRM 쓰기 어댑터 때 재검토한다.
+상세 규칙은 [recovery §3](../operations/recovery.md).
+
+(2026-10-25 구현) 위 두 항목은 같은 날 엔진에 구현했다(커밋 7fc4b02, fc84679). 기준 시각은 `external_effect.planned_at`이고 `idempotency_retention_ms`도 함께 추가했다. 스키마는 0001에서 직접 바꿨다(사전 출시 규칙). 위의 "구현 전"·"스키마는 바뀌지 않는다"는 당시 기록이다.

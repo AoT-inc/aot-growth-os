@@ -48,7 +48,7 @@
 - `evidence.trust_origin`은 필수(NOT NULL, 기본값 없음)이고 `memory_item.trust_origin`과 같은 어휘(`internal`, `external_untrusted`)만 허용한다. 외부 페이지·문서에서 읽은 근거는 `external_untrusted`이며, 이런 근거에서 만든 기억 항목은 신뢰된 것/사실로 편입되지 않는다([memory-item](memory-item.md) 규칙 9). 에이전트(어댑터)가 낸 근거는 어댑터가 무엇을 밝히든 호스트가 `external_untrusted`로 저장한다.
 - `evaluation.outcome='pass'`는 `primary_evidence_refs`가 비어 있지 않아야 하며 에이전트 보고서만으로는 불가.
 - `org_trial_result`는 평가기만 쓸 수 있다. 조직 관리팀은 쓰기 불가.
-- 외부 부작용은 `external_effect`를 `planned`로 기록한 뒤에만 전송한다.
+- 외부 부작용은 `external_effect`를 `planned`로 기록한 뒤에만 전송한다. `planned_at`은 INSERT 때만 쓰고, `idempotency_retention_ms`는 INSERT 때 (도구, action) 선언의 스냅숏이며 강화(짧게·미지원으로)만 된다. `unknown → dispatched`(같은 키 재전송)는 `supports_idempotency=1`이고 `planned_at`부터 `idempotency_retention_ms`의 50% 이내일 때만 가능하다([recovery §3](../operations/recovery.md)).
 - `call.status`는 canonical 상태이며 provider 값이 아니다. 상태는 시스템(`applyPhoneEvent`)만 바꾸고 뒤로 가는 이벤트는 기록만 한다([state-machines](state-machines.md)). 에이전트는 `call`·`call_artifact`에 쓸 수 없고, 통화 결과(`call_artifact.kind='outcome'`)는 한 번만 기록된다(같은 내용 재기록은 흡수, 다른 내용은 거부). 상대방의 말에서 나온 산출물은 `trust_origin='external_untrusted'`, 사람이 직접 기록한 결과만 `internal`이다. `call.intent_key`(번호·목적·맥락의 해시)는 같은 업무의 같은 의도 통화 중복 방지에 쓴다. `event(source='phone')` payload에는 전화번호와 발화 내용을 넣지 않는다. provider 원본 payload·녹음은 저장하지 않는다.
 - append-only 테이블(`task_transition`, `cost_entry`, `policy_decision`, `human_reauth`)은 UPDATE/DELETE 금지.
 

@@ -53,6 +53,20 @@ export class ApprovalRefusedError extends Error {
   }
 }
 
+/** 재인증 거부 사유 코드: 코드 없음 / 연속 실패 잠금 / 틀린 코드. 메시지는 release 와 같다 */
+export type ReauthRefusalCode = 'reauth_required' | 'reauth_locked' | 'reauth_failed';
+
+/** `ApprovalRefusedError` 이면서 사유 코드를 가진다 (release 의 응답은 그대로 `error` 메시지만 쓴다) */
+export class ReauthRefusedError extends ApprovalRefusedError {
+  readonly code: ReauthRefusalCode;
+
+  constructor(code: ReauthRefusalCode, message: string) {
+    super(message);
+    this.name = 'ReauthRefusedError';
+    this.code = code;
+  }
+}
+
 export interface ApprovalEngineOptions {
   db: Db;
   clock: Clock;
@@ -65,6 +79,10 @@ const SELF_APPROVAL_RULE = 'self-approval is allowed only when risky_change.min_
 
 const refuse = (message: string): never => {
   throw new ApprovalRefusedError(message);
+};
+
+const refuseReauth = (code: ReauthRefusalCode, message: string): never => {
+  throw new ReauthRefusedError(code, message);
 };
 
 /** TOTP 연속 실패 제한 (RFC 4226 §7.3) */
@@ -142,21 +160,35 @@ export class ApprovalEngine {
    * 연속 실패는 제한한다 (RFC 4226 §7.3 throttling, RFC 6238 §5): 사람별 TOTP_MAX_FAILURES 회 연속 실패면
    * TOTP_LOCKOUT_MS 동안 받지 않는다. 기록은 프로세스 메모리에만 둔다(재시작하면 초기화).
    */
-  #reauth(tx: Db, actor: string, code: string | undefined, purpose: string): void {
-    if (code === undefined || code === '') refuse('a TOTP code is required to release this risky change');
+  #reauth(tx: Db, actor: string, code: string | undefined, purpose: string, missingMessage = 'a TOTP code is required to release this risky change'): void {
+    if (code === undefined || code === '') refuseReauth('reauth_required', missingMessage);
     const nowMs = this.#o.clock.nowMs();
     const failures = this.#failures.get(actor);
     if (failures && failures.count >= TOTP_MAX_FAILURES && nowMs < failures.lastMs + TOTP_LOCKOUT_MS) {
-      refuse('too many wrong TOTP codes; try again later');
+      refuseReauth('reauth_locked', 'too many wrong TOTP codes; try again later');
     }
     const step = verifyTotp(this.#o.totp.secretOf(actor), code!, nowMs);
     if (step === null) {
       const count = failures && nowMs < failures.lastMs + TOTP_LOCKOUT_MS ? failures.count + 1 : 1;
       this.#failures.set(actor, { count, lastMs: nowMs });
-      refuse('the TOTP code is not valid');
+      refuseReauth('reauth_failed', 'the TOTP code is not valid');
     }
+    recordReauth(tx, actor, step!, purpose, this.#now()); // 이미 쓴 시간창이면 여기서 던진다: 그 경우 실패 횟수를 지우지 않는다
     this.#failures.delete(actor);
-    recordReauth(tx, actor, step!, purpose, this.#now());
+  }
+
+  /**
+   * 호출자의 write 트랜잭션 안에서 하는 TOTP 재인증 (효과 해소 failed 가 쓴다, A6 후속). release 와 같은 `#reauth` 를 거치므로
+   * 같은 연속 실패 잠금(`#failures`)과 같은 시간창 재사용 거부를 공유한다. 성공하면 `human_reauth` 행 하나를 호출자 트랜잭션에 쓴다
+   * (호출자가 이후 단계에서 던지면 같이 되돌려진다).
+   * 호출 오류는 아무것도 세기 전에 plain Error: 트랜잭션 밖 호출, `release:` 로 시작하는 목적(release 의 목적과 섞이면 안 된다).
+   * 사람이 아니면 ApprovalRefusedError, 거부는 ReauthRefusedError(코드), 이미 쓴 시간창은 ReauthError, 비밀 미등록은 TotpSecretError.
+   */
+  reauthenticateInTx(tx: Db, actorId: string, code: string | undefined, purpose: string): void {
+    if (!tx.inWriteTx) throw new Error('reauthenticateInTx must be called inside the caller\'s write transaction');
+    if (purpose.startsWith('release:')) throw new Error("reauthenticateInTx: purposes starting with 'release:' are reserved for the release command");
+    requireHuman(tx, actorId);
+    this.#reauth(tx, actorId, code, purpose, 'a TOTP code is required to resolve an effect as failed');
   }
 
   // ===== 업무 =====

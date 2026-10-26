@@ -3,7 +3,7 @@
 //
 // 부모 → 자식: {cmd:'tick', now} | {cmd:'drain', now} | {cmd:'continue'} | {cmd:'exit'}
 // 자식 → 부모: {type:'ready'} | {type:'tick', report} | {type:'drained', executed} | {type:'blocked', taskId, attempt}
-//              | {type:'delivered', taskId} | {type:'error', message}
+//              | {type:'delivered', taskId} | {type:'dispatched'} | {type:'error', message}
 // routineTemplate 가 켜져 있으면 tick 이 도래한 루틴 슬롯을 발화한다 (tick 보고의 routines).
 import { appendFileSync } from 'node:fs';
 
@@ -22,6 +22,10 @@ interface EngineWorkerConfig {
   toolStore?: string;
   /** effect: 전달 직후 응답 전에 멈춘다 (부모가 SIGKILL 한다) */
   blockAfterDelivery?: boolean;
+  /** 멱등 도구의 키 보존 기간(ms). 기본 24h */
+  retentionMs?: number;
+  /** effect: dispatched 기록 직후, 가짜 도구를 부르기 전에 멈춘다 (부모가 SIGKILL 하면 dispatched + 전달 0건) */
+  blockAfterDispatch?: boolean;
   /** effect: 부작용 전에 멈춘다 (그 사이 lease 를 잃게 한다) */
   blockBeforeEffect?: boolean;
   /** true 면 루틴 발화를 켠다: `weekly-research@1` 템플릿 = 의존이 있는 업무 3개 (가짜 RoutineTemplateSource) */
@@ -47,9 +51,18 @@ const log = (line: string) => appendFileSync(config.logPath, `${line}\n`);
 const tools: Record<string, EffectTool> = {};
 if (config.tool) {
   const fake = config.tool === 'idempotent'
-    ? createIdempotentFakeTool({ name: 'notify-tool', ...(config.toolStore ? { storePath: config.toolStore } : {}) })
+    ? createIdempotentFakeTool({
+      name: 'notify-tool', ...(config.toolStore ? { storePath: config.toolStore } : {}), ...(config.retentionMs === undefined ? {} : { retentionMs: config.retentionMs }),
+    })
     : createNonIdempotentFakeTool({ name: 'notify-tool', ...(config.toolStore ? { storePath: config.toolStore } : {}) });
   tools[fake.name] = asEffectTool(fake, {
+    // beginDispatch 가 dispatched 를 커밋한 뒤, 전달 전에 불린다
+    beforeSend: async (call) => {
+      log(`send\t${call.effectKey}\t${workerId}`);
+      if (!config.blockAfterDispatch) return;
+      send({ type: 'dispatched' });
+      await waitForContinue();
+    },
     afterDelivery: async () => {
       if (!config.blockAfterDelivery) return;
       send({ type: 'delivered' });

@@ -1,9 +1,9 @@
 // 전화 부작용 도구 (ADR-0014 §2): task-engine 의 부작용 원장(performEffect)이 부르는 도구. provider 호출은 여기서만 일어난다.
 // 원장이 먼저 `planned → dispatched` 를 펜싱·정책 재검증과 한 트랜잭션에서 기록한 뒤에 send 를 부른다.
-//  - phone_call.call      : Call 행을 만들고(같은 effect_key 면 같은 Call) provider 에 발신을 접수시킨다. `supportsIdempotency=false`: 응답을 잃으면 `unknown` 이고
+//  - phone_call.call      : Call 행을 만들고(같은 effect_key 면 같은 Call) provider 에 발신을 접수시킨다. `idempotency.supported=false`: 응답을 잃으면 `unknown` 이고
 //                           자동 재전송하지 않는다(전화를 두 번 거는 것이 더 나쁘다). lookup 은 effect_key 로 만든 Call 이 provider 에 접수됐는지 본다
 //  - phone_transfer.transfer: 연결된 통화를 사람에게 넘긴다. 성공하면 `phone.call.transferred` 로 Call 상태에 반영한다
-//  - phone_hangup.hangup  : 통화를 끊는다. 끊기는 여러 번 해도 같아서 멱등이다(`supportsIdempotency=true`). 종료는 provider 의 이벤트가 반영한다
+//  - phone_hangup.hangup  : 통화를 끊는다. 끊기는 여러 번 해도 같지만 자연 멱등은 인정하지 않아 `idempotency.supported=false` 다(응답을 잃으면 사람이 확정한다). 종료는 provider 의 이벤트가 반영한다
 // provider 가 요청을 처리하지 않았음이 확실한 오류(PhoneProviderError.definite)만 `failed` 로, 그 밖의 예외는 던져서 원장이 `unknown` 으로 기록한다.
 import {
   applyPhoneEvent, callIntentKey, createOutboundCall, findSameIntentCall, getCallRow, isE164, PhoneProviderError,
@@ -14,7 +14,8 @@ import {
 /** task-engine 의 EffectTool 과 구조가 같다 (agent-runtime 은 task-engine 을 import 하지 않는다 — 구조적 타입으로 만난다) */
 export interface PhoneEffectTool {
   readonly name: string;
-  readonly supportsIdempotency: boolean;
+  /** (도구, action) 계약 선언 — task-engine 의 EffectActionDeclaration 과 구조가 같다 */
+  readonly actions: Readonly<Record<string, { readonly idempotency: { readonly supported: false } | { readonly supported: true; readonly retention_ms: number }; readonly effect_key_carrier?: 'metadata' | 'slug' | 'property' | 'none' }>>;
   send(call: { effectKey: string; action: string; target: string; request: unknown }): Promise<{ status: 'confirmed' | 'failed'; responseRef: string | null }>;
   lookup?: (effectKey: string) => Promise<{ found: true; responseRef: string | null } | { found: false }>;
 }
@@ -58,7 +59,7 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
 
   const phoneCall: PhoneEffectTool = {
     name: 'phone_call',
-    supportsIdempotency: false,
+    actions: { call: { idempotency: { supported: false }, effect_key_carrier: 'metadata' } },
     async send(call) {
       if (!isCallRequest(call.request)) throw new Error('phone_call: malformed request');
       const request = call.request;
@@ -108,7 +109,7 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
 
   const phoneTransfer: PhoneEffectTool = {
     name: 'phone_transfer',
-    supportsIdempotency: false,
+    actions: { transfer: { idempotency: { supported: false }, effect_key_carrier: 'metadata' } },
     async send(call) {
       const request = call.request as { callId?: unknown; to?: unknown; reason?: unknown };
       if (typeof request.callId !== 'string' || !isE164(request.to)) throw new Error('phone_transfer: malformed request');
@@ -141,7 +142,7 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
 
   const phoneHangup: PhoneEffectTool = {
     name: 'phone_hangup',
-    supportsIdempotency: true,
+    actions: { hangup: { idempotency: { supported: false } } }, // 자연 멱등은 인정하지 않는다(ADR-0005 Amendment 2026-10-25)
     async send(call) {
       const request = call.request as { callId?: unknown };
       if (typeof request.callId !== 'string') throw new Error('phone_hangup: malformed request');

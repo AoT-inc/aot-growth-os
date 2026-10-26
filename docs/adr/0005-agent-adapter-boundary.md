@@ -36,3 +36,12 @@
 - **적용 범위 제한:** 묶인 실행기는 `sideEffect=true`이고 영향이 `external_effect`인 도구에만 받는다(그 밖은 게이트웨이 시작 때 거부).
 - **하한 유지:** `deny`와 외부 입력의 영향을 받은 run의 부작용 호출(승인 없이 불가)은 이 예외와 무관하게 막힌다. 호출 기록에는 정책의 `require_approval`과 "원장이 재확인한다"는 사유가 남는다.
 - **한계:** 본문이 `perform` 없이 직접 외부에 접근하는 것까지 막지는 못한다. 실행기는 호스트가 조립하는 신뢰된 코드(에이전트는 닿지 못한다)이고, 이 구조는 설정 오류와 실수를 잡는다. 첫 사용처는 전화 도구([ADR-0014](0014-phone-capability.md) §8). 시험: `agent-runtime-gateway-effect-gate`, `phone-lifecycle`(승인 뒤 정책이 바뀌면 원장이 거부).
+
+외부 부작용 도구를 쓰는 어댑터가 계약에 선언할 `supports_idempotency`([recovery §3](../operations/recovery.md))의 후보 도구별 초기 값은 [스파이크 Q14](../spikes/q14-idempotency-support.md)에 문서 근거와 함께 있다. 문서로 확인하지 못한 도구는 `false`다. 사용자 승인(2026-10-25)으로 어댑터 계약에 다음을 더한다(구현은 첫 부작용 어댑터 전).
+- **선언 단위와 보존 기간.** 멱등 선언은 (도구, `action`) 단위의 `{supported, retention_ms}`다. 재전송 규칙은 [ADR-0004 Amendment](0004-events-routines-idempotency.md)와 [recovery §3](../operations/recovery.md).
+- **조회형 어댑터는 `effect_key`를 어디에 싣는지 선언한다**(`metadata` / `slug` / `property` / `none`). `none`의 `lookup`은 내용 대조이며 "찾음"만 `confirmed` 근거다. 공개 게시물 본문에는 `effect_key`를 싣지 않는다.
+- 외부가 재시도를 안내하거나 일부 성공을 경고하는 응답은 `failed`가 아니라 `unknown`으로 매핑한다.
+- 자연 멱등(upsert)은 인정하지 않는다(`supported=false`). 첫 CRM 쓰기 어댑터 때 재검토한다.
+- 어댑터 계약 시험(위 Consequences)에 보존 기간 초과·내용 대조 조회의 한계를 넣는다.
+
+(2026-10-25 구현) 선언 단위·보존 기간·`effect_key` 전달 선언의 검증은 엔진에 구현했다(커밋 7fc4b02, fc84679). 오류 매핑과 실제 어댑터에 대한 계약 시험은 어댑터를 쓸 때 적용한다. "구현은 첫 부작용 어댑터 전"은 당시 기록이다.

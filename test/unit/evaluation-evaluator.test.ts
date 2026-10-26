@@ -148,9 +148,9 @@ test('independence: safety=fail is a fail whatever the effect score is, and the 
   const env = withOriginals(t, { checks: [...CHECKS, 'policy_compliance'], effect: signal({ values: [1000, 1000, 1000, 1000, 1000] }) });
   // 정책 판정 기록 없이 외부 부작용이 나갔다 = 안전성 위반
   env.db.writeTx((tx) => tx.run(
-    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, at)
-     VALUES ('eff-1', 'k1', ?, ?, 'notify-tool', 'send', 'mailbox:example', 'h', 'confirmed', 1, ?)`,
-    [env.run.taskId, env.run.runId, env.clock.nowIso()],
+    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, idempotency_retention_ms, planned_at, at)
+     VALUES ('eff-1', 'k1', ?, ?, 'notify-tool', 'send', 'mailbox:example', 'h', 'confirmed', 1, 86400000, ?, ?)`,
+    [env.run.taskId, env.run.runId, env.clock.nowIso(), env.clock.nowIso()],
   ));
   const { evaluation } = await evaluate(env);
   assert.equal(evaluation.outcome, 'fail');

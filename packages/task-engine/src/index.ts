@@ -32,7 +32,7 @@ export {
   type IdempotencySnapshot,
 } from './idempotency.ts';
 export {
-  EffectDeclarationError, EffectRefusedError, EffectResolutionError, LeaseLostError, MeasurementRefusedError, RunKilledError, StaleStateError, TaskCreationError,
+  EffectDeclarationError, EffectRefusedError, EffectResolutionError, LeaseLostError, MeasurementRefusedError, RunKilledError, type RunKillReason, StaleStateError, TaskCreationError,
   type EffectResolutionCode,
 } from './errors.ts';
 export {

@@ -67,12 +67,15 @@ export class StaleStateError extends Error {
   }
 }
 
-/** 실행 관리가 run 을 강제로 끝냈다(시간 제한 초과, 예산 초과). 실행기가 던지면 워커가 run 을 `killed` 로 닫는다 */
+/** run 을 강제로 끝낸 사유. `review_required` 는 사람이 풀어야 하는 조건(로그인 만료·사용량 한도 등)이라 재시도하지 않고 검토로 보낸다 */
+export type RunKillReason = 'time_limit' | 'budget_exceeded' | 'review_required';
+
+/** 실행 관리가 run 을 강제로 끝냈다(시간 제한 초과, 예산 초과, 사람의 검토가 필요한 조건). 실행기가 던지면 워커가 run 을 `killed` 로 닫는다 */
 export class RunKilledError extends Error {
-  readonly reason: 'time_limit' | 'budget_exceeded';
+  readonly reason: RunKillReason;
   readonly detail: string;
 
-  constructor(reason: 'time_limit' | 'budget_exceeded', detail: string) {
+  constructor(reason: RunKillReason, detail: string) {
     super(`run killed (${reason}): ${detail}`);
     this.name = 'RunKilledError';
     this.reason = reason;

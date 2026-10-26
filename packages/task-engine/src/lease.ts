@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { Clock, Db, EvidenceRow, ExternalEffectRow, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
 
-import { LeaseLostError } from './errors.ts';
+import { LeaseLostError, type RunKillReason } from './errors.ts';
 import { resendAllowed } from './idempotency.ts';
 import { isoAfter } from './params.ts';
 import { transitionEffect, transitionTask } from './transitions.ts';
@@ -347,8 +347,8 @@ export function failRun(db: Db, clock: Clock, lease: Lease, options: FailRunOpti
 }
 
 export interface KillRunOptions {
-  /** time_limit: 시간 제한 초과, budget_exceeded: 업무 예산 초과 */
-  reason: 'time_limit' | 'budget_exceeded';
+  /** time_limit: 시간 제한 초과, budget_exceeded: 업무 예산 초과, review_required: 사람이 풀어야 하는 조건(로그인 만료·사용량 한도 등) */
+  reason: RunKillReason;
   detail: string;
   /** time_limit 의 retry_wait 대기 시간 */
   retryDelayMs: number;
@@ -358,6 +358,7 @@ export interface KillRunOptions {
  * 실행 관리가 run 을 강제로 끝냈다(시스템이 죽임): run 은 `killed`. 업무 전이는 기존 허용표 안에서 정한다.
  *  - time_limit: `timeout` 과 같다. 시도 1회를 소모하고 attempts < max_attempts 면 retry_wait, 아니면 failed
  *  - budget_exceeded: 재시도해도 같은 예산이라 소용이 없으므로 시도를 소모하지 않고 needs_review (사람이 예산·명세를 정한다)
+ *  - review_required: 재시도해도 같은 조건이라 시도를 소모하지 않고 needs_review (사람이 조건을 풀고 다시 큐에 넣는다)
  * 어느 쪽이든 재전송할 수 없는 unknown 부작용(미지원·창 닫힘)이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
  */
 export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOptions): RunEnd {
@@ -367,7 +368,7 @@ export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOpti
   return db.writeTx((tx) => {
     const now = clock.nowIso();
     assertLeaseHeld(tx, lease, now, 'kill');
-    const reason = `run ${lease.runId} killed: budget_exceeded: ${options.detail}`.slice(0, 500);
+    const reason = `run ${lease.runId} killed: ${options.reason}: ${options.detail}`.slice(0, 500);
     const blocked = settleRunEffects(tx, lease.runId, now);
     closeRun(tx, lease.runId, blocked ? 'effect_unknown' : 'killed', now);
     transitionTask(tx, {

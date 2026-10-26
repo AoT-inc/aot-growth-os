@@ -47,7 +47,7 @@
 | `no_structured_output`, `invalid_structured_output`, `incomplete`, `cli_failed`, `agent_error` | 결과 형식·그 밖의 오류 | 아니오 |
 | `start_rejected`, `start_failed` | 시작 전 거부(run_id·도구 이름·비밀로 보이는 입력·긴 프롬프트) 또는 준비 실패 | 아니오 |
 
-**검토 대상 코드를 업무 상태 `needs_review`로 옮기는 일은 아직 연결되어 있지 않다.** 지금은 다른 어댑터 오류처럼 `failed`(재시도 대상)로 흐른다. 연결 방식은 [열린 결정](#5-열린-결정)이다.
+**검토 대상 코드는 업무 상태 `needs_review`로 간다.** 데몬 실행기가 이 5개 코드를 `RunKilledError('review_required')`로 올리면 워커가 run을 `killed`로 닫고 업무를 `running → needs_review`로 옮긴다(시도를 소모하지 않는다 — 재시도해도 같은 조건이다). 사람이 로그인·한도·동의를 푼 뒤 업무를 다시 큐에 넣는다. 한도 리셋 후 자동 재큐는 없다(한도 문구 확정 후 후속). 그 밖의 코드는 이전처럼 `failed`(재시도 대상)로 흐른다. 시험: `test/integration/daemon-review-codes.test.ts`.
 
 ## 4. 사용자 PC 재시험·관찰 절차 (CC5와 CC3 확정 항목)
 
@@ -56,6 +56,7 @@
 1. **격리 회귀 시험(CC4 B층).** `AOT_CLAUDE_BIN=<claude 절대 경로> node --test test/integration/claude-code-isolation.test.ts`. 작은 프롬프트로 구독 사용량을 조금 쓴다. 통과 기준: `submitted`, init 요약에 Bash·Write·WebFetch 없음, `skills=0`.
 2. **데몬 전용 OS 계정에서 재시험.** 개발 PC의 개인 계정이 아니라 데몬이 쓸 계정으로 `claude auth login` 후 1번을 다시 한다. 확인할 것: `HOME`·`USER`·`LOGNAME`·`PATH` 만 넘겨도 로그인이 읽히는가(macOS 키체인), `runRoot` 권한(0700), 동시 실행 수 제한.
 3. **한도 도달 문구 확정.** 사용량 한도에 실제로 닿은 한 건을 `keepRunDir`·run_log로 관찰한다(일부러 소진하지 않는다). 기록할 것: `result` 문구, `terminal_reason`, `api_error_status`, 직전 `rate_limit_event` 의 `status`·`utilization` 척도(0~1인지 0~100인지). 그 값으로 `test/support/claude-stream.ts` 의 UNVERIFIED 고정 JSON과 `DEFAULT_LIMIT_PATTERNS` 를 확정한다.
+   **관찰 기록 (2026-10-26, 개발 PC, `claude` 2.1.263, `haiku`, 한도 도달 아님).** 격리 회귀 B층 통과(A층 5건 + B층 1건, 약 4초에 `submitted`, init 격리 검사 통과). 정상 실행 중 `rate_limit_event`: `status=allowed`, `rateLimitType=five_hour`, `unifiedWindows` 에 `five_hour`·`seven_day` 가 각각 `utilization`·`resetsAt`(에포크 초)을 가짐(사람 우선 게이트의 창별 리셋 시각 근거). 사용률은 5시간 창 0.22, 주간 0.03 — 0.22 가 22% 인지 0.22% 인지 한 값으로는 구분되지 않아 **척도(0~1 / 0~100)는 미확정**이다(어댑터는 1을 넘으면 퍼센트로 본다; 사용률이 높을 때 한 번 더 관찰). `overageStatus=rejected`, `overageDisabledReason=org_level_disabled`, `isUsingOverage=false` — 이 계정은 추가 사용량이 꺼져 있어 한도에 닿으면 이어 쓰기가 아니라 멈출 수 있다. 데몬 전용 OS 계정 재시험과 한도 도달 문구는 아직이다.
 4. **버전 변경 시.** `claude` 를 올리면 1번을 다시 한다. 특히 `--bare` 가 `-p` 의 기본이 되면 호출 모양이 구독 로그인을 못 읽을 수 있다([스파이크 §5](../spikes/q4-claude-code-cli.md)). 어댑터는 run마다 `claude --version` 을 run_log에 남긴다.
 5. **본인 기록.** 약관 준수는 사용자 책임이다(가드레일 4). 제한 통보를 받으면 구독 방식을 중단하고 API 키 + `--bare` 로 전환한다([ADR-0005](../adr/0005-agent-adapter-boundary.md)).
 
@@ -63,7 +64,7 @@
 
 | 항목 | 현재 |
 |---|---|
-| 검토 대상 코드 → `needs_review` | 어댑터는 `error.code` 로만 알린다. 실행기(`apps/daemon/src/agent-executor.ts`)는 `failed` 를 `Error` 로 던지고 워커가 재시도/실패로 닫는다. `running → needs_review` 전이는 허용표에 이미 있다(예산 초과 kill이 쓴다). 새 오류 종류와 워커 경로를 더할지 사용자 결정 |
+| 검토 대상 코드 → `needs_review` | **연결됨(2026-10-26).** 실행기(`apps/daemon/src/agent-executor.ts`)가 5개 코드를 `RunKilledError('review_required')`로 올려 `running → needs_review`(시도 소모 없음). 남은 후속: 한도 리셋 후 자동 재큐(문구 확정 뒤), `usage_deferred`는 아직 `failed`(재시도)로 흘러 시도를 소모한다 |
 | 비용 기록 | 어댑터는 `cost.tokens` 만 낸다(입력+출력+캐시 토큰 합). 정가 환산 추정치(`total_cost_usd`)는 구독 소진량이 아니라 run_log에만 둔다 — `usd` 로 내면 업무 USD 예산 초과로 kill될 수 있고 `cost_entry` 스키마에 `subscription_estimate` 단위가 없다. 별도 단위·열이 필요한지 사용자 결정(스키마 변경) |
 | `--max-budget-usd`, 턴 한도 | 턴 한도는 `assistant` 메시지 계수(기본 40), `--max-budget-usd` 는 기본 꺼짐. 시범 운영의 `total_cost_usd`·`utilization` 측정 후 정한다 |
 | 요금제 | Pro → Max 5x → API 전환 기준은 시범 운영 측정 후 |

@@ -2,11 +2,12 @@
 // agent-runtime 은 task-engine·evaluation 을 모르므로(경계 lint) 여기서 domain 포트(AgentRunHost)를 구현해 만난다:
 //   비용 → evaluation 의 reportCostProgress(차액만 cost_entry 에 더하고 업무 전체 예산 초과를 판정), 증거·run_log 위치 → task-engine 의 RunContext.recordOutput(lease 펜싱).
 // 결과 매핑: submitted → {result} (워커가 submitted → validating), killed → RunKilledError (워커가 run 을 killed 로, 업무는 허용표 안에서 전이),
-//            failed → Error (워커가 error 로 닫고 재시도/실패), cancelled(lease 상실) → Error (워커는 abort 를 보고 lease_lost 로 처리).
+//            failed → Error (워커가 error 로 닫고 재시도/실패), 단 사람이 풀어야 하는 오류 코드(isClaudeCodeReviewCode: 로그인 만료·사용량 한도 등)는
+//            RunKilledError('review_required') (run killed, 업무 running → needs_review, 시도 소모 없음), cancelled(lease 상실) → Error (워커는 abort 를 보고 lease_lost 로 처리).
 import type { AgentCostSource, AgentCostTotals, AgentRunHost, Clock, Db, ToolCallPolicy } from '@aot/domain';
 import { reportCostProgress } from '@aot/evaluation';
 import {
-  createToolGateway, toolCallConstraintsOf, runAgentTask,
+  createToolGateway, isClaudeCodeReviewCode, toolCallConstraintsOf, runAgentTask,
   type AdapterInput, type AgentAdapter, type GatewayTimers, type GatewayToolSpec, type JsonObject, type RunLogStore, type ToolCallRecorder, type ToolExecutor,
 } from '@aot/agent-runtime';
 import { subjectOf } from '@aot/policy';
@@ -141,6 +142,8 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         case 'killed':
           throw new RunKilledError(end.reason, end.detail);
         case 'failed':
+          // 재시도해도 같은 조건(로그인 없음·한도 도달 등)이라 시도를 소모하지 않고 사람의 검토로 보낸다. 한도 리셋 후 자동 재큐는 하지 않는다(문구 미확정)
+          if (isClaudeCodeReviewCode(end.code)) throw new RunKilledError('review_required', `${end.code}: ${end.message}`);
           throw new Error(`${end.code}: ${end.message}`);
         case 'cancelled':
           throw new Error(`run cancelled: ${end.detail}`);

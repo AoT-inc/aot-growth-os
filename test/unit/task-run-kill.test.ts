@@ -48,6 +48,19 @@ test('time_limit kill: run killed, the attempt is used up, retry_wait; the last 
   assert.match(lastTransition(db, taskId).reason, /killed: time_limit: time limit 30m exceeded \(attempts exhausted\)/);
 });
 
+test('review_required kill: run killed and the task goes to needs_review without using an attempt (a retry would hit the same login/limit condition)', (t) => {
+  const { db, clock, claim } = setup(t);
+  const taskId = queuedTask(db, clock, {}, 'task-review');
+  const lease = claim(taskId);
+  const end = killRun(db, clock, lease, { reason: 'review_required', detail: 'usage_limit: the usage limit was reached', retryDelayMs: 1000 });
+  assert.deepEqual(end, { outcome: 'killed', taskStatus: 'needs_review' });
+  assert.equal(taskStatus(db, taskId), 'needs_review');
+  assert.equal(attemptsOf(db, taskId), 0);
+  const last = lastTransition(db, taskId);
+  assert.equal(last.caused_by, 'system:scheduler');
+  assert.match(last.reason, /killed: review_required: usage_limit: the usage limit was reached/);
+});
+
 test('budget kill: run killed and the task goes to needs_review without using an attempt (a retry would hit the same budget)', (t) => {
   const { db, clock, claim } = setup(t);
   const taskId = queuedTask(db, clock, {}, 'task-budget');

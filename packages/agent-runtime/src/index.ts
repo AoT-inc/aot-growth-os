@@ -62,6 +62,9 @@ export * from './phone/index.ts';
 export { serveGatewaySocket, type GatewaySocket } from './claude-code/gateway-socket.ts';
 export { CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, type ClaudeCodeCliOptions, type ClaudeCodeConsent } from './claude-code/adapter.ts';
 export { CLAUDE_CODE_NOTICE, type ClaudeCodeNotice } from './claude-code/consent.ts';
+export { createClaudeCodeGate, type ClaudeCodeGate, type ClaudeCodeGateOptions } from './claude-code/gate.ts';
+export { CLAUDE_CODE_VERIFIER_NAME, createClaudeCodeVerifier, type ClaudeCodeVerifierOptions } from './claude-code/verifier.ts';
+export { aggregateVerdict, buildVerifierArgs, buildVerifierPrompt, VERIFIER_INSTRUCTIONS, VERIFIER_PROMPT_VERSION, verifierJsonSchema } from './claude-code/verifier-prompt.ts';
 export {
   BUILTIN_TOOLS as CLAUDE_CODE_BUILTIN_TOOLS, buildBridgeTools, buildClaudeArgs, buildClaudeEnv, buildMcpConfig, buildPrompt, CLAUDE_ENV_NAMES, FORBIDDEN_CLAUDE_FLAGS, GATEWAY_SERVER_NAME,
   buildWorkdirFiles, mcpToolName, TASK_INSTRUCTIONS, upstreamFileOf, type BridgeTool, type ClaudeArgsInput, type ClaudeEnvInput,

@@ -17,6 +17,7 @@ import { buildAgentRuntime } from '../../apps/daemon/src/runtime-config.ts';
 import { manualTimers, taskStatus } from '../support/engine.ts';
 import { evaluationsOf, validationSpec } from '../support/evaluation.ts';
 import { AGENT, createWithGate, policyEnv, readOnlyDraft, type PolicyEnv } from '../support/policy.ts';
+import { writeFakeVerifierClaude, type FakeVerifierScenario } from '../support/fake-claude-verifier.ts';
 import { GIT, makeRepo, writeStubGitleaks, type RepoFiles } from '../support/registration-tools.ts';
 import { makeTempDir } from '../support/temp.ts';
 
@@ -85,9 +86,12 @@ function scriptedAgent(calls: CallRecord[]): AgentAdapter {
   };
 }
 
-interface Setup { env: PolicyEnv; root: string; evidenceDir: string; calls: CallRecord[]; llm: ScriptedLlm; daemon: ReturnType<typeof assembleDaemon>; productId: string }
+interface Setup { env: PolicyEnv; root: string; evidenceDir: string; calls: CallRecord[]; llm: ScriptedLlm; daemon: ReturnType<typeof assembleDaemon>; productId: string; verifierRecordPath: string | null }
 
-function setup(t: TestContext, options: { accessScope?: string; status?: string; scenario?: Parameters<typeof writeStubGitleaks>[1] } = {}): Setup {
+const CONSENT = { notice_version: 'notice-1', accepted_at: '2026-10-26T00:00:00.000Z' };
+
+/** `verifier` 를 주면 검증기는 설정의 `llm_verifier: claude_code_cli` 로 만든다(가짜 claude 실행 파일). 안 주면 시험용 `ScriptedLlm` 을 끼운다 */
+function setup(t: TestContext, options: { accessScope?: string; status?: string; scenario?: Parameters<typeof writeStubGitleaks>[1]; verifier?: FakeVerifierScenario } = {}): Setup {
   const env = policyEnv(t);
   const root = makeRepo(t, FILES);
   const dir = makeTempDir(t, 'aot-reg-');
@@ -101,13 +105,18 @@ function setup(t: TestContext, options: { accessScope?: string; status?: string;
     );
     tx.run('INSERT INTO product_repo (id, product_id, name, local_path, access_scope) VALUES (?, ?, ?, ?, ?)', ['repo-1', productId, 'main', root, options.accessScope ?? 'read']);
   });
+  const fakeVerifier = options.verifier === undefined ? null : writeFakeVerifierClaude(dir, options.verifier);
   const built = buildAgentRuntime(
     {
-      claude_code_cli: { claude_path: '/opt/example/bin/claude', run_root: join(dir, 'r'), env: { home: dir, user: 'example-daemon', path: '/usr/bin:/bin' } },
+      claude_code_cli: {
+        claude_path: fakeVerifier?.path ?? '/opt/example/bin/claude', run_root: join(dir, 'r'),
+        env: { home: dir, user: 'example-daemon', path: `${process.execPath.replace(/\/node$/, '')}:/usr/bin:/bin` }, model: 'executor-alias',
+      },
       registration_tools: { git_path: GIT, gitleaks_path: scanner.path, gitleaks_config: GITLEAKS_CONFIG, evidence_dir: evidenceDir },
+      ...(fakeVerifier === null ? {} : { llm_verifier: { kind: 'claude_code_cli' as const, model: 'verifier-alias' } }),
     },
     dir,
-    { db: env.db, clock: env.clock, claudeCodeConsent: () => null },
+    { db: env.db, clock: env.clock, claudeCodeConsent: () => (fakeVerifier === null ? null : CONSENT) },
   );
   assert.ok(built.agent && built.evaluation?.evidenceReader, 'the registration tools and the evidence reader are wired from the settings');
   const calls: CallRecord[] = [];
@@ -116,9 +125,9 @@ function setup(t: TestContext, options: { accessScope?: string; status?: string;
     db: env.db, clock: env.clock, workerId: 'w1', actorId: AGENT, timers: manualTimers(), retryDelayMs: 10_000,
     paths: { policyStoreDir: join(env.dir, 'policies'), totpDir: join(env.dir, 'totp'), approvalSocket: join(env.dir, 'run', 'approval.sock') },
     agent: { ...built.agent, adapter: scriptedAgent(calls) },
-    evaluation: { ...built.evaluation, llm },
+    evaluation: fakeVerifier === null ? { ...built.evaluation, llm } : built.evaluation,
   });
-  return { env, root, evidenceDir, calls, llm, daemon, productId };
+  return { env, root, evidenceDir, calls, llm, daemon, productId, verifierRecordPath: fakeVerifier?.recordPath ?? null };
 }
 
 const registrationDraft = (target = 'repo:example-product', n = 1) => readOnlyDraft({
@@ -206,4 +215,51 @@ test('the task must point at exactly one repository; the agent never supplies a 
     assert.notEqual(taskStatus(env.db, taskId), 'validating');
   }
   assert.equal(registrationToolName(REPO_READ_TOOL, 'read_file'), 'repo_read_read_file');
+});
+
+// ----- 구독 검증기(llm_verifier: claude_code_cli)로 끝까지: 가짜 claude 실행 파일이 도구 없는 별도 호출을 대신한다 -----
+
+test('claude_code_cli verifier from the settings: the evaluator passes stored evidence to it, its verdict decides, and its tokens go to the ledger', async (t) => {
+  const { env, verifierRecordPath, daemon } = setup(t, { verifier: { default: 'supported' } });
+  const taskId = createWithGate(env, registrationDraft());
+  await daemon.worker.tick();
+  const checked = await daemon.worker.tick();
+  assert.deepEqual(checked.validated.map((v) => v.taskStatus), ['needs_review']);
+  assert.equal(evaluationsOf(env.db, taskId)[0]?.outcome, 'pass');
+  const note = String(env.db.get('SELECT quality_note FROM evaluation WHERE task_id = ?', [taskId])?.['quality_note']);
+  assert.match(note, /claude-code-cli-verifier@v1:verifier-alias: supported/);
+  assert.match(note, /\[verifier tokens: 15, \d+% of the run's 100\]/);
+  const ledger = env.db.all<{ units: string; amount_usd: number }>('SELECT units, amount_usd FROM cost_entry WHERE task_id = ?', [taskId]).map((row) => ({ units: JSON.parse(row.units) as Record<string, unknown>, usd: Number(row.amount_usd) }));
+  assert.deepEqual(ledger.filter((entry) => entry.units['source'] === 'validation').map((entry) => [entry.units['tokens'], entry.usd]), [[15, 0]]);
+  // 검증기 호출 모양: 도구 없음, 프롬프트(저장된 README 본문 포함)는 stdin
+  const record = JSON.parse(readFileSync(verifierRecordPath!, 'utf8')) as { args: string[]; stdin: string };
+  assert.equal(record.args[record.args.indexOf('--tools') + 1], '');
+  assert.equal(record.args[record.args.indexOf('--model') + 1], 'verifier-alias');
+  assert.match(record.stdin, /A small command line tool/);
+});
+
+test('claude_code_cli verifier: an unsupported claim fails the evaluation (the run goes back for retry)', async (t) => {
+  const { env, daemon } = setup(t, { verifier: { default: 'unsupported' } });
+  const taskId = createWithGate(env, registrationDraft());
+  await daemon.worker.tick();
+  const checked = await daemon.worker.tick();
+  assert.deepEqual(checked.validated.map((v) => v.taskStatus), ['retry_wait']);
+  assert.equal(evaluationsOf(env.db, taskId)[0]?.outcome, 'fail');
+});
+
+test('claude_code_cli verifier hitting the usage limit: the task stays validating without an evaluation, and later ticks do not start the CLI again', async (t) => {
+  const { env, verifierRecordPath, daemon } = setup(t, { verifier: { limit: true } });
+  const taskId = createWithGate(env, registrationDraft());
+  await daemon.worker.tick();
+  const first = await daemon.worker.tick();
+  assert.equal(first.validated.length, 0);
+  assert.equal(first.validationFailed.length, 1);
+  assert.match(first.validationFailed[0]!.error, /^usage_limit:/);
+  assert.equal(taskStatus(env.db, taskId), 'validating');
+  assert.equal(evaluationsOf(env.db, taskId).length, 0);
+  const before = readFileSync(verifierRecordPath!, 'utf8');
+  const again = await daemon.worker.tick();
+  assert.match(again.validationFailed[0]!.error, /not retried before/);
+  assert.equal(readFileSync(verifierRecordPath!, 'utf8'), before, 'the CLI was not started again');
+  assert.equal(env.db.get('SELECT COUNT(*) AS n FROM task_run WHERE task_id = ?', [taskId])?.['n'], 1, 'no new attempt was consumed');
 });

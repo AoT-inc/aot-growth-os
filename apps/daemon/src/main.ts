@@ -10,7 +10,7 @@
 // 구독 CLI(ADR-0005 Amendment 2026-10-26): `claude_code_cli` 설정이 있으면 `claude-code-cli` 어댑터를 연결한다(컨테이너 없이 단독이면 기본 어댑터, 컨테이너와 함께면 `roles` 의 역할만).
 // 첫 실행 고지 동의는 설정이 아니라 승인 CLI `consent show|accept|revoke` 로 받은 기록(event)이며 어댑터가 run 마다 읽는다(apps/daemon/src/consent.ts). 동의가 없으면 업무는 needs_review.
 // 팩(A6 U10): `pack_dir` 설정이 있으면 팩을 읽어 루틴을 `enabled=0` 으로 DB 에 반영하고 템플릿 포트를 워커에 연결한다(`pack_values` 로 {{자리표시자}} 치환). 설정이 없으면 기존 동작.
-// LLM 검증기(A6-U12): `llm_verifier: {kind: "stub"}` 설정이 있으면 모델 호출 없는 가짜 검증기를 연결한다(실제 모델은 Q22 후속, 다른 kind 는 거부). 없으면 연결하지 않는다.
+// LLM 검증기(A6-U12): `llm_verifier: {kind: "stub"}` 는 모델 호출 없는 가짜 검증기를, `{kind: "claude_code_cli", model}` 는 구독 CLI 를 도구 없이 불러 판정하는 검증기를 연결한다(Q22). 없으면 연결하지 않는다.
 // 측정 값(A6-U13): 팩에 측정 신호 정의가 있으면 승인 소켓에 `measure`·`measurements` 명령이 생기고(사람만, 같은 인증 경계), 평가 포트가 있으면 측정 값 조회기가 연결된다.
 // 주간 사이클 4·5단계(A6-U14): `experiment_cycle` 설정이 있으면 worker tick 뒤마다 `cycle.advance()` 로 완료된 기획 업무의 후보를 비교해 strategy_version 을
 // `proposed` 로 만든다(추천이 없으면 사람 검토 목록). 같은 advance 가 사람이 승인한 실험(6단계, A6-U15)을 한 번만 켠다(루틴 enabled=1, 일회성 업무 생성).
@@ -28,6 +28,7 @@ import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolli
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
 import { readClaudeCodeConsent } from './consent.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
+import { createRepeatFilter } from './log-throttle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
 import { startPhoneWebhookServer } from './phone-webhook-server.ts';
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
     : null;
   if (webhookServer !== null) console.log(`phone webhook listening on port ${webhookServer.port} (${phone!.webhook!.host}${phone!.webhook!.path}; terminate TLS in front of it)`);
 
+  const validationLog = createRepeatFilter(() => Date.now());
   const stop = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stop.abort());
   console.log(`aot-daemon ${config.worker_id}: started (migrations applied: ${applied.length}, lease ${worker.params.leaseMs}ms, heartbeat ${worker.params.heartbeatMs}ms, approval channel ready)`);
@@ -127,8 +129,14 @@ async function main(): Promise<void> {
     onTick: (report) => {
       for (const r of report.recovered) console.log(`recovered ${r.taskId}: run ${r.runId} ${r.outcome} -> ${r.taskStatus}`);
       for (const id of report.sentToReview) console.log(`needs_review ${id}: refused by the policy gate before running`);
-      for (const v of report.validated) console.log(`validated ${v.taskId}: evaluation ${v.evaluationId} -> ${v.taskStatus}`);
-      for (const f of report.validationFailed) console.error(`validation failed ${f.taskId}: ${f.error}`);
+      for (const v of report.validated) {
+        validationLog.clear(v.taskId);
+        console.log(`validated ${v.taskId}: evaluation ${v.evaluationId} -> ${v.taskStatus}`);
+      }
+      // 검증기를 쓸 수 없는 업무(구독 한도·로그인·미룸)는 풀릴 때까지 매 tick 같은 오류를 낸다: 같은 문구는 30분에 한 번만 찍는다
+      for (const f of report.validationFailed) {
+        if (validationLog.shouldLog(f.taskId, f.error)) console.error(`validation failed ${f.taskId}: ${f.error} (the task stays validating and is retried; the same message is logged again after 30 min)`);
+      }
       if (report.executed) console.log(`executed ${report.executed.taskId} attempt ${report.executed.attempt}: ${JSON.stringify(report.executed.end)}`);
     },
     ...(experimentCycle === null && phoneRuntime === null ? {} : {

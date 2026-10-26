@@ -112,14 +112,14 @@ describe('llm_verifier: the stub verifier is switched on by the settings; nothin
     assert.equal((await built.evaluation!.llm!.verify(input())).costUsd, 0.01);
   });
 
-  it('any other kind is refused (a real model is wired after Q22), as are unknown keys and bad values; so is a verifier without an evaluation port', () => {
+  it('any other kind is refused, as are unknown keys and bad values; so is a stub verifier without an evaluation port', () => {
     const bad: unknown[] = [{ kind: 'openai' }, { kind: 'model' }, { kind: 'STUB' }, {}, { kind: null }, { kind: 'stub', model: 'x' }, { kind: 'stub', cost_usd: -1 }, { kind: 'stub', cost_usd: '0.1' }, { kind: 'stub', cost_usd: Number.POSITIVE_INFINITY }, 'stub', ['stub'], 3];
     for (const llm_verifier of bad) {
       assert.throws(() => buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, llm_verifier } as AgentRuntimeConfig, DIR), /llm_verifier/, JSON.stringify(llm_verifier));
       assert.throws(() => parseLlmVerifierConfig(llm_verifier), /llm_verifier/);
     }
-    assert.throws(() => buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, llm_verifier: { kind: 'stub' } }, DIR), /llm_verifier needs research_agent/);
-    assert.throws(() => buildAgentRuntime({ llm_verifier: { kind: 'stub' } }, DIR), /llm_verifier needs research_agent/);
+    assert.throws(() => buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, llm_verifier: { kind: 'stub' } }, DIR), /llm_verifier \(kind "stub"\) needs research_agent/);
+    assert.throws(() => buildAgentRuntime({ llm_verifier: { kind: 'stub' } }, DIR), /llm_verifier \(kind "stub"\) needs research_agent/);
     assert.throws(() => buildAgentRuntime({ llm_verifier: { kind: 'openai' } as never }, DIR), /not supported/);
   });
 
@@ -129,6 +129,57 @@ describe('llm_verifier: the stub verifier is switched on by the settings; nothin
     const built = buildAgentRuntime({ container_agent: CONTAINER, research_agent: RESEARCH, llm_verifier: { kind: 'stub', cost_usd: 0.5 } }, DIR, { createLlmVerifier: (config) => { seen = config; return replacement; } });
     assert.deepEqual(seen, { kind: 'stub', cost_usd: 0.5 });
     assert.equal(built.evaluation?.llm, replacement);
+  });
+});
+
+describe('llm_verifier: kind claude_code_cli (the subscription verifier, Q22)', () => {
+  const VERIFIER = { kind: 'claude_code_cli' as const, model: 'verifier-alias' };
+  it('wires a verifier and a source-less evaluation port without research_agent (a local-evidence task needs no URL fetching)', async () => {
+    const built = buildAgentRuntime({ claude_code_cli: { ...CLAUDE, model: 'executor-alias' }, llm_verifier: VERIFIER }, DIR, CONSENT_SOURCE);
+    assert.match(built.evaluation?.llm?.id ?? '', /^claude-code-cli-verifier@v1:verifier-alias$/);
+    const fetched = await built.evaluation!.fetcher.fetch('https://docs.example.com/a');
+    assert.equal(fetched.reachable, false, 'no source URL is ever fetched');
+    assert.equal(built.agent?.adapter.name, 'claude-code-cli');
+  });
+
+  it('works next to container_agent too (the container adapter stays the default; the verifier still uses the subscription CLI)', () => {
+    const built = buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, claude_code_cli: { ...CLAUDE, roles: ['coder'] }, llm_verifier: VERIFIER }, DIR, CONSENT_SOURCE);
+    assert.equal(built.agent?.adapter.name, 'container-sandbox');
+    assert.ok(built.evaluation?.llm);
+  });
+
+  it('with research_agent the research source fetcher stays and the verifier is the subscription one', () => {
+    const built = buildAgentRuntime({
+      container_agent: CONTAINER, research_agent: { image: IMAGE, allowed_hosts: ['docs.example.com'] }, claude_code_cli: { ...CLAUDE, roles: ['coder'] }, llm_verifier: VERIFIER,
+    }, DIR, CONSENT_SOURCE);
+    assert.match(built.evaluation?.llm?.id ?? '', /claude-code-cli-verifier/);
+    assert.ok(built.evaluation?.fetcher);
+  });
+
+  it('needs claude_code_cli (same login, consent and usage gate) and a consent source', () => {
+    assert.throws(() => buildAgentRuntime({ llm_verifier: VERIFIER }, DIR), /needs claude_code_cli/);
+    assert.throws(() => buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, llm_verifier: VERIFIER }, DIR), /needs claude_code_cli/);
+    assert.throws(() => buildAgentRuntime({ claude_code_cli: CLAUDE, llm_verifier: VERIFIER }, DIR), /consent source/);
+  });
+
+  it('the model is required, and the same model as the executor is refused unless allow_same_model is set (Q22 b)', () => {
+    assert.throws(() => parseLlmVerifierConfig({ kind: 'claude_code_cli' }), /llm_verifier\.model is required/);
+    assert.throws(() => parseLlmVerifierConfig({ kind: 'claude_code_cli', model: '' }), /llm_verifier\.model/);
+    assert.throws(() => parseLlmVerifierConfig({ kind: 'claude_code_cli', model: 'bad model' }), /llm_verifier\.model/);
+    const sameModel = { claude_code_cli: { ...CLAUDE, model: 'haiku' }, llm_verifier: { kind: 'claude_code_cli' as const, model: 'haiku' } };
+    assert.throws(() => buildAgentRuntime(sameModel, DIR, CONSENT_SOURCE), /same as claude_code_cli\.model/);
+    assert.ok(buildAgentRuntime({ ...sameModel, llm_verifier: { ...sameModel.llm_verifier, allow_same_model: true } }, DIR, CONSENT_SOURCE).evaluation?.llm);
+    // 실행 모델이 CLI 기본값(설정 없음)이면 같은지 알 수 없으므로 거부하지 않는다
+    assert.ok(buildAgentRuntime({ claude_code_cli: CLAUDE, llm_verifier: { kind: 'claude_code_cli', model: 'haiku' } }, DIR, CONSENT_SOURCE).evaluation?.llm);
+  });
+
+  it('the shape check rejects unknown keys (no cost_usd here) and bad numbers', () => {
+    assert.deepEqual(parseLlmVerifierConfig({ ...VERIFIER, time_limit_ms: 60000, max_source_bytes: 1000, unavailable_backoff_ms: 0, max_turns: 3, allow_same_model: false }), { ...VERIFIER, time_limit_ms: 60000, max_source_bytes: 1000, unavailable_backoff_ms: 0, max_turns: 3, allow_same_model: false });
+    const bad: unknown[] = [
+      { ...VERIFIER, cost_usd: 0.1 }, { ...VERIFIER, token: 'x' }, { ...VERIFIER, time_limit_ms: 0 }, { ...VERIFIER, time_limit_ms: 1.5 }, { ...VERIFIER, max_source_bytes: -1 },
+      { ...VERIFIER, unavailable_backoff_ms: -1 }, { ...VERIFIER, model: '--help' }, { ...VERIFIER, time_limit_ms: 2 ** 31 }, { ...VERIFIER, max_turns: 0 }, { ...VERIFIER, allow_same_model: 'yes' },
+    ];
+    for (const value of bad) assert.throws(() => parseLlmVerifierConfig(value), /llm_verifier/, JSON.stringify(value));
   });
 });
 

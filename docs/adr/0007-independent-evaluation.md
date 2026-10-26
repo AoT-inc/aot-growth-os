@@ -57,3 +57,4 @@
 - 상품 등록 검증의 결정론적 검사 5개(`evidence_refs_resolvable`, `no_secret_in_outputs`·`read_only_calls_only`(안전성), `scan_coverage_complete`, `classification_present`)와 보고서 형식 `registration-report@1`, 스캔 요약 `secret_scan_summary@1`을 정했다. 상세는 [evaluation §9](../operations/evaluation.md).
 - `LlmVerifier`는 `VerifierUnavailableError`로 "지금은 못 한다"를 알릴 수 있다. 평가기는 이를 `unclear`로 바꾸지 않고 던져 업무를 `validating`에 둔다(다음 tick 재검증). 그 밖의 오류는 `unclear`다.
 - 검증 모델·비용 비율(Q22)의 결정(구독 `claude-code-cli` 별도 호출, 실행과 다른 모델 등급, 검증 토큰 ≤ 업무 토큰의 20%에서 시작, 섀도 파일럿 5건)은 [계획](../plans/registration-dogfood.md)에 있다.
+- 구독 검증기(2026-10-26): `LlmVerifier`의 첫 실제 구현은 `claude-code-cli`의 도구 없는 별도 호출이다([claude-code-cli §6](../operations/claude-code-cli.md)). 입력은 `IsolatedVerificationInput`뿐이고 실행과 다른 모델 별칭을 쓴다. 쓸 수 없는 상태(한도·로그인·미룸·자리 없음)는 `VerifierUnavailableError`(자체 조절로 안쪽 호출 없이), 그 밖의 실패는 `unclear`. 비용은 토큰(`LlmVerdict.tokens` → 검증 단계 `cost_entry`의 `units.tokens`)이며 비율 상한은 기록만 한다.

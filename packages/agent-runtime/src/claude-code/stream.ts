@@ -317,6 +317,8 @@ const LOGIN_PATTERNS: readonly RegExp[] = [
 export interface ClassifyOptions {
   limitPatterns?: readonly RegExp[];
   serverLimitPatterns?: readonly RegExp[];
+  /** 구조화 출력을 읽는 함수. 기본은 업무용 `{result, evidence}` (`parseStructuredOutput`). 검증기는 자기 모양을 읽는다 */
+  parseOutput?: (output: JsonObject) => { ok: true; result: JsonObject; evidence: ParsedEvidence[] } | { ok: false; message: string };
 }
 
 export type ClassifiedRun =
@@ -368,6 +370,9 @@ export function classifyRun(state: StreamState, exit: { code: number | null; sig
     // 결과 메시지가 없다: 옵션 오류·없는 MCP 파일은 JSON 없이 stderr 로만 나온다 (종료 코드 1). 재시도로 풀리지 않는 설정 오류다.
     const detail = stderr.trim().split('\n').find((line) => line.trim() !== '')?.trim() ?? '';
     if (state.retryStatuses.includes(401) || LOGIN_PATTERNS.some((p) => p.test(stderr))) return fail('login_required', `the CLI could not authenticate (${how})`);
+    // 한도 문구가 JSON 없이 stderr 로만 나올 수도 있다 (미확인): 영구 오류로 보지 않고 기다릴 상태로 분류한다
+    if (limitPatterns.some((p) => p.test(stderr))) return fail('usage_limit', `the subscription usage limit was reached (${how}): ${detail}`);
+    if (serverPatterns.some((p) => p.test(stderr))) return fail('server_limited', `the service is limiting requests (${how}): ${detail}`);
     return fail('cli_failed', `the CLI ended without a result message (${how})${detail === '' ? '' : `: ${detail}`}`);
   }
 
@@ -391,7 +396,7 @@ export function classifyRun(state: StreamState, exit: { code: number | null; sig
     return fail('permission_denied', `the agent tried tools it was not allowed to use (${r.permissionDenials.length} denied: ${names}); the result is not trusted`);
   }
   if (r.structuredOutput === null) return fail('no_structured_output', 'the CLI finished without a structured output');
-  const parsed = parseStructuredOutput(r.structuredOutput);
+  const parsed = (options.parseOutput ?? parseStructuredOutput)(r.structuredOutput);
   if (!parsed.ok) return fail('invalid_structured_output', parsed.message);
   return { ok: true, result: parsed.result, evidence: parsed.evidence, tokens, estimatedUsd };
 }

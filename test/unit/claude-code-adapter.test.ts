@@ -9,7 +9,7 @@ import { describe, it, type TestContext } from 'node:test';
 import { FakeClock } from '@aot/domain';
 import {
   CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, isClaudeCodeReviewCode, validateAdapterOutput,
-  type AdapterContext, type AdapterInput, type AdapterOutput, type ClaudeCodeCliOptions, type JsonObject, type ToolGatewayResponse,
+  type AdapterContext, type AdapterInput, type AdapterOutput, type ClaudeCodeCliOptions, type ClaudeCodeConsent, type JsonObject, type ToolGatewayResponse,
 } from '@aot/agent-runtime';
 
 import { contractInput, contractUpstream, CONTRACT_ALLOWED_TOOL, UPSTREAM_INJECTION } from '../support/adapter-contract.ts';
@@ -194,6 +194,18 @@ describe('claude-code-cli 어댑터: 시작 전 거부 (CLI 를 띄우지 않는
     assert.equal(h.docker.spawned.length, 0);
     assert.equal(h.docker.execs.length, 0);
     assert.equal(existsSync(h.runRoot), false);
+  });
+
+  it('consent 가 함수면 run 을 시작할 때마다 읽는다: 동의·철회가 다음 run 부터 적용된다', async (t) => {
+    let current: ClaudeCodeConsent | null = null;
+    const h = harness(t, { consent: () => current });
+    assert.equal(errorCode(await h.start().done), 'consent_required');
+    assert.equal(h.docker.spawned.length, 0, 'no consent: the CLI is not started');
+    current = CONSENT;
+    const output = (await h.runWith(successStream(), 0)).output;
+    assert.equal(output.status, 'submitted', JSON.stringify(output.error));
+    current = null;
+    assert.equal(errorCode(await h.start().done), 'consent_required');
   });
 
   it('동의 기록이 비어 있어도 거부한다', async (t) => {

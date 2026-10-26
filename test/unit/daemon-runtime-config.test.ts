@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import { RESEARCH_AGENT_NAME, type FetchUrlToolOptions, type SourceFetcherOptions } from '@aot/agent-runtime';
 import { buildIsolatedInput, STUB_LLM_VERIFIER_ID, type LlmVerifier } from '@aot/evaluation';
 
-import { buildAgentRuntime, deriveInstanceId, parseLlmVerifierConfig, type AgentRuntimeConfig } from '../../apps/daemon/src/runtime-config.ts';
+import { buildAgentRuntime, deriveInstanceId, parseClaudeCodeCliConfig, parseLlmVerifierConfig, type AgentRuntimeConfig, type ClaudeCodeCliConfig } from '../../apps/daemon/src/runtime-config.ts';
 import { REPO_ROOT } from '../support/schema-snapshot.ts';
 
 const IMAGE = `sha256:${'ab12'.repeat(16)}`;
@@ -145,6 +145,70 @@ describe('instance id', () => {
   });
 });
 
+const CLAUDE: ClaudeCodeCliConfig = { claude_path: '/opt/example/bin/claude', run_root: '/srv/example/r', env: { home: '/home/example-daemon', user: 'example-daemon', path: '/usr/bin:/bin' } };
+const CONSENT_SOURCE = { claudeCodeConsent: () => null };
+
+describe('claude_code_cli: the subscription CLI adapter from the settings', () => {
+  it('alone it is the default adapter, with no docker (nothing to check or clean up at start)', () => {
+    const built = buildAgentRuntime({ claude_code_cli: CLAUDE }, DIR, CONSENT_SOURCE);
+    assert.equal(built.agent?.adapter.name, 'claude-code-cli');
+    assert.equal(built.agent?.docker, undefined);
+    assert.equal(built.agent?.adapters, undefined);
+    assert.equal(built.agent?.selectAdapter, undefined);
+    assert.equal(built.evaluation, undefined);
+  });
+
+  it('with container_agent only the listed roles go to the subscription CLI; the container adapter stays the default', () => {
+    const built = buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, claude_code_cli: { ...CLAUDE, roles: ['coder'] } }, DIR, CONSENT_SOURCE);
+    assert.equal(built.agent?.adapter.name, 'container-sandbox');
+    assert.deepEqual([...(built.agent?.adapters?.keys() ?? [])], ['claude-code-cli']);
+    const select = built.agent!.selectAdapter!;
+    assert.equal(select({ role: 'coder' } as never), 'claude-code-cli');
+    assert.equal(select({ role: 'researcher' } as never), null);
+    assert.equal(select({} as never), null);
+    assert.ok(built.agent?.docker, 'the container adapter still gets docker checks');
+  });
+
+  it('with research_agent the research adapter stays the default and keeps its tools and evaluation port', () => {
+    const built = buildAgentRuntime({
+      container_agent: CONTAINER, research_agent: { image: IMAGE, allowed_hosts: ['docs.example.com'] }, claude_code_cli: { ...CLAUDE, roles: ['coder'] },
+    }, DIR, CONSENT_SOURCE);
+    assert.equal(built.agent?.adapter.name, RESEARCH_AGENT_NAME);
+    assert.deepEqual(built.agent?.tools?.map((tool) => tool.tool), ['fetch_url']);
+    assert.ok(built.evaluation?.fetcher);
+    assert.deepEqual([...(built.agent?.adapters?.keys() ?? [])], ['claude-code-cli']);
+  });
+
+  it('is off when null or missing; a configuration mistake is refused at start, not at the first run', () => {
+    assert.equal(buildAgentRuntime({ claude_code_cli: null }, DIR).agent, undefined);
+    assert.throws(() => buildAgentRuntime({ claude_code_cli: CLAUDE }, DIR), /consent source/);
+    assert.throws(() => buildAgentRuntime({ claude_code_cli: { ...CLAUDE, roles: ['coder'] } }, DIR, CONSENT_SOURCE), /only for use with container_agent/);
+    assert.throws(() => buildAgentRuntime({ container_agent: { ...CONTAINER, image: IMAGE }, claude_code_cli: CLAUDE }, DIR, CONSENT_SOURCE), /roles is required/);
+    assert.throws(() => buildAgentRuntime({ claude_code_cli: { ...CLAUDE, claude_path: 'claude' } }, DIR, CONSENT_SOURCE), /absolute path/);
+    assert.throws(() => buildAgentRuntime({ claude_code_cli: { ...CLAUDE, env: { ...CLAUDE.env, user: 'a b' } } }, DIR, CONSENT_SOURCE), /user/);
+  });
+
+  it('the settings reach the adapter; the shape check rejects unknown keys and bad values (no token or login key exists)', () => {
+    assert.deepEqual(parseClaudeCodeCliConfig(null), undefined);
+    assert.deepEqual(parseClaudeCodeCliConfig(CLAUDE), CLAUDE);
+    const full = { ...CLAUDE, max_turns: 20, max_budget_usd: 1.5, model: 'haiku', warn_utilization: 0.7, yield_utilization: { five_hour: 0.7, seven_day: 0.8 }, max_concurrent: 2 };
+    assert.deepEqual(parseClaudeCodeCliConfig(full), full);
+    const bad: [unknown, RegExp][] = [
+      ['claude', /must be an object/],
+      [{ ...CLAUDE, token: 'x' }, /unknown key\(s\): token/],
+      [{ ...CLAUDE, claude_path: '' }, /claude_path/],
+      [{ ...CLAUDE, env: { ...CLAUDE.env, extra: 'x' } }, /claude_code_cli\.env has unknown key/],
+      [{ ...CLAUDE, env: { home: '/h', user: 'u' } }, /env\.path/],
+      [{ ...CLAUDE, roles: [] }, /roles/],
+      [{ ...CLAUDE, max_turns: 1.5 }, /max_turns/],
+      [{ ...CLAUDE, max_turns: 0 }, /max_turns/],
+      [{ ...CLAUDE, yield_utilization: { hourly: 0.5 } }, /yield_utilization has unknown key/],
+      [{ ...CLAUDE, yield_utilization: { five_hour: 'high' } }, /yield_utilization\.five_hour/],
+    ];
+    for (const [value, message] of bad) assert.throws(() => parseClaudeCodeCliConfig(value), message, JSON.stringify(value));
+  });
+});
+
 describe('the example settings file', () => {
   it('parses, keeps the agent off by default, and holds no secret-looking value', () => {
     const text = readFileSync(join(REPO_ROOT, 'config', 'daemon.config.example.json'), 'utf8');
@@ -152,6 +216,7 @@ describe('the example settings file', () => {
     assert.equal(config.container_agent, null);
     assert.equal(config.research_agent, null);
     assert.equal(config.llm_verifier, null, 'no verifier by default');
+    assert.equal(config['claude_code_cli'], null, 'the subscription CLI is off by default');
     assert.equal(buildAgentRuntime(config, DIR).agent, undefined);
     assert.ok(!/(token|secret|password|api[_-]?key)\s*"\s*:/i.test(text.replace(/"_comment"[^\n]*/, '')), 'no credential-like key in the example settings');
   });

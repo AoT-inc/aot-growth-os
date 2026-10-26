@@ -9,17 +9,41 @@
 | 1 | 토큰·로그인 정보 비접촉 | CLI 자식의 환경은 `HOME USER LOGNAME PATH` 네 개뿐이다(`buildClaudeEnv`). `setup-token`·`CLAUDE_CODE_OAUTH_TOKEN`·API 키를 만들거나 넘기는 경로가 없다. 로그인은 사용자가 직접 `claude auth login` 으로 한다 |
 | 2 | 본인 PC·본인 구독·계정 공유/교대 금지 | 어댑터는 계정을 고르지 않는다(데몬 OS 계정의 로그인 하나). 동시 실행은 `maxConcurrent`(기본 1)로 제한한다 |
 | 3 | 호스팅 금지 | 코드로 강제할 수 없다. **운영자가 호스팅하는 서버에서 구독으로 실행하지 않는다** |
-| 4 | 첫 실행 고지 동의 | `consent` 옵션이 없으면 CLI를 띄우지 않고 `consent_required` 로 끝낸다. 동의를 받는 화면은 아직 없다([열린 결정](#5-열린-결정)) |
+| 4 | 첫 실행 고지 동의 | `consent` 가 없으면 CLI를 띄우지 않고 `consent_required` 로 끝낸다(→ 업무 `needs_review`). 동의는 승인 CLI `consent`로 받는다([§1.1](#11-고지-동의-받기)) |
 | 5 | API 키 + `--bare` 대안 어댑터 | 이 어댑터는 `--bare` 를 쓰지 않는다. 대안 어댑터는 별도 후속 작업이다(아직 없음) |
 
-## 2. 설정 (`createClaudeCodeCliAdapter`)
+### 1.1 고지 동의 받기
+
+동의는 데몬 설정 파일이 아니라 **승인 CLI**로 받아 DB(`event`, source=`consent`)에 남긴다. 설정 파일에 동의를 적으면 읽지 않은 채 복사될 수 있어서다. 어댑터는 run을 시작할 때마다 이 기록을 읽으므로 동의·철회가 데몬 재시작 없이 다음 run부터 적용된다.
+
+```bash
+node apps/daemon/src/approve.ts --actor <사람 actor> consent show                       # 고지 문구와 판, 현재 동의 상태
+node apps/daemon/src/approve.ts --actor <사람 actor> consent accept --version <판>      # show 가 보여 준 판을 직접 적는다
+node apps/daemon/src/approve.ts --actor <사람 actor> consent revoke                      # 철회: 이후 run 은 consent_required
+```
+
+- 사람 actor만 쓸 수 있다(에이전트는 소켓이 보이지 않고, 데몬도 `actor.kind='human'`을 확인한다). TOTP는 요구하지 않는다.
+- 동의는 **현재 고지 판**에만 유효하다. 고지 문구(`packages/agent-runtime/src/claude-code/consent.ts`)를 바꾸면 `version`도 바꾸고, 이전 판의 동의는 인정되지 않아 `consent_required`가 되므로 다시 `show`로 읽고 동의한다(`show`가 `stale: true`로 알려 준다).
+- 가장 나중 기록이 상태다. 같은 판에 다시 `accept`하거나 동의 없이 `revoke`하면 아무것도 쓰지 않는다(`applied: false`).
+
+## 2. 설정 (`claude_code_cli`)
+
+데몬은 `daemon.config.json`의 `claude_code_cli`가 있을 때만 어댑터를 연결한다(예시: `config/daemon.config.example.json`). `container_agent`가 없으면 모든 업무가 이 어댑터로 가고, 있으면 `roles`(필수)에 적은 역할의 업무만 이 어댑터로, 나머지는 컨테이너 어댑터로 간다. 로그인·토큰·동의는 설정에 없다.
+
+| 키 | 어댑터 옵션 |
+|---|---|
+| `claude_path`, `run_root`, `env` | `claudePath`, `runRoot`, `env` |
+| `roles` | (`container_agent`와 함께일 때만) 이 어댑터로 보낼 `task_spec.role` 목록 |
+| `max_turns`, `max_budget_usd`, `model`, `warn_utilization`, `yield_utilization`, `max_concurrent` | `maxTurns`, `maxBudgetUsd`, `model`, `warnUtilization`, `yieldUtilization`, `maxConcurrent` |
+
+### 2.1 어댑터 옵션 (`createClaudeCodeCliAdapter`)
 
 | 옵션 | 뜻 |
 |---|---|
 | `claudePath` | `claude` 실행 파일의 **절대 경로**. PATH 탐색 없음. 못 쓰면 `cli_unavailable` |
 | `runRoot` | run 별 디렉터리(`<runRoot>/<run_id>/{work/, gateway-mcp.json, tools.json, gw.sock}`)를 만드는 절대 경로. 유닉스 소켓 경로 한계 때문에 짧게(전체 100바이트 이하). 데몬 전용 OS 계정만 쓸 수 있어야 한다. run이 끝나면 지운다(`keepRunDir` 로 남길 수 있음) |
 | `env` | `{home, user, path}`: 구독 로그인이 있는 홈, OS 계정 이름(macOS는 `USER` 가 없으면 키체인 로그인을 못 읽는다), 최소 PATH |
-| `consent` | 가드레일 4의 동의 기록 `{notice_version, accepted_at}` 또는 `null` |
+| `consent` | 가드레일 4의 동의 기록 `{notice_version, accepted_at}` 또는 `null`, 또는 run마다 부르는 함수. 데몬은 `readClaudeCodeConsent(db)`를 넘긴다 |
 | `maxTurns` | 서로 다른 assistant 메시지 수 상한(기본 40). `claude` 2.1.263에 `--max-turns` 가 없어 직접 센다. 넘으면 CLI를 멈추고 `turn_limit_exceeded` |
 | `maxBudgetUsd` | `--max-budget-usd`(정가 환산 추정치 기준 상한). **기본 꺼짐**(열린 결정). 켜면 초과 시 `budget_exhausted` |
 | `maxConcurrent` | 동시 실행 수(기본 1) |
@@ -68,5 +92,5 @@
 | 비용 기록 | 어댑터는 `cost.tokens` 만 낸다(입력+출력+캐시 토큰 합). 정가 환산 추정치(`total_cost_usd`)는 구독 소진량이 아니라 run_log에만 둔다 — `usd` 로 내면 업무 USD 예산 초과로 kill될 수 있고 `cost_entry` 스키마에 `subscription_estimate` 단위가 없다. 별도 단위·열이 필요한지 사용자 결정(스키마 변경) |
 | `--max-budget-usd`, 턴 한도 | 턴 한도는 `assistant` 메시지 계수(기본 40), `--max-budget-usd` 는 기본 꺼짐. 시범 운영의 `total_cost_usd`·`utilization` 측정 후 정한다 |
 | 요금제 | Pro → Max 5x → API 전환 기준은 시범 운영 측정 후 |
-| 고지 동의를 받는 곳 | 어댑터는 기록을 요구할 뿐이다. 앱의 어느 화면·CLI에서 받고 어디에 저장할지 미정(데몬 설정에 `consent` 를 넣는 방식이 가장 단순) |
+| 고지 동의를 받는 곳 | **결정됨(2026-10-26).** 승인 CLI `consent show\|accept\|revoke` + DB 기록, 데몬 설정 `claude_code_cli`로 어댑터 연결([§1.1](#11-고지-동의-받기)). 동의 이력을 보는 화면은 없다(승인 CLI `consent show`가 현재 상태만 보여 준다) |
 | MCP 브리지 실행 | CLI가 `node packages/agent-runtime/src/claude-code/gateway-mcp-bridge.ts` 를 자식으로 띄운다(Node 24가 `.ts` 를 직접 실행). 데몬을 빌드해 배포하면 `bridgePath` 로 바꿔야 한다 |

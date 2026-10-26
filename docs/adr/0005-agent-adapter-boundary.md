@@ -61,4 +61,5 @@
 - 결과는 `--json-schema` 의 `{result, evidence[]}` 구조화 출력이다. 근거의 신뢰 출처는 어댑터가 `external_untrusted` 로 신고하고 호스트가 어차피 그렇게 기록한다(A5-U8).
 - 비용은 `cost.tokens` 만 낸다. 정가 환산 추정치는 run_log에만 둔다(USD로 내면 업무 USD 예산 초과 kill에 걸리고, `cost_entry` 에 `subscription_estimate` 단위가 없다). 단위·열을 둘지는 사용자 결정(스키마 변경).
 - 검토 대상 오류 코드(`login_required`·`usage_limit`·`server_limited`·`cli_unavailable`·`consent_required`)는 `AdapterOutput.error.code` 로만 알린다. 처음에는 `needs_review` 로 옮기는 경로를 만들지 않았고 `failed`(재시도)로 흘렀다. 2026-10-26 사용자 결정으로 연결했다: 데몬 실행기(`agent-executor.ts`)가 이 5개 코드를 `RunKilledError('review_required')` 로 올리면 워커가 run 을 `killed` 로 닫고 업무는 시도를 소모하지 않고 `running → needs_review` 가 된다(허용표 변경 없음). 한도 리셋 후 자동 재큐는 하지 않는다(한도 문구 확정 후 후속).
+- 고지 동의(가드레일 4)는 2026-10-26 사용자 결정으로 데몬 설정 + 승인 CLI로 받는다: 설정 `claude_code_cli`가 어댑터를 연결하고, 동의는 승인 소켓의 `consent show|accept|revoke`(사람만)가 `event`(source=`consent`)에 남기며 어댑터가 run마다 읽는다. 동의는 현재 고지 판에만 유효하다(문구를 바꾸면 판을 올려 다시 동의). 스키마 변경 없음. 운영: [claude-code-cli.md §1.1](../operations/claude-code-cli.md).
 - 사용량 한도 도달의 실제 문구는 미확인이다. 문구는 설정 목록이고 한 건 관찰 후 확정한다.

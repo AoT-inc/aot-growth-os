@@ -8,7 +8,7 @@ import { describe, it, type TestContext } from 'node:test';
 
 import { FakeClock } from '@aot/domain';
 import {
-  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, validateAdapterOutput,
+  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, isClaudeCodeReviewCode, validateAdapterOutput,
   type AdapterContext, type AdapterInput, type AdapterOutput, type ClaudeCodeCliOptions, type JsonObject, type ToolGatewayResponse,
 } from '@aot/agent-runtime';
 
@@ -561,5 +561,70 @@ describe('claude-code-cli 어댑터: 게이트웨이 소켓 (브리지가 연결
     p.emitClose(0);
     await done;
     assert.ok(!existsSync(socket));
+  });
+});
+
+describe('claude-code-cli 어댑터: 사람 우선 게이트 (yieldUtilization)', () => {
+  const START_MS = Date.parse('2026-10-26T01:00:00.000Z');
+  const resetsInSeconds = (afterMs: number): number => (START_MS + afterMs) / 1000;
+  const busy = (extra: { five_hour?: number; seven_day?: number; five_hour_resets?: number | null } = {}): JsonObject[] => [
+    initEvent(), rateLimitEvent({ five_hour: 0.92, five_hour_resets: resetsInSeconds(2 * 3600_000), ...extra }), assistantEvent('m1'), resultEvent(),
+  ];
+  const next = (id: string): AdapterInput => ({ ...contractInput(), run_id: id });
+
+  it('기본은 꺼져 있다: 사용률이 높아도 다음 run 을 시작한다', async (t) => {
+    const h = harness(t);
+    assert.equal((await h.runWith(busy())).output.status, 'submitted');
+    assert.equal((await h.runWith([initEvent(), resultEvent()], 0, next('run-2'))).output.status, 'submitted');
+  });
+
+  it('직전 run 이 임계값 이상을 봤고 창이 리셋 전이면 CLI 를 띄우지 않고 usage_deferred', async (t) => {
+    const h = harness(t, { yieldUtilization: { five_hour: 0.7 } });
+    assert.equal((await h.runWith(busy())).output.status, 'submitted');
+    const spawnedBefore = h.docker.spawned.length;
+    const output = await h.start(next('run-2')).done;
+    assert.equal(errorCode(output), 'usage_deferred');
+    assert.equal(isClaudeCodeReviewCode('usage_deferred'), false, 'deferral is a retry-later, not a review item');
+    assert.equal(h.docker.spawned.length, spawnedBefore, 'the claude process must not be started');
+    assert.match(output.error?.message ?? '', /five_hour.*92%.*threshold 70%/);
+    assert.ok(output.run_log.some((e) => e.message.includes('usage_deferred')));
+    assertValid(output);
+  });
+
+  it('창이 리셋된 뒤에는 다시 시작한다', async (t) => {
+    const clock = new FakeClock(START_MS);
+    const h = harness(t, { yieldUtilization: { five_hour: 0.7 }, clock });
+    await h.runWith(busy());
+    assert.equal(errorCode((await h.start(next('run-2')).done)), 'usage_deferred');
+    clock.advance(2 * 3600_000 + 1000);
+    const { output } = await h.runWith([initEvent(), rateLimitEvent({ five_hour: 0.1 }), resultEvent()], 0, next('run-3'));
+    assert.equal(output.status, 'submitted');
+  });
+
+  it('임계값 미만이면 시작한다. 임계값을 안 적은 창(seven_day)은 보지 않는다', async (t) => {
+    const h = harness(t, { yieldUtilization: { five_hour: 0.7 } });
+    await h.runWith([initEvent(), rateLimitEvent({ five_hour: 0.5, seven_day: 0.99, five_hour_resets: resetsInSeconds(3600_000) }), resultEvent()]);
+    assert.equal((await h.runWith([initEvent(), resultEvent()], 0, next('run-2'))).output.status, 'submitted');
+  });
+
+  it('주간 창에 따로 임계값을 둘 수 있다 (퍼센트 표기도 받는다)', async (t) => {
+    const h = harness(t, { yieldUtilization: { seven_day: 80 } });
+    await h.runWith([initEvent(), rateLimitEvent({ five_hour: 0.1, seven_day: 0.85, five_hour_resets: resetsInSeconds(3600_000) }), resultEvent()]);
+    const output = await h.start(next('run-2')).done;
+    assert.equal(errorCode(output), 'usage_deferred');
+    assert.match(output.error?.message ?? '', /seven_day/);
+  });
+
+  it('리셋 시각을 모르면 15분 뒤에 낡은 값으로 보고 다시 시작한다', async (t) => {
+    const clock = new FakeClock(START_MS);
+    const h = harness(t, { yieldUtilization: { five_hour: 0.7 }, clock });
+    await h.runWith([initEvent(), rateLimitEvent({ five_hour: 0.92, five_hour_resets: null }), resultEvent()]);
+    assert.equal(errorCode((await h.start(next('run-2')).done)), 'usage_deferred');
+    clock.advance(15 * 60_000 + 1);
+    assert.equal((await h.runWith([initEvent(), resultEvent()], 0, next('run-3'))).output.status, 'submitted');
+  });
+
+  it('잘못된 임계값은 만들 때 던진다', (t) => {
+    for (const bad of [0, -1, Number.NaN, 101]) assert.throws(() => harness(t, { yieldUtilization: { five_hour: bad } }), /yieldUtilization/);
   });
 });

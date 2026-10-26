@@ -68,6 +68,13 @@ export interface ClaudeCodeCliOptions {
   serverLimitPatterns?: readonly RegExp[];
   /** `rate_limit_event` 사용률이 이 값 이상이면 run_log 에 한도 접근 경고를 남긴다. 0~1 또는 0~100 어느 쪽으로 보고되든 같은 비교를 한다. 기본 0.8 */
   warnUtilization?: number;
+  /**
+   * 사람 우선 게이트: 직전 run 이 본 창별 사용률이 여기 적은 값 이상이면(그 창이 아직 리셋되지 않았을 때) 새 run 을 시작하지 않고
+   * `usage_deferred` 로 끝낸다(CLI 를 띄우지 않으므로 사용량을 쓰지 않는다). 구독 한도를 사람이 직접 쓰는 에이전트와 나눠 쓰기 때문이다.
+   * 창 이름은 `rate_limit_event.unifiedWindows` 의 키(`five_hour`, `seven_day`). 0~1 (1 을 넘으면 퍼센트). 기본 꺼짐.
+   * 사용률은 메모리에만 두므로 데몬을 다시 띄우면 첫 run 이 측정한다. 리셋 시각을 모르면 읽은 지 15분 뒤에 낡은 값으로 본다.
+   */
+  yieldUtilization?: Readonly<Record<string, number>>;
   /** 동시 실행 수 (가드레일 2). 기본 1 */
   maxConcurrent?: number;
   /** run 디렉터리를 끝난 뒤에도 남긴다(디버깅). 기본 false */
@@ -159,6 +166,9 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
   if (!(Number.isInteger(maxConcurrent) && maxConcurrent > 0)) throw new Error('maxConcurrent must be a positive integer');
   const slots = createSlots(maxConcurrent);
   let versionNote: string | null = null;
+  const yieldAt = normalizeYield(options.yieldUtilization);
+  /** 직전 run 이 마지막으로 본 창별 사용률 (사람 우선 게이트) */
+  let lastWindows: { seenAtMs: number; windows: Record<string, { utilization: number; resetsAtMs: number | null }> } | null = null;
 
   async function run(input: AdapterInput, context: AdapterContext): Promise<AdapterOutput> {
     const runLog: RunLogEntry[] = [];
@@ -204,6 +214,9 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
     }
 
     async function runWithSlot(): Promise<AdapterOutput> {
+      // ----- 사람 우선 게이트: 사용자가 쓸 구독 몫을 남긴다 (CLI 를 띄우기 전에 거절하므로 사용량을 쓰지 않는다) -----
+      const deferral = usageDeferral(yieldAt, lastWindows, clock.nowMs());
+      if (deferral !== null) return refuse('usage_deferred', deferral);
       // ----- CLI 확인 (버전 기록) -----
       if (versionNote === null) {
         const version = await port.exec(options.claudePath, ['--version'], { env, timeoutMs: options.versionTimeoutMs ?? 15_000 });
@@ -416,6 +429,11 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
         ...(options.serverLimitPatterns === undefined ? {} : { serverLimitPatterns: options.serverLimitPatterns }),
       });
       if (classified.estimatedUsd !== null) note(`estimated cost (subscription estimate at list prices, not a bill): ${classified.estimatedUsd} USD, ${String(classified.tokens)} tokens`);
+      if (state.rateLimit !== null) {
+        const windows: Record<string, { utilization: number; resetsAtMs: number | null }> = {};
+        for (const [name, value] of Object.entries(state.rateLimit.utilization)) windows[name] = { utilization: value, resetsAtMs: state.rateLimit.windowResetsMs[name] ?? null };
+        lastWindows = { seenAtMs: clock.nowMs(), windows };
+      }
       const utilization = state.maxUtilization;
       // 사용률은 0~1 또는 0~100 으로 보고될 수 있다(미확인): 1 을 넘으면 퍼센트로 본다
       if (utilization !== null && (utilization > 1 ? utilization / 100 : utilization) >= warnUtilization) {
@@ -435,4 +453,35 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
   }
 
   return { name: CLAUDE_CODE_ADAPTER_NAME, run };
+}
+
+const STALE_USAGE_MS = 15 * 60_000;
+
+function normalizeYield(value: Readonly<Record<string, number>> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [name, raw] of Object.entries(value ?? {})) {
+    if (!(Number.isFinite(raw) && raw > 0 && raw <= 100)) throw new Error(`yieldUtilization['${name}'] must be a number in (0, 100] (0~1, or a percentage when above 1)`);
+    out[name] = raw > 1 ? raw / 100 : raw;
+  }
+  return out;
+}
+
+/** 새 run 을 미뤄야 하면 이유 문구, 아니면 null. 이미 리셋된 창(또는 낡은 값)은 보지 않는다 */
+function usageDeferral(
+  yieldAt: Readonly<Record<string, number>>,
+  last: { seenAtMs: number; windows: Record<string, { utilization: number; resetsAtMs: number | null }> } | null,
+  nowMs: number,
+): string | null {
+  if (last === null) return null;
+  for (const [name, limit] of Object.entries(yieldAt)) {
+    const seen = last.windows[name];
+    if (seen === undefined) continue;
+    const utilization = seen.utilization > 1 ? seen.utilization / 100 : seen.utilization;
+    if (utilization < limit) continue;
+    const validUntil = seen.resetsAtMs ?? last.seenAtMs + STALE_USAGE_MS;
+    if (validUntil <= nowMs) continue;
+    const until = new Date(validUntil).toISOString();
+    return `the '${name}' subscription window was at ${Math.round(utilization * 100)}% (yield threshold ${Math.round(limit * 100)}%); this run is deferred to leave the rest for the person using the same subscription${seen.resetsAtMs === null ? ` (reading treated as stale after ${until})` : ` (window resets ${until})`}`;
+  }
+  return null;
 }

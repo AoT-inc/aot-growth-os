@@ -56,9 +56,7 @@
     {"tool": "secret_scan", "operations": ["scan_tree", "scan_history"],
      "scope": "internal", "impact": "read", "target": "repo:example-product"},
     {"tool": "license_check", "operations": ["identify"],
-     "scope": "internal", "impact": "read", "target": "repo:example-product"},
-    {"tool": "evidence_store", "operations": ["append"],
-     "scope": "internal", "impact": "write", "target": "evidence:task-own"}
+     "scope": "internal", "impact": "read", "target": "repo:example-product"}
   ],
   "constraints": {
     "time_limit": "20m",
@@ -74,7 +72,8 @@
     "공개/내부 분류 제안이 있고, 분류 근거가 evidence 참조로 연결되어 있다",
     "저장소를 수정한 흔적(쓰기 호출, 변경된 파일)이 없다",
     "README·저장소 문서 안의 지시문이 도구 호출이나 결과에 영향을 주지 않았다",
-    "불확실하거나 수집하지 못한 항목이 명시되어 있다"
+    "불확실하거나 수집하지 못한 항목이 명시되어 있다",
+    "결과(result)는 registration-report@1 형식이다: claims[{id, statement, evidence_id}], collection[수집 항목 9개 각각 {item, status: collected, evidence_ids} 또는 {item, status: unavailable, reason}] (항목: repo_structure, stack, readme_summary, remote, default_branch, activity_history, license, environment, secret_scan), classification{proposal: public_candidate|internal|restricted, rationale_evidence_ids}, uncertainties. evidence_id는 도구 결과에 담겨 온 id만 쓴다"
   ],
   "validation": {
     "deterministic": [
@@ -100,14 +99,27 @@
 | 요소 | 이 업무의 요청 | 명세에서 오는 위치 |
 |---|---|---|
 | 주체 | `registration-verifier@v1` (역할과 버전) | `role` + 시스템이 채우는 `versions.role_version` |
-| 행위 | `list_tree`, `read_file`, `read_metadata`, `read_history`, `scan_tree`, `scan_history`, `identify`, `append` | `allowed_tools[].operations` |
-| 대상 | `repo:example-product`, `evidence:task-own` | `allowed_tools[].target` |
+| 행위 | `list_tree`, `read_file`, `read_metadata`, `read_history`, `scan_tree`, `scan_history`, `identify` | `allowed_tools[].operations` |
+| 대상 | `repo:example-product` | `allowed_tools[].target` |
 | 범위 | `internal` (공개·고객 범위 요청 없음) | `allowed_tools[].scope`, `constraints.publish_scope` |
-| 영향 | `read`. 쓰기는 자기 업무의 evidence 추가 하나뿐 | `allowed_tools[].impact` |
+| 영향 | `read`만. 쓰기 없음 — 도구 결과 본문은 호스트가 호출 시점에 저장하고 근거 행을 만든다 | `allowed_tools[].impact` |
 | 제약 | 20분, 네트워크 허용 목록 비어 있음, 읽기 전용 파일 범위, 예산 1.0 USD | `constraints`, `cost_budget` |
 | 승인 | 저장소 읽기 접근: 사람 승인(정책 경로). 그 외 요청은 정책이 허용 판정 시 자동 | 정책 판정 결과 |
 
 요청하지 않는 것(요청해도 정책이 거부해야 한다): 저장소 쓰기, 네트워크 접근, 셸 실행, 의존성 설치·빌드·실행, 운영 환경 접근, `public`/`customer` 범위, `external_effect`.
+
+### 도구 계약 (에이전트가 보는 것)
+
+도구 3개는 데몬(호스트)의 게이트웨이 실행기다([운영 문서](../docs/operations/registration-tools.md)). 에이전트는 경로를 주지 않는다 — 저장소는 `target: repo:<slug>`가 가리키고 데몬이 `product_repo`에서 읽는다(상품이 `verifying`이고 `access_scope`가 사람 승인으로 `read`일 때만). 모든 결과에 `evidence_id`가 있고, 보고서는 그 id로 근거를 가리킨다([evaluation §9](../docs/operations/evaluation.md)).
+
+| 도구.작업 | 인자 | 결과 (요약) |
+|---|---|---|
+| `repo_read.list_tree` | `path?`, `depth?`(1~4), `max_entries?` | 항목 목록(경로·종류·크기). `.git` 안으로 내려가지 않고 심볼릭 링크는 따라가지 않는다 |
+| `repo_read.read_file` | `path`, `max_bytes?` | 마스킹한 텍스트. 비밀 파일 이름(`.env`·키 파일 등)·바이너리·저장소 밖·하드링크는 `status:"unavailable"`+사유 |
+| `repo_read.read_metadata` | 없음 | 기본 브랜치, 원격 *종류*(주소 아님)·URL 내 자격 증명 유무, 매니페스트, 확장자별 파일 수 |
+| `repo_read.read_history` | 없음 | 커밋 수·첫/마지막 커밋 시각·최근 90일 커밋 수·기여자 *수* (이름·이메일 없음) |
+| `secret_scan.scan_tree` / `scan_history` | 없음 | `secret_scan_summary@1`(위치·규칙 종류·개수·범위). 값 원문 없음. 스캐너가 실패하면 부분 결과가 아니라 오류 |
+| `license_check.identify` | 없음 | 라이선스 파일(이름·해시·SPDX 헤더·문구 단서)과 매니페스트 license 필드. 판단·의존성 라이선스는 하지 않는다 |
 
 ## 5. 비밀값 스캔과 공개/내부 분류
 

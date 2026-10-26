@@ -170,3 +170,31 @@ describe('fake adapter through the gateway (end to end)', () => {
     ]);
   });
 });
+
+describe('agent-facing tool names (one tool, several operations)', () => {
+  const spec = (operation: string, name?: string) => ({ tool: 'repo_read', ...(name === undefined ? {} : { name }), operation, scope: 'internal' as const, impact: 'read' as const, sideEffect: false });
+  const build = (specs: ReturnType<typeof spec>[], seen: { tool: string; operation: string }[] = []) => createToolGateway(baseOptions({
+    tools: specs,
+    executors: new Map([['repo_read', ((request) => { seen.push({ tool: request.tool, operation: request.operation }); return Promise.resolve({ result: request.operation }); }) as ToolExecutor]]),
+    policy: { judge: (request) => { seen.push({ tool: `policy:${request.tool}`, operation: request.operation }); return { decision: 'allow' }; } },
+  }));
+
+  it('calls by name, runs the shared executor with tool and operation, and judges the policy action by tool and operation', async () => {
+    const seen: { tool: string; operation: string }[] = [];
+    const gateway = build([spec('list_tree', 'repo_read_list_tree'), spec('read_file', 'repo_read_read_file')], seen);
+    assert.deepEqual(await gateway.call('repo_read_read_file', {}), { ok: true, result: 'read_file' });
+    assert.deepEqual(await gateway.call('repo_read_list_tree', {}), { ok: true, result: 'list_tree' });
+    assert.deepEqual(seen, [
+      { tool: 'policy:repo_read', operation: 'read_file' }, { tool: 'repo_read', operation: 'read_file' },
+      { tool: 'policy:repo_read', operation: 'list_tree' }, { tool: 'repo_read', operation: 'list_tree' },
+    ]);
+    // 이름이 있으면 tool 이름으로는 부를 수 없다
+    assert.deepEqual(await gateway.call('repo_read', {}), { ok: false, error: 'tool_not_allowed' });
+  });
+
+  it('rejects a duplicate agent-facing name and a blank name', () => {
+    assert.throws(() => build([spec('list_tree', 'same'), spec('read_file', 'same')]), /listed twice/);
+    assert.throws(() => build([spec('list_tree'), spec('read_file')]), /listed twice/);
+    assert.throws(() => build([spec('list_tree', '  ')]), /name must not be blank/);
+  });
+});

@@ -36,7 +36,8 @@ export interface ProcessPort {
   /** `cwd` 를 주면 그 디렉터리에서 시작한다(claude-code-cli 어댑터). `env` 는 부모 환경을 잇지 않고 이것만 자식에게 간다 */
   spawn(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; cwd?: string }): SpawnedProcess;
   /** 짧은 명령을 끝까지 실행하고 출력을 모은다. 던지지 않는다 */
-  exec(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; timeoutMs: number; cwd?: string }): Promise<ExecResult>;
+  /** `signal` 이 abort 되면 자식을 SIGKILL 로 끝내고 `timedOut:true` 로 돌려준다 (도구 타임아웃·run 취소 때 외부 프로세스를 남기지 않기 위해) */
+  exec(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; timeoutMs: number; cwd?: string; signal?: AbortSignal }): Promise<ExecResult>;
 }
 
 const MAX_EXEC_OUTPUT_BYTES = 1024 * 1024;
@@ -68,16 +69,22 @@ export const nodeProcessPort: ProcessPort = {
         resolve({ code: null, stdout, stderr, spawnError: error instanceof Error ? error.message : 'spawn failed', timedOut });
         return;
       }
-      const timer = setTimeout(() => {
+      const kill = (): void => {
         timedOut = true;
         child.kill('SIGKILL');
-      }, options.timeoutMs);
+      };
+      const timer = setTimeout(kill, options.timeoutMs);
+      if (options.signal !== undefined) {
+        if (options.signal.aborted) kill();
+        else options.signal.addEventListener('abort', kill, { once: true });
+      }
       const collect = (current: string, chunk: Buffer): string => (current.length >= MAX_EXEC_OUTPUT_BYTES ? current : current + chunk.toString('utf8'));
       child.stdout.on('data', (chunk: Buffer) => { stdout = collect(stdout, chunk); });
       child.stderr.on('data', (chunk: Buffer) => { stderr = collect(stderr, chunk); });
       child.on('error', (error) => { spawnError = error.message; });
       child.on('close', (code) => {
         clearTimeout(timer);
+        options.signal?.removeEventListener('abort', kill);
         resolve({ code, stdout, stderr, ...(spawnError === undefined ? {} : { spawnError }), timedOut });
       });
     });

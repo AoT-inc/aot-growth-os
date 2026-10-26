@@ -19,7 +19,7 @@ export {
   type FakeAdapterConfig, type FakeScenario, type FakeToolCall,
 } from './fake-adapter.ts';
 export {
-  createToolGateway, GATEWAY_ERROR_CODES, MAX_TOOL_RESULT_BYTES, RECORD_PREVIEW_CHARS, realGatewayTimers, toolCallConstraintsOf,
+  createToolGateway, GATEWAY_ERROR_CODES, gatewayNameOf, MAX_TOOL_RESULT_BYTES, RECORD_PREVIEW_CHARS, realGatewayTimers, toolCallConstraintsOf,
   type GatewayErrorCode, type GatewayTimers, type GatewayToolSpec, type RunToolGateway, type ToolCallOutcome, type ToolCallRecord,
   type ToolCallRecorder, type ToolExecutionRequest, type ToolExecutionResult, type ToolExecutor, type ToolGatewayOptions, type ToolResultOrigin,
 } from './gateway.ts';
@@ -70,3 +70,9 @@ export {
   applyStreamEvent, checkInit, CLAUDE_CODE_DEFERRED_CODE, CLAUDE_CODE_REVIEW_CODES, classifyRun, newStreamState, parseStreamLine, parseStructuredOutput, summarizeStreamEvent, DEFAULT_LIMIT_PATTERNS, DEFAULT_SERVER_LIMIT_PATTERNS, isClaudeCodeDeferredCode, isClaudeCodeReviewCode, resultJsonSchema,
   type ClaudeCodeReviewCode, type ClassifiedRun, type ExpectedInit, type StreamState,
 } from './claude-code/stream.ts';
+// 상품 등록 검증 업무의 도구 3개 (repo_read · secret_scan · license_check): 호스트 게이트웨이 실행기, 읽기 전용, 결과는 호스트 근거로 저장 (docs/plans/registration-dogfood.md)
+export {
+  countFiles, createGitRunner, createRegistrationTools, DEFAULT_REGISTRATION_QUOTA, findingsFromReport, hasOwnGitDir, isDeniedPath, maskRepoText, safeText, LICENSE_CHECK_TOOL, listTree, manifestLicense, normalizeRelativePath, readTextFile,
+  REPO_READ_TOOL, REGISTRATION_TOOL_DESCRIPTIONS, registrationToolName, registrationToolSpecs, remoteKind, RepoToolError, SECRET_SCAN_TOOL,
+  type CapturedEvidence, type EvidenceCapture, type GitRunner, type RegistrationQuota, type RegistrationTools, type RegistrationToolRun, type RegistrationToolsOptions, type RepoBinding, type RepoToolErrorCode,
+} from './registration/index.ts';

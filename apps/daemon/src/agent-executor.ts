@@ -8,7 +8,7 @@
 import type { AgentCostSource, AgentCostTotals, AgentRunHost, Clock, Db, ToolCallPolicy } from '@aot/domain';
 import { reportCostProgress } from '@aot/evaluation';
 import {
-  createToolGateway, isClaudeCodeDeferredCode, isClaudeCodeReviewCode, toolCallConstraintsOf, runAgentTask,
+  createToolGateway, gatewayNameOf, isClaudeCodeDeferredCode, isClaudeCodeReviewCode, toolCallConstraintsOf, runAgentTask,
   type AdapterInput, type AgentAdapter, type GatewayTimers, type GatewayToolSpec, type JsonObject, type RunLogStore, type ToolCallRecorder, type ToolExecutor,
 } from '@aot/agent-runtime';
 import { subjectOf } from '@aot/policy';
@@ -112,7 +112,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
       const input: Omit<AdapterInput, 'time_limit_ms'> = {
         run_id: ctx.lease.runId,
         task_spec: spec,
-        allowed_tools: offered.map((tool) => ({ tool: tool.tool, operations: [tool.operation] })),
+        allowed_tools: offered.map((tool) => ({ tool: gatewayNameOf(tool), operations: [tool.operation] })),
         evidence_refs: spec.evidence_refs ?? [],
         budget: { max_usd: spec.cost_budget.max_usd, ...(spec.cost_budget.max_tokens === undefined ? {} : { max_tokens: spec.cost_budget.max_tokens }) },
         ...(upstream.length === 0 ? {} : { upstream }),

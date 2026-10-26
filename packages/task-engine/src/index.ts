@@ -47,10 +47,10 @@ export {
   type RecordMeasurementInput, type RecordMeasurementResult,
 } from './measurement.ts';
 export {
-  assertLeaseHeld, claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun,
+  assertLeaseHeld, claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, HOST_EVIDENCE_REF_PREFIX, promoteDueRetries, recordHostEvidence, recordRunOutput, saveCheckpoint, submitRun,
   takeOverExpiredRun,
   MAX_ADAPTER_NAME_CHARS, type AdapterSelector, type ClaimedTask, type ClaimOptions, type ClaimResult, type EffectLookups, type ExpiredRun, type FailRunOptions, type KillRunOptions, type Lease,
-  type RunEnd, type RunEvidence, type RunOutputRecord, type TakeoverOptions, type TakeoverResult,
+  type HostEvidence, type RunEnd, type RunEvidence, type RunOutputRecord, type TakeoverOptions, type TakeoverResult,
 } from './lease.ts';
 export {
   hasTaskResultInputs, resolveUpstream, UPSTREAM_UNMET_CODES,

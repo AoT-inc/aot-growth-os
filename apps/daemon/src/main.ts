@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
-  const { agent, evaluation } = buildAgentRuntime(config, instanceDir, { claudeCodeConsent: () => readClaudeCodeConsent(db) });
+  const { agent, evaluation } = buildAgentRuntime(config, instanceDir, { claudeCodeConsent: () => readClaudeCodeConsent(db), db });
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);

@@ -14,8 +14,8 @@ import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } f
 import { EffectDeclarationError, EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
 import { validateEffectToolDeclaration, type DeclarationError } from './idempotency.ts';
 import {
-  claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordRunOutput, saveCheckpoint, submitRun, takeOverExpiredRun,
-  type AdapterSelector, type ClaimedTask, type EffectLookups, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
+  claimNextTask, failRun, findExpiredRuns, heartbeat, killRun, promoteDueRetries, recordHostEvidence, recordRunOutput, saveCheckpoint, submitRun, takeOverExpiredRun,
+  type AdapterSelector, type ClaimedTask, type EffectLookups, type HostEvidence, type Lease, type RunEnd, type RunOutputRecord, type TakeoverResult,
 } from './lease.ts';
 import type { UpstreamResult } from './upstream.ts';
 import { RoutineFirer, type RoutineScheduleOptions, type RoutineTickReport } from './routine.ts';
@@ -43,6 +43,8 @@ export interface RunContext {
   heartbeat(): void;
   /** 증거 행과 run_log 위치를 이 run 에 남긴다 (lease 펜싱: 잃었으면 던진다) */
   recordOutput(record: RunOutputRecord): void;
+  /** 호스트 코드(도구 실행기)가 저장한 본문의 근거 행을 즉시 남기고 행 id 를 돌려준다 (lease 펜싱). 에이전트 어댑터에는 노출되지 않는다 */
+  recordEvidence(item: HostEvidence): string;
   /** 등록된 도구로 외부 부작용 수행 (recovery §3 규칙) */
   performEffect(toolName: string, step: EffectStep): Promise<EffectOutcome>;
 }
@@ -282,6 +284,7 @@ export class TaskWorker {
         guard(() => heartbeat(db, clock, lease));
       },
       recordOutput: (record) => guard(() => recordRunOutput(db, clock, lease, record)),
+      recordEvidence: (item) => guard(() => recordHostEvidence(db, clock, lease, item)),
       performEffect: async (toolName, step) => {
         const tool = tools?.[toolName];
         if (!tool) throw new Error(`external effect tool '${toolName}' is not registered`);

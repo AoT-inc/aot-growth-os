@@ -59,8 +59,9 @@ const REGISTRATION_VERIFIER_TOOLS = [
   { tool: 'repo_read', operations: ['list_tree', 'read_file', 'read_metadata', 'read_history'] },
   { tool: 'secret_scan', operations: ['scan_tree', 'scan_history'] },
   { tool: 'license_check', operations: ['identify'] },
-  { tool: 'evidence_store', operations: ['append'] },
 ] as const;
+// evidence_store.append 는 요청하지 않는다: 에이전트가 쓴 근거는 원본 증거가 될 수 없다. 도구 결과 본문은 호스트가 호출 시점에 저장하고 근거 행을 만든다
+// (docs/plans/registration-dogfood.md, docs/operations/registration-tools.md). 새로 시드하는 DB 에만 적용된다 — 이미 시드된 인스턴스는 조직 변경 절차로 바꾼다.
 
 export interface SeedOptions {
   clock: Clock;

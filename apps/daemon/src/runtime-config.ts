@@ -15,18 +15,21 @@
 //                    승인 CLI `consent` 로 받은 DB 기록이다: 호출자(main.ts)가 `overrides.claudeCodeConsent`(= readClaudeCodeConsent(db))를 넘기고, 어댑터는 run 마다 읽는다.
 // 비밀값은 설정에 넣지 않는다(이미지 ID·호스트 이름·숫자뿐이다). 시험 전용 주입점(`overrides`)은 코드에서만 넘길 수 있고 설정 파일로는 닿지 않는다.
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { accessSync, constants } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   containerAgentAdapter, createContainerRunner, createDockerCli, createFetchUrlTool, createFileRunLogStore, createResearchAgentAdapter, createSourceFetcher,
   isValidInstanceId, pickDockerEnv,
-  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter,
+  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, REGISTRATION_TOOL_DESCRIPTIONS,
   type AgentAdapter, type ClaudeCodeConsent, type FetchUrlTool, type FetchUrlToolOptions, type GatewayTimers, type SourceFetcherOptions, type ToolCallRecorder,
 } from '@aot/agent-runtime';
-import { parseTimeLimit, systemClock, type Clock } from '@aot/domain';
+import { parseTimeLimit, systemClock, type Clock, type Db } from '@aot/domain';
 import { createStubLlmVerifier, type LlmVerifier, type SourceFetcher } from '@aot/evaluation';
 
 import { adapterByRole } from './agent-executor.ts';
+import { createRegistrationRuntime, withRegistrationTools } from './registration.ts';
 import type { AssembleOptions } from './assemble.ts';
 
 export interface ContainerAgentConfig {
@@ -86,10 +89,26 @@ export interface ClaudeCodeCliConfig {
   max_concurrent?: number;
 }
 
+/** 상품 등록 검증 도구 설정. 비밀값은 없다(실행 파일 경로·디렉터리·제한 시간뿐) */
+export interface RegistrationToolsConfig {
+  /** `git` 실행 파일의 절대 경로 */
+  git_path: string;
+  /** gitleaks 실행 파일의 절대 경로 (8.30.1) */
+  gitleaks_path: string;
+  /** gitleaks 설정 파일의 절대 경로. 생략하면 저장소의 `config/gitleaks-registration.toml`(기본 규칙 전체). 후보 저장소 안의 설정은 쓰지 않는다 */
+  gitleaks_config?: string;
+  /** 근거 본문 저장 디렉터리(0700). 기본 `<instance_dir>/evidence` */
+  evidence_dir?: string;
+  /** 스캐너 제한 시간(ms). 기본 10분 */
+  scan_timeout_ms?: number;
+}
+
 export interface AgentRuntimeConfig {
   container_agent?: ContainerAgentConfig | null;
   /** 구독 CLI 어댑터. 생략·null 이면 연결하지 않는다 */
   claude_code_cli?: ClaudeCodeCliConfig | null;
+  /** 상품 등록 검증 도구(repo_read · secret_scan · license_check)와 근거 저장소. 생략·null 이면 연결하지 않는다. claude_code_cli 또는 container_agent 가 있어야 한다 */
+  registration_tools?: RegistrationToolsConfig | null;
   research_agent?: ResearchAgentConfig | null;
   /** LLM 검증기. 생략·null 이면 연결하지 않는다. `research_agent` 가 있어야 한다 */
   llm_verifier?: LlmVerifierConfig | null;
@@ -106,6 +125,10 @@ export interface AgentRuntimeOverrides {
   clock?: Clock;
   /** claude_code_cli 의 고지 동의 기록 읽기(run 마다 불린다). main.ts 는 `() => readClaudeCodeConsent(db)` 를 넘긴다. `claude_code_cli` 설정이 있으면 필수 */
   claudeCodeConsent?: () => ClaudeCodeConsent | null;
+  /** 등록 도구가 저장소 바인딩(product_repo)을 읽는 DB. `registration_tools` 설정이 있으면 필수 */
+  db?: Db;
+  /** 등록 도구 실행 파일 확인 (시작 때). 기본은 실행 권한 확인이고, 던지면 데몬이 시작하지 않는다. 시험이 가짜 경로를 허용하려고 바꾼다 */
+  checkExecutable?: (path: string) => void;
   /** `fetch_url` 도구 생성기. 설정에서 만든 옵션(허용 호스트 포함)을 그대로 받는다 */
   createFetchUrlTool?: (options: FetchUrlToolOptions) => FetchUrlTool;
   /** 출처 조회기 생성기. 같은 옵션을 받는다 */
@@ -204,7 +227,7 @@ export function parseClaudeCodeCliConfig(value: unknown): ClaudeCodeCliConfig | 
   return value as unknown as ClaudeCodeCliConfig;
 }
 
-function buildClaudeAdapter(config: ClaudeCodeCliConfig, clock: Clock, overrides: AgentRuntimeOverrides): AgentAdapter {
+function buildClaudeAdapter(config: ClaudeCodeCliConfig, clock: Clock, overrides: AgentRuntimeOverrides, toolDescriptions?: Readonly<Record<string, string>>): AgentAdapter {
   if (overrides.claudeCodeConsent === undefined) throw new Error('claude_code_cli needs a consent source (the daemon passes readClaudeCodeConsent(db); the consent itself is given with the approval CLI `consent accept`)');
   return createClaudeCodeCliAdapter({
     claudePath: config.claude_path,
@@ -215,6 +238,7 @@ function buildClaudeAdapter(config: ClaudeCodeCliConfig, clock: Clock, overrides
     ...(config.max_turns === undefined ? {} : { maxTurns: config.max_turns }),
     ...(config.max_budget_usd === undefined ? {} : { maxBudgetUsd: config.max_budget_usd }),
     ...(config.model === undefined ? {} : { model: config.model }),
+    ...(toolDescriptions === undefined ? {} : { toolDescriptions }),
     ...(config.warn_utilization === undefined ? {} : { warnUtilization: config.warn_utilization }),
     ...(config.yield_utilization === undefined ? {} : { yieldUtilization: config.yield_utilization }),
     ...(config.max_concurrent === undefined ? {} : { maxConcurrent: config.max_concurrent }),
@@ -222,7 +246,63 @@ function buildClaudeAdapter(config: ClaudeCodeCliConfig, clock: Clock, overrides
   });
 }
 
+/** 출처 URL 을 읽지 않는 평가 포트용: 상품 등록 검증은 로컬 근거만 쓰므로 URL 조회는 모두 접근 불가다 */
+const NO_SOURCE_FETCHER: SourceFetcher = { fetch: () => Promise.resolve({ reachable: false, reason: 'no source fetcher is configured (research_agent is not set)' }) };
+
+const REGISTRATION_KEYS: ReadonlySet<string> = new Set(['git_path', 'gitleaks_path', 'gitleaks_config', 'evidence_dir', 'scan_timeout_ms']);
+
+/** `registration_tools` 설정의 모양을 검사한다. 없으면(undefined·null) undefined. 실행 파일 경로는 절대 경로여야 한다 */
+export function parseRegistrationToolsConfig(value: unknown): RegistrationToolsConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new Error('registration_tools must be an object');
+  rejectUnknownKeys(value, REGISTRATION_KEYS, 'registration_tools');
+  for (const key of ['git_path', 'gitleaks_path'] as const) {
+    if (typeof value[key] !== 'string' || !isAbsolute(value[key])) throw new Error(`registration_tools.${key} must be an absolute path (it is never looked up on PATH)`);
+  }
+  for (const key of ['gitleaks_config', 'evidence_dir'] as const) {
+    if (value[key] !== undefined && (typeof value[key] !== 'string' || !isAbsolute(value[key]))) throw new Error(`registration_tools.${key} must be an absolute path`);
+  }
+  const timeout = value['scan_timeout_ms'];
+  if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1000 || timeout > 3_600_000)) throw new Error('registration_tools.scan_timeout_ms must be an integer from 1000 to 3600000');
+  return value as unknown as RegistrationToolsConfig;
+}
+
+/** 시작 때 실행 파일이 실제로 있고 실행할 수 있는지 확인한다 (없으면 데몬이 시작하지 않는다) */
+function defaultExecutableCheck(path: string): void {
+  accessSync(path, constants.X_OK);
+}
+
+/** 운영자 설정이 없을 때 쓰는 gitleaks 설정: 저장소의 `config/gitleaks-registration.toml` (기본 규칙 전체) */
+const DEFAULT_GITLEAKS_CONFIG = fileURLToPath(new URL('../../../config/gitleaks-registration.toml', import.meta.url));
+
 export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: string, overrides: AgentRuntimeOverrides = {}): AgentRuntimeBuild {
+  const registration = parseRegistrationToolsConfig(config.registration_tools);
+  const built = buildAgentBase(config, instanceDir, overrides, registration === undefined ? undefined : REGISTRATION_TOOL_DESCRIPTIONS);
+  if (registration === undefined) return built;
+  if (overrides.db === undefined) throw new Error('registration_tools needs the database (the daemon passes it)');
+  if (built.agent === undefined) throw new Error('registration_tools needs an agent adapter: set claude_code_cli or container_agent');
+  const check = overrides.checkExecutable ?? defaultExecutableCheck;
+  for (const [name, path] of [['git_path', registration.git_path], ['gitleaks_path', registration.gitleaks_path]] as const) {
+    try {
+      check(path);
+    } catch {
+      throw new Error(`registration_tools.${name} '${path}' is not an executable file`);
+    }
+  }
+  const runtime = createRegistrationRuntime({
+    db: overrides.db, clock: overrides.clock ?? systemClock, gitPath: registration.git_path, gitleaksPath: registration.gitleaks_path,
+    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir: registration.evidence_dir ?? join(instanceDir, 'evidence'), instanceDir,
+    ...(registration.scan_timeout_ms === undefined ? {} : { scanTimeoutMs: registration.scan_timeout_ms }),
+  });
+  return {
+    ...built,
+    agent: withRegistrationTools(built.agent, runtime),
+    // 평가기가 저장된 근거 본문을 직접 읽는다. 출처 URL 조회는 research_agent 가 있을 때만 된다
+    evaluation: { ...(built.evaluation ?? { fetcher: NO_SOURCE_FETCHER }), evidenceReader: runtime.store.reader },
+  };
+}
+
+function buildAgentBase(config: AgentRuntimeConfig, instanceDir: string, overrides: AgentRuntimeOverrides, toolDescriptions?: Readonly<Record<string, string>>): AgentRuntimeBuild {
   const instanceId = config.instance_id ?? deriveInstanceId(instanceDir);
   if (!isValidInstanceId(instanceId)) throw new Error(`instance_id '${String(instanceId)}' must start with a letter or digit and contain only letters, digits, '_', '.', '-' (max 63 chars)`);
   const container = config.container_agent ?? undefined;
@@ -243,7 +323,7 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
     ...(overrides.recorder === undefined ? {} : { recorder: overrides.recorder }),
     ...(overrides.timers === undefined ? {} : { timers: overrides.timers }),
   };
-  const claudeAdapter = claudeConfig === undefined ? undefined : buildClaudeAdapter(claudeConfig, clock, overrides);
+  const claudeAdapter = claudeConfig === undefined ? undefined : buildClaudeAdapter(claudeConfig, clock, overrides, toolDescriptions);
   if (container === undefined) {
     if (research !== undefined) requireContainer(config);
     if (claudeAdapter === undefined) return { agent: undefined, evaluation: undefined, instanceId };

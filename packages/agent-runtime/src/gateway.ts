@@ -30,9 +30,14 @@ import { isJsonObject, isJsonValue } from './validate.ts';
 
 export type ToolResultOrigin = 'internal' | 'external_untrusted';
 
-/** run 에 허용된 도구 하나. 도구 이름 하나에 operation 하나다 (정책의 행위 = `<tool>.<operation>`) */
+/** run 에 허용된 도구 하나. 에이전트가 부르는 이름 하나에 operation 하나다 (정책의 행위 = `<tool>.<operation>`) */
 export interface GatewayToolSpec {
   tool: string;
+  /**
+   * 에이전트가 이 도구를 부르는 이름. 생략하면 `tool` 이다. 도구 하나가 operation 을 여럿 가질 때(예: `repo_read` 의 list_tree·read_file …) 작업마다 이름을 달리해 부른다
+   * (예: `repo_read_read_file`). 정책의 행위(`<tool>.<operation>`)·명세의 `allowed_tools`·실행기는 이름이 아니라 `tool`·`operation` 으로 정해진다.
+   */
+  name?: string;
   operation: string;
   /** 정책 판정의 대상(resource). 선언이 없으면 생략 */
   target?: string;
@@ -395,10 +400,11 @@ function indexTools(options: ToolGatewayOptions): ReadonlyMap<string, GatewayToo
   if (!isPositiveFinite(options.toolTimeoutMs)) problems.push('toolTimeoutMs must be a positive finite number');
   const index = new Map<string, GatewayToolSpec>();
   for (const spec of options.tools) {
-    const label = `tool '${String(spec.tool)}'`;
+    const label = `tool '${String(spec.name ?? spec.tool)}'`;
     if (!isNonBlankString(spec.tool)) problems.push('a tool needs a non-empty name');
-    else if (index.has(spec.tool)) problems.push(`${label} is listed twice`);
-    else index.set(spec.tool, spec);
+    else if (spec.name !== undefined && !isNonBlankString(spec.name)) problems.push(`${label}: name must not be blank`);
+    else if (index.has(gatewayNameOf(spec))) problems.push(`${label} is listed twice`);
+    else index.set(gatewayNameOf(spec), spec);
     if (!isNonBlankString(spec.operation)) problems.push(`${label}: operation is required`);
     if (!(SCOPES as readonly unknown[]).includes(spec.scope)) problems.push(`${label}: scope must be one of ${SCOPES.join('|')}`);
     if (typeof spec.sideEffect !== 'boolean') problems.push(`${label}: sideEffect must be a boolean`);
@@ -416,6 +422,9 @@ function indexTools(options: ToolGatewayOptions): ReadonlyMap<string, GatewayToo
   if (problems.length > 0) throw new Error(`invalid tool gateway configuration: ${problems.join('; ')}`);
   return index;
 }
+
+/** 에이전트가 도구를 부르는 이름 (`name` 이 없으면 `tool`) */
+export const gatewayNameOf = (spec: Pick<GatewayToolSpec, 'tool' | 'name'>): string => spec.name ?? spec.tool;
 
 const isPositiveFinite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
 

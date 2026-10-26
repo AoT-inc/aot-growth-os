@@ -55,3 +55,10 @@
 - **인증 토큰을 꺼내 쓰지 않는다.** 공식 CLI를 그대로 실행하는 방식만 쓴다. 자동 실행 허용 범위는 사람이 약관에서 확인한다(미확인).
 - **실측 결과 (2026-10-26, [스파이크 Q4](../spikes/q4-claude-code-cli.md) §4.1).** 후보는 유지한다. 판정 (3) 도구 강제·(4) 비밀값·(5) 개인 설정 유입 차단은 정정된 호출 모양에서 통과했다. 정정 사항: `--bare`는 쓰지 않고, `--safe-mode`는 게이트웨이 MCP까지 끄므로 쓰지 않으며(`--restricted --setting-sources ""` + `--strict-mcp-config --mcp-config` + `--allowedTools`), 데몬은 `env -i`로 환경을 구성하고 내장 Bash를 열지 않는다(Bash가 열려 있으면 환경 변수의 비밀값이 읽힌다). 어댑터는 종료 코드가 아니라 JSON(`is_error`·`terminal_reason`·`api_error_status`·`permission_denials`·init의 `mcp_servers`)으로 결과를 분류한다. 도구 거부와 게이트웨이 연결 실패는 종료 코드 0이다. 비용 필드는 구독에서도 채워지지만 정가 환산 추정치다. 사용량 한도 도달 시의 실제 메시지는 관찰하지 못했다(`needs_review` 분류 문구는 한 건 관찰 후 확정). **구독 인증의 자동 실행이 약관상 허용되는지는 공식 문서에서 확인하지 못했다**(문서는 OAuth를 "일반적인 개인 사용"용으로 두고 제품·서비스 개발자와 Agent SDK 사용자에게 API 키를 안내한다). 2026-10-26 사용자가 이 위험을 감수하고 진행하기로 했다. 대신 토큰 비접촉, 본인 PC·본인 구독·계정 공유 금지, 호스팅 금지, 첫 실행 고지 동의, API 키 + `--bare` 대안 어댑터 유지를 설계 제약으로 둔다([스파이크 Q4](../spikes/q4-claude-code-cli.md) "결정" 절). 약관이 허용하지 않는 것으로 확인되거나 제한 통보를 받으면 구독 방식을 중단하고 API 키 + `--bare`(격리는 강해지고 구독 이점은 사라진다)로 전환한다.
 - 신뢰 경계는 그대로다: 출력은 항상 `external_untrusted`로 저장한다(2026-10-23 Amendment).
+
+(2026-10-26 구현) `claude-code-cli` 어댑터(CC1~CC4)를 구현했다: `packages/agent-runtime/src/claude-code/`, 운영·설정·재시험은 [operations/claude-code-cli.md](../operations/claude-code-cli.md). 계약에 닿는 구현 결정:
+- 에이전트가 쓰는 게이트웨이 도구는 CLI의 MCP 자식 프로세스(브리지) → run 전용 유닉스 소켓 → 주입된 `ToolGateway` 로만 간다. 정책 판정·허용 목록·비용 계량은 여전히 게이트웨이의 일이다(소켓은 줄 단위 JSON을 옮기고 허용 이름으로 한 번 더 거를 뿐이다).
+- 결과는 `--json-schema` 의 `{result, evidence[]}` 구조화 출력이다. 근거의 신뢰 출처는 어댑터가 `external_untrusted` 로 신고하고 호스트가 어차피 그렇게 기록한다(A5-U8).
+- 비용은 `cost.tokens` 만 낸다. 정가 환산 추정치는 run_log에만 둔다(USD로 내면 업무 USD 예산 초과 kill에 걸리고, `cost_entry` 에 `subscription_estimate` 단위가 없다). 단위·열을 둘지는 사용자 결정(스키마 변경).
+- 검토 대상 오류 코드(`login_required`·`usage_limit`·`server_limited`·`cli_unavailable`·`consent_required`)는 `AdapterOutput.error.code` 로만 알린다. `needs_review` 상태로 옮기는 실행기·워커 경로는 만들지 않았다(사용자 결정).
+- 사용량 한도 도달의 실제 문구는 미확인이다. 문구는 설정 목록이고 한 건 관찰 후 확정한다.

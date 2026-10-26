@@ -27,7 +27,7 @@ export {
   type CostSummary, type CostUnits,
 } from './cost.ts';
 export {
-  assertEvaluationInvariants, assessEffect, decide, EVALUATOR_ID, EVALUATOR_REF, EVALUATOR_VERSION, EvaluationError, evaluateRun, findEvaluation, isSuccessCase,
+  assertEvaluationInvariants, assessEffect, decide, EVALUATOR_ID, EVALUATOR_REF, EVALUATOR_VERSION, EvaluationError, evaluateRun, findEvaluation, isSuccessCase, SHADOW_VERDICT_SOURCE, SHADOW_VERDICT_TYPE,
   type Decision, type DecisionFacts, type EffectAssessment, type EvaluateRunRequest, type EvaluationReport, type EvaluatorDeps, type LlmState,
 } from './evaluator.ts';
 export {

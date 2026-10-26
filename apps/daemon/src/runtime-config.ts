@@ -33,6 +33,7 @@ import { createStubLlmVerifier, type LlmVerifier, type SourceFetcher } from '@ao
 
 import { adapterByRole } from './agent-executor.ts';
 import { createRegistrationRuntime, withRegistrationTools } from './registration.ts';
+import { REGISTRATION_TRIGGER_PREFIX } from './registration-task.ts';
 import type { AssembleOptions } from './assemble.ts';
 
 export interface ContainerAgentConfig {
@@ -84,6 +85,8 @@ export interface ClaudeCodeVerifierConfig {
   unavailable_backoff_ms?: number;
   /** 서로 다른 assistant 메시지 수 상한. 기본 4 */
   max_turns?: number;
+  /** true 면 섀도 모드(Q22 f): 판정을 기록만 하고 평가 결과에는 반영하지 않는다. 파일럿 동안 켠다 */
+  shadow?: boolean;
 }
 
 /** 컨텍스트 분리 LLM 검증기 설정 */
@@ -150,6 +153,8 @@ export interface AgentRuntimeOverrides {
   claudeCodeConsent?: () => ClaudeCodeConsent | null;
   /** 등록 도구가 저장소 바인딩(product_repo)을 읽는 DB. `registration_tools` 설정이 있으면 필수 */
   db?: Db;
+  /** 상품 저장소 경로가 겹치면 안 되는 데몬 디렉터리를 더한다 (DB·TOTP·정책 저장소·승인 소켓 등 설정으로 인스턴스 밖에 둘 수 있는 것). main.ts 가 넘긴다 */
+  forbiddenRoots?: readonly string[];
   /** 등록 도구 실행 파일 확인 (시작 때). 기본은 실행 권한 확인이고, 던지면 데몬이 시작하지 않는다. 시험이 가짜 경로를 허용하려고 바꾼다 */
   checkExecutable?: (path: string) => void;
   /** `fetch_url` 도구 생성기. 설정에서 만든 옵션(허용 호스트 포함)을 그대로 받는다 */
@@ -171,6 +176,8 @@ export interface AgentRuntimeBuild {
   evaluation: AssembleOptions['evaluation'];
   /** 컨테이너에 붙인 `aot.instance` 라벨 값 */
   instanceId: string;
+  /** `registration_tools` 가 설정되면: 상품 등록 채널(`product` 명령)을 켜는 `assembleDaemon` 의 `productChannel` 옵션 */
+  productChannel?: AssembleOptions['productChannel'];
 }
 
 /** 인스턴스 디렉터리의 절대 경로에서 도출하는 안전한 인스턴스 ID (`i-` + sha256 앞 16자). 같은 호스트의 다른 인스턴스와 겹치지 않는다 */
@@ -187,7 +194,7 @@ function requireContainer(config: AgentRuntimeConfig): ContainerAgentConfig {
 const createStubFromConfig = (config: StubVerifierConfig): LlmVerifier => createStubLlmVerifier(config.cost_usd === undefined ? {} : { costUsd: config.cost_usd });
 
 const STUB_VERIFIER_KEYS: ReadonlySet<string> = new Set(['kind', 'cost_usd']);
-const CLAUDE_VERIFIER_KEYS: ReadonlySet<string> = new Set(['kind', 'model', 'allow_same_model', 'time_limit_ms', 'max_source_bytes', 'unavailable_backoff_ms', 'max_turns']);
+const CLAUDE_VERIFIER_KEYS: ReadonlySet<string> = new Set(['kind', 'model', 'allow_same_model', 'shadow', 'time_limit_ms', 'max_source_bytes', 'unavailable_backoff_ms', 'max_turns']);
 
 /** `llm_verifier` 설정을 검증한다. 없으면(undefined·null) undefined. 알 수 없는 kind·키·값은 던진다 */
 export function parseLlmVerifierConfig(value: unknown): LlmVerifierConfig | undefined {
@@ -207,8 +214,9 @@ export function parseLlmVerifierConfig(value: unknown): LlmVerifierConfig | unde
     if (unknown.length > 0) throw new Error(`llm_verifier has unknown key(s): ${unknown.join(', ')}`);
     const model = record['model'];
     if (typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/.test(model)) throw new Error('llm_verifier.model is required for kind "claude_code_cli" (a model alias or id; use a different tier than the executor, Q22 b)');
-    const allowSame = record['allow_same_model'];
-    if (allowSame !== undefined && typeof allowSame !== 'boolean') throw new Error('llm_verifier.allow_same_model must be true or false');
+    for (const key of ['allow_same_model', 'shadow'] as const) {
+      if (record[key] !== undefined && typeof record[key] !== 'boolean') throw new Error(`llm_verifier.${key} must be true or false`);
+    }
     const limit = record['time_limit_ms'];
     if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit <= 0 || limit > 3_600_000)) throw new Error('llm_verifier.time_limit_ms must be an integer from 1 to 3600000');
     for (const key of ['max_source_bytes', 'max_turns'] as const) {
@@ -355,9 +363,12 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
       throw new Error(`registration_tools.${name} '${path}' is not an executable file`);
     }
   }
+  const evidenceDir = registration.evidence_dir ?? join(instanceDir, 'evidence');
+  const claudeRunRoot = parseClaudeCodeCliConfig(config.claude_code_cli)?.run_root;
+  const forbiddenRoots = [instanceDir, evidenceDir, config.run_log_dir ?? join(instanceDir, 'run-logs'), ...(claudeRunRoot === undefined ? [] : [claudeRunRoot]), ...(overrides.forbiddenRoots ?? [])];
   const runtime = createRegistrationRuntime({
     db: overrides.db, clock: overrides.clock ?? systemClock, gitPath: registration.git_path, gitleaksPath: registration.gitleaks_path,
-    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir: registration.evidence_dir ?? join(instanceDir, 'evidence'), instanceDir,
+    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir, instanceDir, forbiddenRoots,
     ...(registration.scan_timeout_ms === undefined ? {} : { scanTimeoutMs: registration.scan_timeout_ms }),
   });
   return {
@@ -365,6 +376,7 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
     agent: withRegistrationTools(built.agent, runtime),
     // 평가기가 저장된 근거 본문을 직접 읽는다. 출처 URL 조회는 research_agent 가 있을 때만 된다
     evaluation: { ...(built.evaluation ?? { fetcher: NO_SOURCE_FETCHER }), evidenceReader: runtime.store.reader },
+    productChannel: { forbiddenRoots },
   };
 }
 
@@ -394,7 +406,11 @@ function buildAgentBase(config: AgentRuntimeConfig, instanceDir: string, overrid
   const claudeAdapter = claudeConfig === undefined || claudeGate === undefined ? undefined : buildClaudeAdapter(claudeConfig, clock, claudeGate, overrides, toolDescriptions);
   // 구독 검증기: 출처 URL 조회기가 없는 평가 포트다(로컬 근거 업무). research_agent 가 있으면 아래에서 조회기를 더해 만든다
   const claudeVerifier = llmConfig?.kind === 'claude_code_cli' && claudeConfig !== undefined && claudeGate !== undefined ? buildClaudeVerifier(llmConfig, claudeConfig, clock, claudeGate, overrides) : undefined;
-  const localEvaluation = claudeVerifier === undefined ? undefined : { fetcher: NO_SOURCE_FETCHER, llm: claudeVerifier };
+  // 섀도 모드는 상품 등록 업무에만 적용한다 (다른 업무의 검증은 평소대로: 파일럿이 연구 업무의 `unsupported → fail` 을 끄지 않게)
+  const shadow = llmConfig?.kind === 'claude_code_cli' && llmConfig.shadow === true
+    ? { llmShadow: (task: { trigger_kind: string; trigger_ref: string }) => task.trigger_kind === 'manual' && task.trigger_ref.startsWith(REGISTRATION_TRIGGER_PREFIX) }
+    : {};
+  const localEvaluation = claudeVerifier === undefined ? undefined : { fetcher: NO_SOURCE_FETCHER, llm: claudeVerifier, ...shadow };
   if (container === undefined) {
     if (research !== undefined) requireContainer(config);
     if (claudeAdapter === undefined) return { agent: undefined, evaluation: undefined, instanceId };
@@ -442,7 +458,7 @@ function buildAgentBase(config: AgentRuntimeConfig, instanceDir: string, overrid
     }),
     evaluation: {
       fetcher: sourceFetcher,
-      ...(claudeVerifier !== undefined ? { llm: claudeVerifier } : llmConfig?.kind === 'stub' ? { llm: (overrides.createLlmVerifier ?? createStubFromConfig)(llmConfig) } : {}),
+      ...(claudeVerifier !== undefined ? { llm: claudeVerifier, ...shadow } : llmConfig?.kind === 'stub' ? { llm: (overrides.createLlmVerifier ?? createStubFromConfig)(llmConfig) } : {}),
     },
     instanceId,
   };

@@ -7,9 +7,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
-import {
-  registrationToolName, REPO_READ_TOOL, type AdapterContext, type AdapterOutput, type AgentAdapter, type JsonObject, type ToolGatewayResponse,
-} from '@aot/agent-runtime';
+import { registrationToolName, REPO_READ_TOOL } from '@aot/agent-runtime';
 import type { IsolatedVerificationInput, LlmVerdict, LlmVerifier } from '@aot/evaluation';
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
@@ -17,8 +15,9 @@ import { buildAgentRuntime } from '../../apps/daemon/src/runtime-config.ts';
 import { manualTimers, taskStatus } from '../support/engine.ts';
 import { evaluationsOf, validationSpec } from '../support/evaluation.ts';
 import { AGENT, createWithGate, policyEnv, readOnlyDraft, type PolicyEnv } from '../support/policy.ts';
+import { REGISTRATION_FILES, scriptedAgent, type CallRecord } from '../support/registration-agent.ts';
 import { writeFakeVerifierClaude, type FakeVerifierScenario } from '../support/fake-claude-verifier.ts';
-import { GIT, makeRepo, writeStubGitleaks, type RepoFiles } from '../support/registration-tools.ts';
+import { GIT, makeRepo, writeStubGitleaks } from '../support/registration-tools.ts';
 import { makeTempDir } from '../support/temp.ts';
 
 const GITLEAKS_CONFIG = new URL('../../config/gitleaks-registration.toml', import.meta.url).pathname;
@@ -26,13 +25,6 @@ const CHECKS = ['schema_valid', 'evidence_refs_resolvable', 'no_secret_in_output
 const OPERATIONS: [string, string[]][] = [
   ['repo_read', ['list_tree', 'read_file', 'read_metadata', 'read_history']], ['secret_scan', ['scan_tree', 'scan_history']], ['license_check', ['identify']],
 ];
-const FILES: RepoFiles = {
-  'README.md': '# example-product\nA small command line tool.\n',
-  'package.json': JSON.stringify({ name: 'example-product', license: 'MIT' }),
-  'src/index.ts': 'export const x = 1;\n',
-  'LICENSE': 'MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy.\nTHE SOFTWARE IS PROVIDED "AS IS".\n',
-};
-
 const allowedTools = (target: string) => OPERATIONS.map(([tool, operations]) => ({ tool, operations, scope: 'internal', impact: 'read', target }));
 
 class ScriptedLlm implements LlmVerifier {
@@ -44,48 +36,6 @@ class ScriptedLlm implements LlmVerifier {
   }
 }
 
-interface CallRecord { name: string; ok: boolean; error?: string }
-
-/** 에이전트 역할의 어댑터: 게이트웨이로 도구를 불러 근거 id 를 모으고, 그 id 를 인용한 registration-report@1 을 낸다 */
-function scriptedAgent(calls: CallRecord[]): AgentAdapter {
-  return {
-    name: 'scripted-agent',
-    async run(_input, context: AdapterContext): Promise<AdapterOutput> {
-      const call = async (tool: string, operation: string, args: JsonObject = {}): Promise<JsonObject | null> => {
-        const name = registrationToolName(tool, operation);
-        const response: ToolGatewayResponse = await context.gateway.call(name, args);
-        calls.push({ name, ok: response.ok, ...(response.ok ? {} : { error: response.error }) });
-        return response.ok ? (response.result as JsonObject) : null;
-      };
-      const tree = await call('repo_read', 'list_tree', { depth: 2 });
-      const readme = await call('repo_read', 'read_file', { path: 'README.md' });
-      const meta = await call('repo_read', 'read_metadata');
-      const history = await call('repo_read', 'read_history');
-      const scanTree = await call('secret_scan', 'scan_tree');
-      const scanHistory = await call('secret_scan', 'scan_history');
-      const license = await call('license_check', 'identify');
-      if ([tree, readme, meta, history, scanTree, scanHistory, license].some((result) => result === null)) {
-        return { status: 'error', result: null, evidence: [], run_log: [], cost: { tokens: 0 }, error: { code: 'tool_failed', message: 'a tool call was refused' } };
-      }
-      const id = (result: JsonObject | null): string => String(result!['evidence_id']);
-      const collected = (item: string, ...ids: string[]) => ({ item, status: 'collected', evidence_ids: ids });
-      const report = {
-        claims: [{ id: 'c1', statement: 'The README describes a small command line tool.', evidence_id: id(readme) }],
-        collection: [
-          collected('repo_structure', id(tree)), collected('stack', id(meta)), collected('readme_summary', id(readme)),
-          { item: 'remote', status: 'unavailable', reason: 'the repository has no remote configured' },
-          collected('default_branch', id(meta)), collected('activity_history', id(history)), collected('license', id(license)),
-          { item: 'environment', status: 'unavailable', reason: 'no environment names appear in the documentation' },
-          collected('secret_scan', id(scanTree), id(scanHistory)),
-        ],
-        classification: { proposal: 'internal', rationale_evidence_ids: [id(license)] },
-        uncertainties: [],
-      };
-      return { status: 'submitted', result: report as unknown as JsonObject, evidence: [], run_log: [], cost: { tokens: 100 } };
-    },
-  };
-}
-
 interface Setup { env: PolicyEnv; root: string; evidenceDir: string; calls: CallRecord[]; llm: ScriptedLlm; daemon: ReturnType<typeof assembleDaemon>; productId: string; verifierRecordPath: string | null }
 
 const CONSENT = { notice_version: 'notice-1', accepted_at: '2026-10-26T00:00:00.000Z' };
@@ -93,7 +43,7 @@ const CONSENT = { notice_version: 'notice-1', accepted_at: '2026-10-26T00:00:00.
 /** `verifier` 를 주면 검증기는 설정의 `llm_verifier: claude_code_cli` 로 만든다(가짜 claude 실행 파일). 안 주면 시험용 `ScriptedLlm` 을 끼운다 */
 function setup(t: TestContext, options: { accessScope?: string; status?: string; scenario?: Parameters<typeof writeStubGitleaks>[1]; verifier?: FakeVerifierScenario } = {}): Setup {
   const env = policyEnv(t);
-  const root = makeRepo(t, FILES);
+  const root = makeRepo(t, REGISTRATION_FILES);
   const dir = makeTempDir(t, 'aot-reg-');
   const scanner = writeStubGitleaks(dir, options.scenario ?? { kind: 'clean' });
   const evidenceDir = join(dir, 'evidence');

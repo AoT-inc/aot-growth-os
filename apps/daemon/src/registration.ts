@@ -39,6 +39,12 @@ const realpathOrSelf = (path: string): string => {
 };
 const overlaps = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
 
+/** 경로(실경로)가 주어진 디렉터리 중 하나와 같거나 한쪽이 다른 쪽을 품으면 true */
+export function pathOverlapsAny(path: string, roots: readonly string[]): boolean {
+  const real = realpathOrSelf(path);
+  return roots.some((root) => overlaps(real, realpathOrSelf(root)));
+}
+
 /**
  * 슬러그의 `product_repo` 를 해석한다. 상품이 검증 중이고 읽기 접근이 승인돼야 한다.
  * `forbiddenRoots`(데몬 인스턴스·근거 디렉터리)와 겹치는 경로는 거부한다 — 저장소 경로가 그것을 품으면 에이전트가 다른 업무의 근거·DB 를 읽는 길이 열린다.
@@ -66,7 +72,7 @@ export interface RegistrationRuntime {
   executorsFor(ctx: RunContext): Map<string, ToolExecutor>;
 }
 
-export function createRegistrationRuntime(options: RegistrationToolsOptions & { db: Db; clock: Clock; evidenceDir: string; instanceDir: string }): RegistrationRuntime {
+export function createRegistrationRuntime(options: RegistrationToolsOptions & { db: Db; clock: Clock; evidenceDir: string; instanceDir: string; forbiddenRoots?: readonly string[] }): RegistrationRuntime {
   const store = createEvidenceStore({ dir: options.evidenceDir });
   const tools = createRegistrationTools(options);
   return {
@@ -74,7 +80,7 @@ export function createRegistrationRuntime(options: RegistrationToolsOptions & { 
     tools,
     executorsFor(ctx) {
       return tools.executorsFor({
-        repo: () => bindRepo(options.db, repoSlugOf(ctx.spec), [options.instanceDir, options.evidenceDir]),
+        repo: () => bindRepo(options.db, repoSlugOf(ctx.spec), options.forbiddenRoots ?? [options.instanceDir, options.evidenceDir]),
         evidence: {
           capture: (input) => {
             const { sha256, ref } = store.put(input.text);

@@ -111,6 +111,12 @@ export interface EvaluatorDeps {
   evidenceReader?: EvidenceReader;
   /** 없으면 LLM 검증을 요구하는 업무는 inconclusive */
   llm?: LlmVerifier;
+  /**
+   * 섀도 모드 (Q22 f, 파일럿): 검증기를 평소처럼 부르고 판정을 기록하지만(평가 메모와 `shadow-verifier` 이벤트) 평가 결과에는 반영하지 않는다 —
+   * 검증기가 없는 것처럼 `outcome` 이 정해지고 사람이 결정한다. 검증기를 쓸 수 없을 때(`VerifierUnavailableError`)는 평소처럼 `validating` 에 두고 기다린다
+   * (판정이 없는 업무가 파일럿 표본에서 빠지지 않게). 함수를 주면 그 업무에만 적용한다 — 데몬은 상품 등록 업무에만 켠다. 검증기의 판정뿐 아니라 검증기 오류·주장 없음도 결과에 영향이 없다.
+   */
+  llmShadow?: boolean | ((task: TaskRow) => boolean);
   /** 없으면 효과는 측정하지 않는다 (effect = null) */
   effect?: EffectSignalSource;
   /** 명세 id 에 없는 검사를 더한다 (예: 필수 테스트 결과) */
@@ -179,7 +185,7 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
   const allChecksPass = deterministic.checks.every((check) => check.status === 'pass');
 
   // 2층: 컨텍스트 분리 LLM 검증 (앞 층이 모두 통과했을 때만)
-  const llm = await runLlmVerification(deps, spec, claims, evidenceClaims, evidence, sources, contents, allChecksPass);
+  const llm = await runLlmVerification(deps, task, spec, claims, evidenceClaims, evidence, sources, contents, allChecksPass);
 
   // 효과 측정 (외부에서 주입된 관측 값)
   const observation = deps.effect === undefined ? null : await deps.effect.read({ taskId: task.id, taskRunId: run.id });
@@ -225,6 +231,21 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
         units: { source: 'validation', verifier: deps.llm?.id ?? 'unknown', ...(verificationTokens > 0 ? { tokens: verificationTokens } : {}) },
       });
     }
+    if (llm.shadow === true && llm.verdict !== null) {
+      const eventId = `event-${randomUUID()}`;
+      tx.run(
+        `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        [
+          eventId, SHADOW_VERDICT_SOURCE, run.id, SHADOW_VERDICT_TYPE,
+          JSON.stringify({
+            task_id: task.id, task_run_id: run.id, verifier: deps.llm?.id ?? 'unknown', verdict: llm.verdict.verdict, note: llm.verdict.note.slice(0, 500),
+            claim_count: llm.claimCount ?? null, ...(verificationTokens > 0 ? { tokens: verificationTokens, run_tokens: runCost.tokens } : {}),
+          }),
+          `${SHADOW_VERDICT_SOURCE}:${run.id}`, clock.nowIso(), clock.nowIso(),
+        ],
+      );
+    }
     tx.run(
       `INSERT INTO evaluation (id, task_id, task_run_id, evaluator, validation_passed, outcome, primary_evidence_refs, agent_report_used,
          quality, quality_note, effect, effect_note, economics, economics_note, safety, safety_note, evidence_refs, total_cost_usd, human_minutes, at)
@@ -243,9 +264,35 @@ interface LlmRun {
   state: LlmState;
   note: string;
   verdict: LlmVerdict | null;
+  /** 섀도 모드로 기록만 한 판정이면 true (평가 행을 쓰는 트랜잭션이 이벤트를 남긴다) */
+  shadow?: boolean;
+  claimCount?: number;
 }
 
+/** 섀도 모드 판정을 남기는 `event` 행의 출처·유형. 파일럿 보고서가 읽는다 */
+export const SHADOW_VERDICT_SOURCE = 'shadow-verifier';
+export const SHADOW_VERDICT_TYPE = 'shadow.verdict';
+
+/**
+ * 섀도 모드면 검증기가 결과에 아무 영향도 못 주게 한다: 판정(supported/unsupported/unclear)뿐 아니라 검증기 오류·주장 없음 같은 "검증기 쪽 사정"도
+ * 검증기가 없는 것처럼(`not_configured`) 넘기고 메모에만 남긴다. 검증기를 *쓸 수 없는* 상태(`VerifierUnavailableError`)는 평소처럼 위로 던져 업무가 기다린다.
+ * 결정론적 검사 때문에 건너뛴 경우(`skipped`)와 검증을 요구하지 않는 업무(`not_configured`)는 그대로다.
+ */
 async function runLlmVerification(
+  deps: EvaluatorDeps, task: TaskRow, spec: TaskSpec, claims: readonly ReportedClaim[], evidenceClaims: readonly EvidenceClaim[], evidence: readonly EvidenceRow[],
+  sources: SourceReader, contents: EvidenceContentReader | undefined, allChecksPass: boolean,
+): Promise<LlmRun> {
+  const result = await runLlmVerificationInner(deps, spec, claims, evidenceClaims, evidence, sources, contents, allChecksPass);
+  const shadow = typeof deps.llmShadow === 'function' ? deps.llmShadow(task) : deps.llmShadow === true;
+  if (!shadow || result.state === 'not_configured' || result.state === 'skipped') return result;
+  if (result.verdict === null) return { state: 'not_configured', note: `shadow: ${result.note} [recorded only; a person decides]`, verdict: null };
+  return {
+    state: 'not_configured', verdict: result.verdict, shadow: true, ...(result.claimCount === undefined ? {} : { claimCount: result.claimCount }),
+    note: `shadow ${deps.llm?.id ?? 'verifier'}: ${result.verdict.verdict} (${result.verdict.note}) [recorded only; a person decides]`,
+  };
+}
+
+async function runLlmVerificationInner(
   deps: EvaluatorDeps, spec: TaskSpec, claims: readonly ReportedClaim[], evidenceClaims: readonly EvidenceClaim[], evidence: readonly EvidenceRow[],
   sources: SourceReader, contents: EvidenceContentReader | undefined, allChecksPass: boolean,
 ): Promise<LlmRun> {
@@ -289,7 +336,7 @@ async function runLlmVerification(
       sources: texts,
     });
     const verdict = await deps.llm.verify(input);
-    return { state: verdict.verdict, note: `${deps.llm.id}: ${verdict.verdict} (${verdict.note})`, verdict };
+    return { state: verdict.verdict, note: `${deps.llm.id}: ${verdict.verdict} (${verdict.note})`, verdict, claimCount: input.claims.length };
   } catch (error) {
     // 검증기가 지금은 일을 못 한다(한도·로그인·미룸): 평가를 기록하지 않고 위로 던져 업무를 validating 에 둔다(다음 tick 에 다시 검증). 쓴 것이 없어 되돌릴 것도 없다
     if (error instanceof VerifierUnavailableError) throw error;

@@ -19,6 +19,9 @@
 //     resolve-effect <효과 id> --outcome confirmed|failed --note 사유 [--totp-stdin]
 //             (unknown 효과를 사람이 확정한다. 바깥(수신함 등)을 확인한 뒤: confirmed = 보냈다, failed = 보내지 않았다(이후 재전송은 정책 판정을 거친다).
 //              failed 는 TOTP 재인증이 필요하다(표준 입력 한 줄). outcome·note 값 검사는 데몬이 한다)
+//     consent show | accept --version <show 가 보여 준 판> | revoke
+//             (claude-code-cli 첫 실행 고지 동의. `show` 로 고지 문구와 판을 읽고, 읽은 판을 `accept --version` 에 직접 적어 동의한다. 고지 문구가 바뀌면 이전 동의는
+//              인정되지 않아 다시 동의해야 한다. `revoke` 하면 이후 run 은 consent_required → 업무 needs_review)
 // 기본값: --socket = $AOT_APPROVAL_SOCKET 또는 $AOT_INSTANCE_DIR/run/approval.sock, --actor = $AOT_ACTOR
 // TOTP 코드는 명령줄 인자로 받지 않는다(프로세스 목록에 보이므로).
 import { createHash } from 'node:crypto';
@@ -139,6 +142,14 @@ async function main(): Promise<void> {
       request = { cmd, actor, effect_id: effectId, outcome, note, ...(flags.get('totp-stdin') === true ? { totp: await readStdinLine() } : {}) };
       break;
     }
+    case 'consent': {
+      if (id !== undefined) fail('consent takes one operation: show|accept|revoke');
+      const op = kindArg ?? fail('consent needs an operation: show|accept|revoke');
+      const version = flag('version');
+      if (op === 'accept' && version === undefined) fail('consent accept needs --version <notice version from `consent show`>');
+      request = { cmd, actor, op, ...(version === undefined ? {} : { notice_version: version }) };
+      break;
+    }
     case 'show':
       needKind();
       request = { cmd, actor, kind, id };
@@ -166,7 +177,7 @@ async function main(): Promise<void> {
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent ...');
   }
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
   process.stdout.write(`${JSON.stringify(response)}\n`);

@@ -89,6 +89,8 @@ export interface WorkerOptions {
   lease?: Partial<LeaseParams>;
   /** retry_wait 의 대기 시간. 기본 60초 */
   retryDelayMs?: number;
+  /** 어댑터가 미룬(`deferred`) run 의 retry_wait 대기 시간. 시도를 소모하지 않는다. 기본 15분 */
+  deferDelayMs?: number;
   /** 루틴 슬롯 발화 (A6-U9). 생략하면 tick 은 루틴을 보지 않는다. 있으면 포트로 템플릿을 해석해 도래한 슬롯을 발화한다 */
   routines?: RoutineScheduleOptions;
   /** lease 만료 인수가 시도 횟수를 소모하는가. 기본 false */
@@ -121,6 +123,7 @@ export interface TickReport {
 export const VALIDATIONS_PER_TICK = 20;
 
 export const DEFAULT_RETRY_DELAY_MS = 60_000;
+export const DEFAULT_DEFER_DELAY_MS = 15 * 60_000;
 
 export class TaskWorker {
   readonly #options: WorkerOptions;
@@ -302,8 +305,8 @@ export class TaskWorker {
       } catch (error) {
         if (lost(error) || abort.signal.aborted) return report('lease_lost');
         if (error instanceof RunKilledError) {
-          // 시간 제한·예산 초과로 실행 관리가 죽였다: run 은 killed, 업무 전이는 killRun 이 허용표 안에서 정한다
-          return report(killRun(db, clock, lease, { reason: error.reason, detail: error.detail, retryDelayMs: this.#options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS }));
+          // 시간 제한·예산 초과·검토 필요·미룸으로 run 이 강제로 끝났다: run 은 killed, 업무 전이는 killRun 이 허용표 안에서 정한다
+          return report(killRun(db, clock, lease, { reason: error.reason, detail: error.detail, retryDelayMs: this.#options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS, deferDelayMs: this.#options.deferDelayMs ?? DEFAULT_DEFER_DELAY_MS }));
         }
         const outcome = error instanceof RunTimeoutError ? 'timeout' : 'error';
         const reason = error instanceof Error ? error.message : String(error);

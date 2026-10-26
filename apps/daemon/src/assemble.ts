@@ -34,6 +34,7 @@ import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, ty
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
+import { createConsentHandler, isConsentCommand } from './consent.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
@@ -82,6 +83,8 @@ export interface AssembleOptions {
   tools?: Readonly<Record<string, EffectTool>>;
   lease?: Partial<LeaseParams>;
   retryDelayMs?: number;
+  /** 어댑터가 미룬 run 의 retry_wait 대기 시간 (시도 소모 없음). 기본 15분 */
+  deferDelayMs?: number;
   timers?: Timers;
   /**
    * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
@@ -164,7 +167,7 @@ export interface Daemon {
   cycle: ExperimentCycle | null;
   /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
   phone: PhoneRuntime | null;
-  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
+  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
    * 첫 tick 전에 부른다. 컨테이너 어댑터가 설정된 경우에만 Docker 가용성을 확인하고(없으면 DockerUnavailableError, 호스트 실행으로 대체하지 않는다)
@@ -207,8 +210,10 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const measure = measurementSignals.length === 0 ? null : createMeasurementHandler({ db: options.db, clock: options.clock, signals: measurementSignals });
   const resolveEffects = createEffectResolutionHandler({ db: options.db, clock: options.clock, reauth: (tx, actorId, code, purpose) => engine.reauthenticateInTx(tx, actorId, code, purpose) });
   const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
+  const consent = createConsentHandler({ db: options.db, clock: options.clock });
   const handleChannelRequest = (request: unknown): unknown => {
     if (isEffectResolutionCommand(request)) return resolveEffects(request);
+    if (isConsentCommand(request)) return consent(request);
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
     if (isExperimentDecisionCommand(options.db, request)) return decide(request);
     return engine.handle(request);
@@ -236,6 +241,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     ...(tools === undefined ? {} : { tools }),
     ...(options.lease === undefined ? {} : { lease: options.lease }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
+    ...(options.deferDelayMs === undefined ? {} : { deferDelayMs: options.deferDelayMs }),
     ...(options.timers === undefined ? {} : { timers: options.timers }),
     ...(pack === null ? {} : { routines: { source: pack.templateSource } }),
   });

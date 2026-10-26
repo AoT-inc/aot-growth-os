@@ -27,6 +27,8 @@ queued ──► running ──► validating ──► completed
 | running | failed | 스케줄러 | `attempts >= max_attempts` 또는 치명적 정책 위반 |
 | running | retry_wait / failed | 스케줄러 | 실행 관리가 `time_limit` 초과로 취소해 run을 `killed`로 닫음 — `error/timeout`과 같은 규칙(시도 1회 소모, `attempts < max_attempts`면 `retry_wait`, 아니면 `failed`). 허용표에 새 전이는 없다 (A5 U4) |
 | running | needs_review | 스케줄러 | 실행 관리가 업무 예산 초과로 취소해 run을 `killed`로 닫음. 같은 예산으로 재시도해도 소용이 없으므로 시도를 소모하지 않고 사람이 예산·명세를 정한다. 허용표에 새 전이는 없다 (A5 U4) |
+| running | needs_review | 스케줄러 | 어댑터가 사람이 풀어야 하는 조건을 보고해 run을 `killed`로 닫음(`review_required`: `claude-code-cli` 의 `login_required`·`usage_limit`·`server_limited`·`cli_unavailable`·`consent_required`). 재시도해도 같은 로그인·한도·동의 조건이라 시도를 소모하지 않고, 사람이 조건을 푼 뒤 다시 큐에 넣는다. 허용표에 새 전이는 없다 |
+| running | retry_wait | 스케줄러 | 어댑터가 일을 시작하지 않고 미뤘다(`deferred`: `claude-code-cli` 의 사람 우선 게이트 `usage_deferred`). run은 `killed`. 실패가 아니라 "나중에 다시"이므로 **시도를 소모하지 않고**(`attempts` 그대로, 시도가 다 지난 뒤에도 `failed`가 되지 않는다) `next_run_at`을 defer 대기(`deferDelayMs`, 기본 15분) 뒤로 둔다. 허용표에 새 전이는 없다 |
 | validating | completed | **검증기만** | 모든 acceptance_criteria 충족 AND `safety != fail` |
 | validating | retry_wait | 검증기 | 기준 미충족, 재시도 가능 (`attempts + 1 < max_attempts`, 시도 1회 소모). 소진되면 `needs_review` — `validating → failed` 전이는 없으므로 사람이 정한다 |
 | validating | needs_review | 검증기/정책 | `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |

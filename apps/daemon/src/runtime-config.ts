@@ -10,6 +10,9 @@
 //   llm_verifier     컨텍스트 분리 LLM 검증기 (A6-U12). `{kind: "stub"}` 만 허용한다(모델 호출 없는 결정적 가짜. 실제 모델 연결은 Q22 후속이므로 다른 kind 는 거부).
 //                    평가 포트가 있어야 의미가 있으므로 research_agent 와 함께 있을 때만 받는다. 없으면 검증기를 연결하지 않아 `validation.llm` 이 있는 업무는 inconclusive(이전 동작).
 //                    research_agent 가 없으면 평가 포트를 넘기지 않는다: `validating` 업무는 검증되지 않고 그대로 남는다(자동 완료 없음, A4 이후 동작 유지).
+//   claude_code_cli  구독 로그인된 이 PC 의 공식 `claude` CLI 어댑터(ADR-0005 Amendment 2026-10-25·26). container_agent 없이 있으면 이 어댑터가 기본 어댑터이고,
+//                    container_agent 와 함께 있으면 `roles` 에 적은 역할의 업무만 이 어댑터로 가고 나머지는 컨테이너 어댑터로 간다. 첫 실행 고지 동의는 설정이 아니라
+//                    승인 CLI `consent` 로 받은 DB 기록이다: 호출자(main.ts)가 `overrides.claudeCodeConsent`(= readClaudeCodeConsent(db))를 넘기고, 어댑터는 run 마다 읽는다.
 // 비밀값은 설정에 넣지 않는다(이미지 ID·호스트 이름·숫자뿐이다). 시험 전용 주입점(`overrides`)은 코드에서만 넘길 수 있고 설정 파일로는 닿지 않는다.
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -17,11 +20,13 @@ import { join, resolve } from 'node:path';
 import {
   containerAgentAdapter, createContainerRunner, createDockerCli, createFetchUrlTool, createFileRunLogStore, createResearchAgentAdapter, createSourceFetcher,
   isValidInstanceId, pickDockerEnv,
-  type FetchUrlTool, type FetchUrlToolOptions, type GatewayTimers, type SourceFetcherOptions, type ToolCallRecorder,
+  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter,
+  type AgentAdapter, type ClaudeCodeConsent, type FetchUrlTool, type FetchUrlToolOptions, type GatewayTimers, type SourceFetcherOptions, type ToolCallRecorder,
 } from '@aot/agent-runtime';
 import { parseTimeLimit, systemClock, type Clock } from '@aot/domain';
 import { createStubLlmVerifier, type LlmVerifier, type SourceFetcher } from '@aot/evaluation';
 
+import { adapterByRole } from './agent-executor.ts';
 import type { AssembleOptions } from './assemble.ts';
 
 export interface ContainerAgentConfig {
@@ -58,8 +63,33 @@ export interface LlmVerifierConfig {
   cost_usd?: number;
 }
 
+/** 구독 로그인된 `claude` CLI 어댑터 설정. 로그인 정보·토큰은 어디에도 없다(로그인은 사용자가 `claude auth login` 으로 한다) */
+export interface ClaudeCodeCliConfig {
+  /** `claude` 실행 파일의 절대 경로. PATH 탐색 없음 */
+  claude_path: string;
+  /** run 별 디렉터리를 만드는 절대 경로(짧게, 데몬 전용 OS 계정만 쓸 수 있어야 한다) */
+  run_root: string;
+  /** CLI 자식의 환경. 이 네 값뿐이다: 구독 로그인이 있는 홈, OS 계정 이름, 최소 PATH */
+  env: { home: string; user: string; path: string };
+  /** container_agent 와 함께 쓸 때 이 어댑터로 실행할 역할(`task_spec.role`). 필수·비어 있으면 안 된다. 단독으로 쓸 때는 줄 수 없다(모든 업무가 이 어댑터) */
+  roles?: string[];
+  /** 서로 다른 assistant 메시지 수 상한(기본 40) */
+  max_turns?: number;
+  /** `--max-budget-usd` (정가 환산 추정치 기준). 기본 꺼짐 */
+  max_budget_usd?: number;
+  model?: string;
+  /** 사용률 경고 임계값(기본 0.8) */
+  warn_utilization?: number;
+  /** 사람 우선 게이트: 창별 임계값. 기본 꺼짐 */
+  yield_utilization?: { five_hour?: number; seven_day?: number };
+  /** 동시 실행 수(기본 1) */
+  max_concurrent?: number;
+}
+
 export interface AgentRuntimeConfig {
   container_agent?: ContainerAgentConfig | null;
+  /** 구독 CLI 어댑터. 생략·null 이면 연결하지 않는다 */
+  claude_code_cli?: ClaudeCodeCliConfig | null;
   research_agent?: ResearchAgentConfig | null;
   /** LLM 검증기. 생략·null 이면 연결하지 않는다. `research_agent` 가 있어야 한다 */
   llm_verifier?: LlmVerifierConfig | null;
@@ -74,6 +104,8 @@ export interface AgentRuntimeConfig {
 /** 코드에서만 넣을 수 있는 주입점(설정 파일로는 닿지 않는다). 시험이 외부 접근 부품을 시험용 주입점이 있는 것으로 바꾼다 */
 export interface AgentRuntimeOverrides {
   clock?: Clock;
+  /** claude_code_cli 의 고지 동의 기록 읽기(run 마다 불린다). main.ts 는 `() => readClaudeCodeConsent(db)` 를 넘긴다. `claude_code_cli` 설정이 있으면 필수 */
+  claudeCodeConsent?: () => ClaudeCodeConsent | null;
   /** `fetch_url` 도구 생성기. 설정에서 만든 옵션(허용 호스트 포함)을 그대로 받는다 */
   createFetchUrlTool?: (options: FetchUrlToolOptions) => FetchUrlTool;
   /** 출처 조회기 생성기. 같은 옵션을 받는다 */
@@ -125,6 +157,71 @@ export function parseLlmVerifierConfig(value: unknown): LlmVerifierConfig | unde
   return { kind: 'stub', ...(cost === undefined ? {} : { cost_usd: cost }) };
 }
 
+const CLAUDE_KEYS: ReadonlySet<string> = new Set(['claude_path', 'run_root', 'env', 'roles', 'max_turns', 'max_budget_usd', 'model', 'warn_utilization', 'yield_utilization', 'max_concurrent']);
+const CLAUDE_ENV_KEYS: ReadonlySet<string> = new Set(['home', 'user', 'path']);
+const YIELD_KEYS: ReadonlySet<string> = new Set(['five_hour', 'seven_day']);
+
+function rejectUnknownKeys(record: Record<string, unknown>, allowed: ReadonlySet<string>, where: string): void {
+  const unknown = Object.keys(record).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) throw new Error(`${where} has unknown key(s): ${unknown.join(', ')}`);
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** `claude_code_cli` 설정의 모양을 검사한다. 없으면(undefined·null) undefined. 경로·환경 값의 세부 검사는 어댑터가 만들 때 한다 */
+export function parseClaudeCodeCliConfig(value: unknown): ClaudeCodeCliConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new Error('claude_code_cli must be an object');
+  rejectUnknownKeys(value, CLAUDE_KEYS, 'claude_code_cli');
+  for (const key of ['claude_path', 'run_root'] as const) {
+    if (typeof value[key] !== 'string' || value[key] === '') throw new Error(`claude_code_cli.${key} must be a non-empty string (an absolute path)`);
+  }
+  const env = value['env'];
+  if (!isRecord(env)) throw new Error('claude_code_cli.env must be {"home": …, "user": …, "path": …}');
+  rejectUnknownKeys(env, CLAUDE_ENV_KEYS, 'claude_code_cli.env');
+  for (const key of CLAUDE_ENV_KEYS) if (typeof env[key] !== 'string') throw new Error(`claude_code_cli.env.${key} must be a string`);
+  const roles = value['roles'];
+  if (roles !== undefined && (!Array.isArray(roles) || roles.length === 0 || roles.some((role) => typeof role !== 'string' || role === ''))) {
+    throw new Error('claude_code_cli.roles must be a non-empty array of role slugs');
+  }
+  const number = (key: string, integer: boolean): void => {
+    const v = value[key];
+    if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || (integer && !Number.isInteger(v)))) throw new Error(`claude_code_cli.${key} must be a positive ${integer ? 'integer' : 'number'}`);
+  };
+  number('max_turns', true);
+  number('max_concurrent', true);
+  number('max_budget_usd', false);
+  number('warn_utilization', false);
+  if (value['model'] !== undefined && (typeof value['model'] !== 'string' || value['model'] === '')) throw new Error('claude_code_cli.model must be a non-empty string');
+  const yielding = value['yield_utilization'];
+  if (yielding !== undefined) {
+    if (!isRecord(yielding)) throw new Error('claude_code_cli.yield_utilization must be like {"five_hour": 0.7, "seven_day": 0.8}');
+    rejectUnknownKeys(yielding, YIELD_KEYS, 'claude_code_cli.yield_utilization');
+    for (const [key, v] of Object.entries(yielding)) {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw new Error(`claude_code_cli.yield_utilization.${key} must be a positive number`);
+    }
+  }
+  return value as unknown as ClaudeCodeCliConfig;
+}
+
+function buildClaudeAdapter(config: ClaudeCodeCliConfig, clock: Clock, overrides: AgentRuntimeOverrides): AgentAdapter {
+  if (overrides.claudeCodeConsent === undefined) throw new Error('claude_code_cli needs a consent source (the daemon passes readClaudeCodeConsent(db); the consent itself is given with the approval CLI `consent accept`)');
+  return createClaudeCodeCliAdapter({
+    claudePath: config.claude_path,
+    runRoot: config.run_root,
+    env: config.env,
+    consent: overrides.claudeCodeConsent,
+    clock,
+    ...(config.max_turns === undefined ? {} : { maxTurns: config.max_turns }),
+    ...(config.max_budget_usd === undefined ? {} : { maxBudgetUsd: config.max_budget_usd }),
+    ...(config.model === undefined ? {} : { model: config.model }),
+    ...(config.warn_utilization === undefined ? {} : { warnUtilization: config.warn_utilization }),
+    ...(config.yield_utilization === undefined ? {} : { yieldUtilization: config.yield_utilization }),
+    ...(config.max_concurrent === undefined ? {} : { maxConcurrent: config.max_concurrent }),
+    ...(overrides.timers === undefined ? {} : { timers: overrides.timers }),
+  });
+}
+
 export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: string, overrides: AgentRuntimeOverrides = {}): AgentRuntimeBuild {
   const instanceId = config.instance_id ?? deriveInstanceId(instanceDir);
   if (!isValidInstanceId(instanceId)) throw new Error(`instance_id '${String(instanceId)}' must start with a letter or digit and contain only letters, digits, '_', '.', '-' (max 63 chars)`);
@@ -132,23 +229,36 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
   const research = config.research_agent ?? undefined;
   const llmConfig = parseLlmVerifierConfig(config.llm_verifier);
   if (llmConfig !== undefined && research === undefined) throw new Error('llm_verifier needs research_agent (the evaluation port is wired only with it)');
-  if (container === undefined) {
-    if (research !== undefined) requireContainer(config);
-    return { agent: undefined, evaluation: undefined, instanceId };
+  const claudeConfig = parseClaudeCodeCliConfig(config.claude_code_cli);
+  if (claudeConfig !== undefined) {
+    if (container === undefined && claudeConfig.roles !== undefined) throw new Error('claude_code_cli.roles is only for use with container_agent (without it every task runs on the claude_code_cli adapter)');
+    if (container !== undefined && claudeConfig.roles === undefined) throw new Error('claude_code_cli.roles is required with container_agent: the roles that run on the subscription CLI (every other role runs on the container agent)');
   }
   const clock = overrides.clock ?? systemClock;
   const defaultTimeLimitMs = config.default_time_limit === undefined ? undefined : parseTimeLimit(config.default_time_limit);
   if (defaultTimeLimitMs === null) throw new Error(`default_time_limit '${String(config.default_time_limit)}' is not a valid time limit (for example "30m")`);
-  const docker = createDockerCli({ path: container.docker_path, env: pickDockerEnv(process.env) });
-  const limits = { memoryMiB: container.memory_mib, cpus: container.cpus, pidsLimit: container.pids_limit, tmpfsMiB: container.tmpfs_mib };
-  const base = {
-    docker,
+  const common = {
     runLogStore: createFileRunLogStore({ dir: config.run_log_dir ?? join(instanceDir, 'run-logs') }),
-    instanceId,
     ...(defaultTimeLimitMs === undefined ? {} : { defaultTimeLimitMs }),
     ...(overrides.recorder === undefined ? {} : { recorder: overrides.recorder }),
     ...(overrides.timers === undefined ? {} : { timers: overrides.timers }),
   };
+  const claudeAdapter = claudeConfig === undefined ? undefined : buildClaudeAdapter(claudeConfig, clock, overrides);
+  if (container === undefined) {
+    if (research !== undefined) requireContainer(config);
+    if (claudeAdapter === undefined) return { agent: undefined, evaluation: undefined, instanceId };
+    // 구독 CLI 단독: 컨테이너가 없으므로 docker 확인·고아 정리도 없다(prepareAgentRuntime 은 null)
+    return { agent: { ...common, adapter: claudeAdapter }, evaluation: undefined, instanceId };
+  }
+  // 컨테이너 어댑터와 함께면 roles 에 적은 역할만 구독 CLI 어댑터로 간다
+  const withClaude = <T extends NonNullable<AssembleOptions['agent']>>(agent: T): T => claudeConfig === undefined || claudeAdapter === undefined ? agent : {
+    ...agent,
+    adapters: new Map([[CLAUDE_CODE_ADAPTER_NAME, claudeAdapter]]),
+    selectAdapter: adapterByRole(Object.fromEntries((claudeConfig.roles ?? []).map((role) => [role, CLAUDE_CODE_ADAPTER_NAME]))),
+  };
+  const docker = createDockerCli({ path: container.docker_path, env: pickDockerEnv(process.env) });
+  const limits = { memoryMiB: container.memory_mib, cpus: container.cpus, pidsLimit: container.pids_limit, tmpfsMiB: container.tmpfs_mib };
+  const base = { docker, instanceId, ...common };
 
   if (research === undefined) {
     if (typeof container.image !== 'string') throw new Error('container_agent.image is required when research_agent is not set');
@@ -156,7 +266,7 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
       docker, image: container.image, instance: instanceId, clock, limits,
       ...(container.agent_args === undefined ? {} : { agentArgs: container.agent_args }),
     });
-    return { agent: { ...base, adapter: containerAgentAdapter(runner) }, evaluation: undefined, instanceId };
+    return { agent: withClaude({ ...base, adapter: containerAgentAdapter(runner) }), evaluation: undefined, instanceId };
   }
 
   if (!Array.isArray(research.allowed_hosts)) throw new Error('research_agent.allowed_hosts must be an array of host names (use [] to deny every host)');
@@ -173,12 +283,12 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
     ...(overrides.timers === undefined ? {} : { timers: overrides.timers }),
   });
   return {
-    agent: {
+    agent: withClaude({
       ...base,
       adapter: createResearchAgentAdapter({ docker, image: research.image, instance: instanceId, clock, limits }),
       tools: [fetchTool.spec],
       executors: new Map([[fetchTool.spec.tool, fetchTool.executor]]),
-    },
+    }),
     evaluation: {
       fetcher: sourceFetcher,
       ...(llmConfig === undefined ? {} : { llm: (overrides.createLlmVerifier ?? createStubFromConfig)(llmConfig) }),

@@ -5,7 +5,7 @@
 //  1. 토큰·로그인 정보 비접촉: 환경은 `HOME USER LOGNAME PATH` 뿐이고(`buildClaudeEnv`), `setup-token`·`CLAUDE_CODE_OAUTH_TOKEN`·API 키를 만들거나 넘기는 경로가 없다.
 //  2. 본인 PC·본인 구독·계정 공유/교대 금지: 어댑터는 계정을 고르지 않는다(데몬 OS 계정의 로그인 하나). 동시 실행은 `maxConcurrent`(기본 1)로 제한한다.
 //  3. 호스팅 금지: 코드로 강제할 수 없는 운영 규칙이다(문서 handoff·operations 에 적는다).
-//  4. 첫 실행 고지 동의: `consent` 가 없으면 CLI 를 띄우지 않고 `consent_required` 로 끝낸다. 동의를 *받는* 화면·CLI 는 이 어댑터의 일이 아니다(열린 결정).
+//  4. 첫 실행 고지 동의: `consent` 가 없으면 CLI 를 띄우지 않고 `consent_required` 로 끝낸다. 동의를 *받는* 곳은 이 어댑터의 일이 아니다(데몬의 승인 CLI `consent`, apps/daemon/src/consent.ts).
 //  5. API 키 + `--bare` 대안 어댑터: 이 어댑터와 별개의 후속 어댑터다(이 파일은 `--bare` 를 쓰지 않는다).
 //
 // 시작 전에 거부하는 것(CLI 를 띄우지 않는다): 동의 없음, 잘못된 run_id·도구 이름, 비밀로 보이는 값이 든 입력, 너무 긴 프롬프트, CLI 를 못 찾음/실행 불가(`cli_unavailable`).
@@ -47,8 +47,11 @@ export interface ClaudeCodeCliOptions {
   /** run 별 디렉터리를 만드는 절대 경로 (소켓 경로 길이 때문에 짧게). 데몬 전용 OS 계정만 쓸 수 있어야 한다 */
   runRoot: string;
   env: ClaudeEnvInput;
-  /** 가드레일 4. null 이면 모든 run 이 `consent_required` 로 끝난다 */
-  consent: ClaudeCodeConsent | null;
+  /**
+   * 가드레일 4. null 이면 모든 run 이 `consent_required` 로 끝난다. 함수면 run 을 시작할 때마다 부른다 —
+   * 데몬은 승인 CLI 로 받은 동의 기록을 읽는 함수를 넘겨서, 동의·철회가 데몬 재시작 없이 다음 run 부터 적용된다
+   */
+  consent: ClaudeCodeConsent | null | (() => ClaudeCodeConsent | null);
   clock: Clock;
   process?: ProcessPort;
   /** 브리지를 실행할 node. 기본 데몬의 node */
@@ -184,7 +187,7 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
     };
 
     // ----- 시작 전 검사: 여기서 거부하면 CLI 를 띄우지 않는다 -----
-    const consent = options.consent;
+    const consent = typeof options.consent === 'function' ? options.consent() : options.consent;
     if (consent === null || typeof consent.notice_version !== 'string' || consent.notice_version.trim() === '' || typeof consent.accepted_at !== 'string' || consent.accepted_at === '') {
       return refuse('consent_required', 'the first-run notice has not been accepted: automatic runs use your own subscription on your own PC and complying with the provider terms is your responsibility');
     }

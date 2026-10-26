@@ -7,6 +7,8 @@
 // 실행기(A5 U4·U6): `container_agent` 설정이 있으면 컨테이너 샌드박스 어댑터를 실행 관리(time_limit·예산 초과 취소, 비용 기록)에 연결하고, 시작 때 Docker 가용성 확인과
 // 이 인스턴스의 고아 컨테이너 정리(`aot.run` AND `aot.instance`)를 한다. `research_agent` 설정이 더해지면 조사 에이전트 이미지·`fetch_url` 도구·검증기용 출처 조회기(같은 허용 호스트)도 연결한다.
 // 설정이 없으면 실행기가 없어 실행 요청이 오류로 끝난다(기존 동작). 설정 → 조립은 runtime-config.ts.
+// 구독 CLI(ADR-0005 Amendment 2026-10-26): `claude_code_cli` 설정이 있으면 `claude-code-cli` 어댑터를 연결한다(컨테이너 없이 단독이면 기본 어댑터, 컨테이너와 함께면 `roles` 의 역할만).
+// 첫 실행 고지 동의는 설정이 아니라 승인 CLI `consent show|accept|revoke` 로 받은 기록(event)이며 어댑터가 run 마다 읽는다(apps/daemon/src/consent.ts). 동의가 없으면 업무는 needs_review.
 // 팩(A6 U10): `pack_dir` 설정이 있으면 팩을 읽어 루틴을 `enabled=0` 으로 DB 에 반영하고 템플릿 포트를 워커에 연결한다(`pack_values` 로 {{자리표시자}} 치환). 설정이 없으면 기존 동작.
 // LLM 검증기(A6-U12): `llm_verifier: {kind: "stub"}` 설정이 있으면 모델 호출 없는 가짜 검증기를 연결한다(실제 모델은 Q22 후속, 다른 kind 는 거부). 없으면 연결하지 않는다.
 // 측정 값(A6-U13): 팩에 측정 신호 정의가 있으면 승인 소켓에 `measure`·`measurements` 명령이 생기고(사람만, 같은 인증 경계), 평가 포트가 있으면 측정 값 조회기가 연결된다.
@@ -24,6 +26,7 @@ import { applyMigrations, openDb, systemClock } from '@aot/domain';
 import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolling } from '@aot/task-engine';
 
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
+import { readClaudeCodeConsent } from './consent.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
@@ -44,6 +47,8 @@ interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   heartbeat_ms?: number;
   poll_ms?: number;
   retry_delay_ms?: number;
+  /** 어댑터가 미룬(사람 우선 게이트) run 의 retry_wait 대기 시간. 시도를 소모하지 않는다. 기본 15분 */
+  defer_delay_ms?: number;
   /** 기본: AOT_INSTANCE_DIR 또는 instance */
   instance_dir?: string;
   policy_store_dir?: string;
@@ -68,7 +73,7 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
-  const { agent, evaluation } = buildAgentRuntime(config, instanceDir);
+  const { agent, evaluation } = buildAgentRuntime(config, instanceDir, { claudeCodeConsent: () => readClaudeCodeConsent(db) });
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);
@@ -91,6 +96,7 @@ async function main(): Promise<void> {
     ...(phone === undefined ? {} : { phone: phone.options }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
+    ...(config.defer_delay_ms === undefined ? {} : { deferDelayMs: config.defer_delay_ms }),
   });
   if (daemon.pack !== null && daemon.packSync !== null) {
     const { manifest, templates, signals } = daemon.pack;

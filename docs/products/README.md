@@ -20,7 +20,7 @@ candidate ─► verifying ─► pending_approval ─► registered
 | 1. 후보 등록 (`candidate`) | 사람(오너) | 이름, 로컬 저장소 경로 또는 원격 주소만 입력. 에이전트 접근 권한 없음(`access_scope=none`) |
 | 2. 검증 (`verifying`) | 등록 검증 업무 (읽기 전용 역할) | 명세 기반 업무 [`workflows/product-registration`]: 저장소 구조·스택·README·원격·기본 브랜치·활동 이력을 **읽기 전용**으로 수집. 비밀값 스캔, 라이선스 확인, 공개 가능 여부 분류. 결과는 `evidence`로 저장 |
 | 3. 승인 대기 (`pending_approval`) | 평가기 + 사람 | 수집 사실과 근거를 사람이 확인. 공개/내부 분류, 소유 역할, 저장소 접근 범위 결정. 권한 부여는 정책 승인 |
-| 4. 등록 (`registered`) | 사람 승인 | `product`, `product_repo` 기록, `verified` 근거 연결, 이후 업무에서 `product_id` 사용 가능 |
+| 4. 등록 (`registered`) | 사람 승인 (`approval`, `subject_kind='product'`) | `product`, `product_repo` 기록, `verified` 근거 연결, 이후 업무에서 `product_id` 사용 가능 |
 
 ## 규칙
 

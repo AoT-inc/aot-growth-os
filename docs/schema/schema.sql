@@ -1,4 +1,7 @@
--- AoT Growth OS — 스키마 초안 v0 (DRAFT, 미적용)
+-- AoT Growth OS — 스키마 v0 (설계 기준, 단일 원천)
+-- migrations/0001_init.sql 은 이 파일의 복사본이다. 첫 공개 릴리스 전까지는(배포된 DB 없음) 0001 을 이 파일과 함께 직접 고치고,
+-- 첫 릴리스 이후에는 새 마이그레이션과 이 파일을 동시에 고친다
+-- (드리프트 시험: test/unit/schema-drift.test.ts, 결정 기록: docs/plans/phase-a.md §4 A0 "마이그레이션" 항목).
 -- SQLite로 시작, Postgres 이식 가능한 범위(JSON은 TEXT, 시간은 ISO8601 UTC TEXT).
 -- 규칙: 변경 이력이 중요한 테이블은 append-only(UPDATE/DELETE 금지)로 다룬다.
 
@@ -93,13 +96,14 @@ CREATE TABLE product (
   id              TEXT PRIMARY KEY,
   slug            TEXT NOT NULL UNIQUE,       -- 예: example-product (실제 제품명은 내부 DB에만)
   name            TEXT NOT NULL,
+  kind            TEXT NOT NULL CHECK (kind IN ('software','physical','service','other')),  -- 업종 중립 (ADR-0012 §5)
   description     TEXT,
   lifecycle_stage TEXT NOT NULL CHECK (lifecycle_stage IN
                     ('idea','development','beta','live','maintenance','sunset')),
   owner_org_unit_id TEXT REFERENCES org_unit(id),
   registration_status TEXT NOT NULL DEFAULT 'candidate' CHECK (registration_status IN
                     ('candidate','verifying','pending_approval','registered','rejected')),
-  registration_approval_id TEXT,              -- approval.id (registered 필수, 애플리케이션 규칙)
+  registration_approval_id TEXT,              -- approval.id (subject_kind='product'. registered 필수, 애플리케이션 규칙)
   registered_at   TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
@@ -107,6 +111,7 @@ CREATE TABLE product (
 
 -- 등록 검증 업무가 수집한 사실은 evidence로 저장하고, 승인 시 아래 컬럼에 반영한다.
 -- registered가 아닌 product는 task/event/... 의 product_id가 가리킬 수 없다 (애플리케이션 규칙).
+-- 저장소는 선택이다: product 하나가 0..N개의 product_repo를 가진다 (ADR-0012 §5). 소프트웨어가 아닌 상품은 0개.
 CREATE TABLE product_repo (
   id           TEXT PRIMARY KEY,
   product_id   TEXT NOT NULL REFERENCES product(id),
@@ -129,9 +134,9 @@ CREATE TABLE product_environment (
 -- ===== 정책 / 전략 (버전) =====
 CREATE TABLE policy_version (
   id           TEXT PRIMARY KEY,              -- 예: policy-2026-10-14.1
-  content_hash TEXT NOT NULL,                 -- policies/ 디렉터리 해시
+  content_hash TEXT NOT NULL,                 -- 정책 문서의 정규화 내용 해시 (ADR-0013)
   change_class TEXT NOT NULL CHECK (change_class IN ('normal','risky')),
-  approved_by  TEXT NOT NULL,                 -- JSON: approver actor ids (risky는 2인 이상)
+  approved_by  TEXT NOT NULL,                 -- JSON: approver actor ids (risky는 현재 정책의 risky_change.min_approvers 이상)
   deployed_at  TEXT NOT NULL,
   rollback_of  TEXT REFERENCES policy_version(id)
 );
@@ -259,10 +264,14 @@ CREATE TABLE external_effect (
   target       TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   state        TEXT NOT NULL CHECK (state IN ('planned','dispatched','confirmed','failed','unknown','compensated')),
-  supports_idempotency INTEGER NOT NULL,      -- 외부 시스템의 멱등 키 지원 여부
+  supports_idempotency INTEGER NOT NULL CHECK (supports_idempotency IN (0, 1)), -- 이 키의 같은 키 재전송 허가 ((도구, action) 선언의 INSERT 시 스냅숏, 현재 선언으로 강화만 됨)
+  idempotency_retention_ms INTEGER,           -- 키 보존 기간(ms). supports_idempotency=1 일 때만, 강화만 됨. Postgres 이식 시 BIGINT
   response_ref TEXT,
   compensation_ref TEXT,
-  at           TEXT NOT NULL
+  planned_at   TEXT NOT NULL,                 -- 최초 planned 시각. INSERT 때만 쓴다 (재전송 창의 기준, recovery §3)
+  at           TEXT NOT NULL,                 -- 마지막 전이 시각 (전이마다 갱신)
+  CHECK ((supports_idempotency = 0 AND idempotency_retention_ms IS NULL)
+      OR (supports_idempotency = 1 AND idempotency_retention_ms IS NOT NULL AND idempotency_retention_ms > 0))
 );
 
 -- 정책 판정 기록 (append-only). 권한은 도구 이름이 아니라 7요소로 판정한다 (ADR-0006).
@@ -278,6 +287,7 @@ CREATE TABLE policy_decision (
   constraints  TEXT,                          -- JSON: 예산·횟수·시간·대상 수
   approval_required TEXT,                     -- JSON: 필요한 승인자/채널
   decision     TEXT NOT NULL CHECK (decision IN ('allow','deny','require_approval')),
+  reason       TEXT NOT NULL,                 -- 판정 사유 (일치한 규칙, 거부·승인 미충족 이유). 비밀값을 넣지 않는다
   policy_version_id TEXT NOT NULL REFERENCES policy_version(id),
   at           TEXT NOT NULL
 );
@@ -290,6 +300,7 @@ CREATE TABLE evidence (
   kind         TEXT NOT NULL CHECK (kind IN ('source_url','document','test_result','run_log','measurement','approval','other')),
   ref          TEXT NOT NULL,                 -- URL / 파일 해시 / 로그 위치
   content_hash TEXT,
+  trust_origin TEXT NOT NULL CHECK (trust_origin IN ('internal','external_untrusted')),  -- 근거의 신뢰 출처 (기본값 없음: 쓰는 쪽이 밝힌다). 외부 페이지·문서에서 온 근거는 external_untrusted. 에이전트 출력 경로는 호스트가 항상 external_untrusted 로 쓴다
   captured_at  TEXT NOT NULL,
   verified     INTEGER NOT NULL DEFAULT 0,    -- 결정론적 검사 통과 여부
   verification_note TEXT
@@ -308,7 +319,7 @@ CREATE TABLE cost_entry (                     -- append-only
 
 CREATE TABLE approval (
   id           TEXT PRIMARY KEY,
-  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('task','strategy_version','policy_version','publication','tool_call')),
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('task','strategy_version','policy_version','publication','tool_call','product','org_proposal')),  -- product: 상품 등록 승인, org_proposal: 조직 제안 승인
   subject_id   TEXT NOT NULL,
   decision     TEXT NOT NULL CHECK (decision IN ('approved','rejected','changes_requested')),
   subject_hash TEXT,                          -- 승인 당시 대상 내용의 해시 (내용이 바뀌면 승인 무효)
@@ -316,11 +327,25 @@ CREATE TABLE approval (
   comment      TEXT,
   at           TEXT NOT NULL
 );
+CREATE INDEX approval_subject ON approval(subject_kind, subject_id, at);
+
+-- 사람 재인증 기록 (trust-boundaries §3.1, 위험 변경의 실행 직전 재인증). append-only.
+-- TOTP 비밀과 입력 코드는 남기지 않는다. 같은 시간창(time_step)의 코드는 다시 받지 않는다.
+CREATE TABLE human_reauth (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id     TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 (애플리케이션 규칙)
+  method       TEXT NOT NULL CHECK (method IN ('totp')),
+  time_step    INTEGER NOT NULL,              -- TOTP 시간창 번호 (RFC 6238 T)
+  purpose      TEXT NOT NULL,                 -- 재인증 대상 (예: release:task:<id>:<approved_hash>)
+  at           TEXT NOT NULL,
+  UNIQUE (actor_id, method, time_step)
+);
 
 -- ===== 평가 (ADR-0007) =====
 CREATE TABLE evaluation (
   id           TEXT PRIMARY KEY,
   task_id      TEXT NOT NULL REFERENCES task(id),
+  task_run_id  TEXT REFERENCES task_run(id), -- 평가 대상 run (재검증 시 중복 기록 흡수용)
   evaluator    TEXT NOT NULL,                 -- 평가기 id@version
   validation_passed INTEGER NOT NULL,
   outcome      TEXT NOT NULL CHECK (outcome IN ('pass','fail','inconclusive')),  -- 증거 부족 시 억지로 결정하지 않음
@@ -334,7 +359,8 @@ CREATE TABLE evaluation (
   evidence_refs TEXT NOT NULL,                -- JSON
   total_cost_usd REAL,
   human_minutes  REAL,
-  at           TEXT NOT NULL
+  at           TEXT NOT NULL,
+  UNIQUE (task_id, task_run_id, evaluator)
 );
 
 -- ===== 기억 (ADR-0008) =====
@@ -371,3 +397,13 @@ CREATE TABLE publication (
   approval_id  TEXT REFERENCES approval(id),  -- audience!='internal'이면 published에 필수 (애플리케이션 규칙)
   published_at TEXT
 );
+
+-- ===== append-only 강제 (SQLite 트리거; Postgres 이식 시 동등한 규칙/트리거로 교체) =====
+CREATE TRIGGER task_transition_no_update BEFORE UPDATE ON task_transition BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER task_transition_no_delete BEFORE DELETE ON task_transition BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER cost_entry_no_update BEFORE UPDATE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER cost_entry_no_delete BEFORE DELETE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER policy_decision_no_update BEFORE UPDATE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER policy_decision_no_delete BEFORE DELETE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER human_reauth_no_update BEFORE UPDATE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER human_reauth_no_delete BEFORE DELETE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;

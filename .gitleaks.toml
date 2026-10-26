@@ -1,0 +1,26 @@
+# 비밀값 스캔 설정 (docs/spikes/q21-secret-scanner.md, docs/security/public-repository.md).
+# 실행은 scripts/scan-secrets.mjs 가 한다: 항상 --redact, 기본 규칙 + 아래 사용자 규칙.
+# 인스턴스별 금지어(내부 제품명 등)는 이 파일에 쓰지 않는다. 저장소 밖(instance/gitleaks-banned.toml 또는
+# AOT_BANNED_CONFIG 가 가리키는 파일)에 같은 형식의 규칙으로 둔다.
+title = "aot-growth-os"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "db-url-password"
+description = "Credentials embedded in a connection URL"
+regex = '''(?i)[a-z][a-z0-9+.-]*://[^\s:/@]+:([^\s:/@]{6,})@'''
+secretGroup = 1
+keywords = ["://"]
+
+[[rules]]
+id = "local-home-path"
+description = "Absolute path into a user home directory (public repository must not carry local paths)"
+regex = '''(?:/Users|/home)/[A-Za-z0-9._-]+/[A-Za-z0-9._-]'''
+keywords = ["/users/", "/home/"]
+
+# 허용 목록: 항목마다 이유를 남긴다.
+[[allowlists]]
+description = "Installed dependencies are not part of the repository"
+paths = ['''(^|/)node_modules/''']

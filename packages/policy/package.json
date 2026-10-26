@@ -1,0 +1,14 @@
+{
+  "name": "@aot/policy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "정책 판정·승인 엔진 (A3)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@aot/domain": "0.0.0"
+  }
+}

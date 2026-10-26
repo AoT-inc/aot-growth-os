@@ -25,7 +25,7 @@
 
 ### 3. 조직 변경은 제안 객체를 거친다
 - `org_proposal`: 변경 내용(diff), 이유, 근거(`evaluation`/`task` 통계/`memory_item` 참조), 예상 효과와 위험, 변경 등급(`normal|risky`).
-- 흐름: `proposed → approved → trial → active`, 거절 시 `rejected`, 실패 시 `rolled_back`.
+- 흐름: `proposed → approved → trial → active`, 거절 시 `rejected`, 실패 시 `rolled_back`. `approved`는 사람의 `approval`(`subject_kind='org_proposal'`) 기록으로만 일어난다.
 - 승인 후 곧바로 `active`가 되지 않고 **시험 기간(`trial`)** 을 거친다. 기본 최소 2주(주간 사이클 2회). 시험 기간 동안 영향 범위는 제안에 명시한 업무 유형으로 제한한다.
 - 확정마다 `org_version`을 만들고 이전 버전으로 롤백할 수 있다.
 
@@ -63,3 +63,19 @@
 4. **롤백 범위.** 조직 버전 복구뿐 아니라 새 역할의 예약 루틴, 진행 중·대기 업무 처리를 `rollback_plan`에 정의한다. 이미 발생한 외부 부작용은 자동 복구되지 않으며 보상 업무 또는 사람의 처리가 필요하다. 역할 폐지는 업무 기록과 책임 이력을 보존한다.
 5. **개발 단계.** 조직 관리팀의 제안·승인·시험·평가는 Phase B에서 구현한다 ([overview §6](../00-overview.md)). Phase A는 고정된 최소 조직으로 실행 기반을 검증한다.
 상세 상태 전이는 [state-machines](../schema/state-machines.md), 평가 규칙은 [operations/evaluation.md](../operations/evaluation.md).
+
+## Amendment (2026-10-19): Phase A 시드 조직 (Q23 해소)
+
+Phase A는 `task.policy_version_id`가 NOT NULL이고 업무가 `trial`/`active` 역할에만 배정되므로 시드가 필요하다. 아래 최소 구성을 고정하며, 실제 이름은 `instance/`에 둔다 ([a0-decisions D4](../plans/a0-decisions.md)).
+
+| 대상 | 시드 값 |
+|---|---|
+| `actor` | 오너 1명(`kind='human'`), 데몬·평가기·정책 엔진 시스템 주체 |
+| `org_version` | v1, 부서 없음(또는 `core` 하나) |
+| `role` | `generalist@v1`(주간 조사·실험 제안), `registration-verifier@v1`(읽기 전용) |
+| `policy_version` | v1: 기본 거부, `internal` 읽기 허용, `write`는 업무 범위 내 허용, `external_effect`·`customer`/`public` 범위는 `require_approval` |
+
+- `registration-verifier`는 상품 등록 검증 업무([workflows/product-registration](../../workflows/product-registration.md))에 대응하는 읽기 전용 최소 권한 역할이다. 업무 템플릿과 바로 맞고 정책 테스트가 쉬워 미리 둔다. 본문 §1의 `generalist` 외에 검증 전용 역할 하나를 시드로 더하는 예외이며, 이 예외는 이 Amendment로만 허용한다.
+- 이 역할은 시드 시점부터 `active`이며 별도 시험 기간이 없다. 조직 관리팀이 만든 역할이 아니므로 `org_proposal` 흐름의 대상이 아니다. 이후 변경은 §3의 제안 흐름을 따른다.
+- 부서는 만들지 않는다. 본문 §1의 "실제 업무로 검증되지 않은 부서를 만들지 않는다" 원칙은 유지된다.
+- [task-spec 예시](../schema/task-spec.md)의 `planning`/`market-researcher`는 가상 예시로 두며, Phase A 시드와 맞추려면 `generalist`로 바꾼다.

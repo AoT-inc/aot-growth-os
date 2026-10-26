@@ -23,3 +23,10 @@
 
 ## Amendment (2026-10-14): 기억 항목 속성
 `memory_item`에 `observed_at`, `verification_status`, `sensitivity`, `trust_origin`을 추가하고 `valid_until`을 재검토 시점으로 쓴다. 외부 입력 유래 정보는 `hypothesis`/`unverified`로 시작하며 외부 콘텐츠 안의 지시는 기억이 아니라 데이터다. 상세는 [schema/memory-item.md](../schema/memory-item.md).
+
+## Amendment (2026-10-23): 근거의 신뢰 출처
+`evidence`에도 `trust_origin`(필수, 기본값 없음, `memory_item`과 같은 어휘)을 둔다. 외부 입력에서 만든 근거(`external_untrusted`)를 `source_ref = evidence:<id>`로 가리키는 기억 항목은 같은 신뢰 출처를 물려받고 `internal`로 적을 수 없으므로, 기존 규칙(외부 입력 유래는 `hypothesis`/`unverified`)에 따라 근거를 거쳐도 현재 사실이 되지 않는다. 규칙 9, [memory-item](../schema/memory-item.md).
+
+## Amendment (2026-10-24): 실험 결과의 기억과 전략 상태 (A6-U16)
+- 실험의 실제 결과는 `measurement`(측정 값·기준선·효과)와 `strategy_record`(전략·결론·실험 총비용)로 기억에 남는다. 값은 시스템이 계산한 것과 사람이 입력한 원본만 담고 기획·검토 에이전트의 문장은 복사하지 않는다(다음 주 입력으로 읽혀도 지시가 될 수 없다). 다음 주 기획 업무는 현재 `active` 전략과 가장 최근 *현재 사실* `strategy_record`를 입력으로 받는다(반증·만료·대체·외부 유래 항목은 제외). 전략 상태 허용표에 `experiment → rejected`(사람 또는 평가 `fail`일 때 시스템, 사유 필수, 에이전트 불가)를 더했다: 판정에 실패했거나 활성화가 거부된 실험이 `experiment`에 남아 다음 실험 승인을 막지 않게 한다. `experiment → active` 승격은 기록된 결과가 `pass`일 때 사람만 하고 이전 `active`는 `retired`로 둔다. 절차는 [memory-item "실험 결과 기록"](../schema/memory-item.md), [state-machines](../schema/state-machines.md).
+

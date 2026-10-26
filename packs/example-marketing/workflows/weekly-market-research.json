@@ -1,0 +1,29 @@
+{
+  "id": "weekly-market-research",
+  "version": 1,
+  "description": "주간 시장 조사 템플릿. {{이름}} 자리표시자는 데몬 설정의 pack_values 로 채운다(제품 slug, 조사 출처 주소와 호스트). 값은 instance/ 에만 둔다.",
+  "tasks": [
+    {
+      "name": "research",
+      "spec": {
+        "objective": "{{product}} 관련 시장의 지난 7일 주요 변화를 출처와 함께 정리한다",
+        "role": "generalist",
+        "product": "{{product}}",
+        "inputs": [
+          {"name": "keywords", "ref": "strategy:active#research_keywords", "kind": "strategy"},
+          {"name": "market-news", "ref": "{{research_source_url}}", "kind": "source_url"}
+        ],
+        "allowed_tools": [{"tool": "fetch_url", "operations": ["fetch"], "scope": "internal", "impact": "read"}],
+        "constraints": {"time_limit": "30m", "network_allowlist": ["{{research_host}}"], "publish_scope": "internal"},
+        "acceptance_criteria": [
+          "각 주장에 접근 가능한 출처 URL이 1개 이상 있다",
+          "각 인용문이 출처 원문에 존재한다",
+          "불확실성 항목이 명시되어 있다",
+          "동일 주장이 중복되지 않는다"
+        ],
+        "validation": {"deterministic": ["url_reachable", "quote_in_source", "dedupe", "budget", "uncertainty_listed"], "llm": null, "human": false},
+        "cost_budget": {"max_usd": 2.0}
+      }
+    }
+  ]
+}

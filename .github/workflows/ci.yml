@@ -1,0 +1,71 @@
+# CI 필수 통과 항목 (docs/plans/phase-a.md §4 "CI 필수 통과 항목"):
+#   타입 검사, lint(경계 포함), 테스트, 스캔(비밀값·금지어·이력), 스키마 적용.
+# 공개 CI 는 가짜 어댑터·가짜 도구 테스트만 실행한다. 실제 에이전트·외부 서비스를 호출하는 테스트는 여기서 돌리지 않는다.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 이력 스캔에 전체 이력이 필요하다
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Module boundaries (dependency direction, public API only, packs)
+        run: npm run lint:boundaries
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests (multi-process SQLite)
+        run: npm run test:integration
+
+      - name: Boundary rule tests (injected violations must fail)
+        run: npm run test:boundaries
+
+      - name: Apply schema.sql to an empty database
+        run: |
+          sqlite3 --version
+          npm run check:schema
+
+      - name: Install gitleaks (checksum verified)
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o gitleaks.tgz "${base}/${archive}"
+          curl -sSfL -o gitleaks_checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          awk -v f="${archive}" '$2 == f { print $1 "  gitleaks.tgz" }' gitleaks_checksums.txt | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm -f gitleaks gitleaks.tgz gitleaks_checksums.txt
+
+      - name: Secret scan (working tree)
+        run: npm run scan:secrets
+
+      - name: Secret scan (commit history)
+        run: npm run scan:history

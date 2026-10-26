@@ -63,7 +63,7 @@ node apps/daemon/src/approve.ts --actor <사람 actor> consent revoke           
 | `server_limited` | 서버 쪽 제한·429(미확인 문구) | 예 |
 | `cli_unavailable` | `claude` 를 못 찾거나 실행 못 함 | 예 |
 | `consent_required` | 고지 동의 없음 | 예 |
-| `usage_deferred` | 사람 우선 게이트가 새 run을 미룸(`yieldUtilization`). 실패가 아니라 "나중에 다시"이므로 실행기의 재시도/다음 주기에 맡긴다 | 아니오 |
+| `usage_deferred` | 사람 우선 게이트가 새 run을 미룸(`yieldUtilization`). 실패가 아니라 "나중에 다시"이므로 시도를 소모하지 않는다: 실행기가 `RunKilledError('deferred')`로 올려 run은 `killed`, 업무는 `running → retry_wait`(`deferDelayMs` 뒤, 기본 15분) | 아니오 |
 | `permission_denied` | 에이전트가 허용 밖 도구를 시도(`permission_denials`). 결과를 믿지 않는다 | 아니오 |
 | `isolation_violation` | init에 기대 밖 도구(Bash 등)·MCP 서버·스킬이 보임. CLI를 바로 멈춘다 | 아니오 |
 | `gateway_unavailable` | 게이트웨이 MCP가 연결되지 않음(종료 코드 0이라 init에서만 드러난다) | 아니오 |
@@ -88,7 +88,8 @@ node apps/daemon/src/approve.ts --actor <사람 actor> consent revoke           
 
 | 항목 | 현재 |
 |---|---|
-| 검토 대상 코드 → `needs_review` | **연결됨(2026-10-26).** 실행기(`apps/daemon/src/agent-executor.ts`)가 5개 코드를 `RunKilledError('review_required')`로 올려 `running → needs_review`(시도 소모 없음). 남은 후속: 한도 리셋 후 자동 재큐(문구 확정 뒤), `usage_deferred`는 아직 `failed`(재시도)로 흘러 시도를 소모한다 |
+| 검토 대상 코드 → `needs_review` | **연결됨(2026-10-26).** 실행기(`apps/daemon/src/agent-executor.ts`)가 5개 코드를 `RunKilledError('review_required')`로 올려 `running → needs_review`(시도 소모 없음). 남은 후속: 한도 리셋 후 자동 재큐(문구 확정 뒤) |
+| `usage_deferred` 처리 | **연결됨(2026-10-26).** 시도를 소모하지 않고 `deferDelayMs`(데몬 설정 `defer_delay_ms`, 기본 15분) 뒤 다시 집힌다. 미룸이 반복돼도 `failed`가 되지 않고 횟수 상한도 없다 — 창이 리셋되거나 사용률이 임계값 아래로 내려갈 때까지 대기한다(주간 창이면 며칠). 미룰 때마다 `killed` run 한 줄이 남는다(15분 간격이면 하루 최대 96건). 길이를 줄이려면 대기 시간을 늘리거나, 어댑터가 리셋 시각을 실행기에 알리는 방식은 후속 |
 | 비용 기록 | 어댑터는 `cost.tokens` 만 낸다(입력+출력+캐시 토큰 합). 정가 환산 추정치(`total_cost_usd`)는 구독 소진량이 아니라 run_log에만 둔다 — `usd` 로 내면 업무 USD 예산 초과로 kill될 수 있고 `cost_entry` 스키마에 `subscription_estimate` 단위가 없다. 별도 단위·열이 필요한지 사용자 결정(스키마 변경) |
 | `--max-budget-usd`, 턴 한도 | 턴 한도는 `assistant` 메시지 계수(기본 40), `--max-budget-usd` 는 기본 꺼짐. 시범 운영의 `total_cost_usd`·`utilization` 측정 후 정한다 |
 | 요금제 | Pro → Max 5x → API 전환 기준은 시범 운영 측정 후 |

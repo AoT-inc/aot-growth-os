@@ -8,7 +8,7 @@ import { describe, it, type TestContext } from 'node:test';
 
 import { FakeClock } from '@aot/domain';
 import {
-  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, isClaudeCodeReviewCode, validateAdapterOutput,
+  CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, isClaudeCodeDeferredCode, isClaudeCodeReviewCode, validateAdapterOutput,
   type AdapterContext, type AdapterInput, type AdapterOutput, type ClaudeCodeCliOptions, type ClaudeCodeConsent, type JsonObject, type ToolGatewayResponse,
 } from '@aot/agent-runtime';
 
@@ -597,6 +597,8 @@ describe('claude-code-cli 어댑터: 사람 우선 게이트 (yieldUtilization)'
     const output = await h.start(next('run-2')).done;
     assert.equal(errorCode(output), 'usage_deferred');
     assert.equal(isClaudeCodeReviewCode('usage_deferred'), false, 'deferral is a retry-later, not a review item');
+    assert.equal(isClaudeCodeDeferredCode('usage_deferred'), true);
+    assert.equal(isClaudeCodeDeferredCode('usage_limit'), false);
     assert.equal(h.docker.spawned.length, spawnedBefore, 'the claude process must not be started');
     assert.match(output.error?.message ?? '', /five_hour.*92%.*threshold 70%/);
     assert.ok(output.run_log.some((e) => e.message.includes('usage_deferred')));

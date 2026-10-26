@@ -67,6 +67,6 @@ export {
   buildWorkdirFiles, mcpToolName, TASK_INSTRUCTIONS, upstreamFileOf, type BridgeTool, type ClaudeArgsInput, type ClaudeEnvInput,
 } from './claude-code/invocation.ts';
 export {
-  applyStreamEvent, checkInit, CLAUDE_CODE_REVIEW_CODES, classifyRun, newStreamState, parseStreamLine, parseStructuredOutput, summarizeStreamEvent, DEFAULT_LIMIT_PATTERNS, DEFAULT_SERVER_LIMIT_PATTERNS, isClaudeCodeReviewCode, resultJsonSchema,
+  applyStreamEvent, checkInit, CLAUDE_CODE_DEFERRED_CODE, CLAUDE_CODE_REVIEW_CODES, classifyRun, newStreamState, parseStreamLine, parseStructuredOutput, summarizeStreamEvent, DEFAULT_LIMIT_PATTERNS, DEFAULT_SERVER_LIMIT_PATTERNS, isClaudeCodeDeferredCode, isClaudeCodeReviewCode, resultJsonSchema,
   type ClaudeCodeReviewCode, type ClassifiedRun, type ExpectedInit, type StreamState,
 } from './claude-code/stream.ts';

@@ -279,11 +279,18 @@ export function checkInit(init: InitInfo, expected: ExpectedInit): { gatewayProb
 
 /**
  * 사람이 보거나 시간이 지나야 풀리는 오류 코드. 업무를 `failed` 로 쓰지 말고 `needs_review`(재시도 대상)로 보내야 한다 (ADR-0005 Amendment 2026-10-25).
- * 이 어댑터는 `AdapterOutput.error.code` 로만 알린다; 코드를 업무 상태로 옮기는 일은 실행기 쪽 몫이다(docs/plans/handoff-q4-cc-adapter.md 의 열린 결정).
+ * 이 어댑터는 `AdapterOutput.error.code` 로만 알린다; 코드를 업무 상태로 옮기는 일은 실행기 쪽 몫이다(apps/daemon/src/agent-executor.ts).
  */
 export const CLAUDE_CODE_REVIEW_CODES = ['login_required', 'usage_limit', 'server_limited', 'cli_unavailable', 'consent_required'] as const;
 export type ClaudeCodeReviewCode = (typeof CLAUDE_CODE_REVIEW_CODES)[number];
 export const isClaudeCodeReviewCode = (code: string): code is ClaudeCodeReviewCode => (CLAUDE_CODE_REVIEW_CODES as readonly string[]).includes(code);
+
+/**
+ * 실패도 검토 대상도 아닌 "나중에 다시": 사람 우선 게이트(`yieldUtilization`)가 CLI 를 띄우지 않고 새 run 을 미뤘다.
+ * 실행기는 시도를 소모하지 않고 잠시 뒤 다시 집히게 한다.
+ */
+export const CLAUDE_CODE_DEFERRED_CODE = 'usage_deferred';
+export const isClaudeCodeDeferredCode = (code: string): boolean => code === CLAUDE_CODE_DEFERRED_CODE;
 
 /**
  * 사용량 한도 문구 (공식 문서 `errors` 의 "Usage limits" 절). **headless JSON 에서 실제로 어떻게 나오는지는 미확인** — 사용자 PC 에서 한도 도달 한 건을 관찰한 뒤 확정한다.

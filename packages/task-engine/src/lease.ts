@@ -352,6 +352,8 @@ export interface KillRunOptions {
   detail: string;
   /** time_limit 의 retry_wait 대기 시간 */
   retryDelayMs: number;
+  /** deferred 의 retry_wait 대기 시간 (시도를 소모하지 않는다). 생략하면 `retryDelayMs` */
+  deferDelayMs?: number;
 }
 
 /**
@@ -359,6 +361,7 @@ export interface KillRunOptions {
  *  - time_limit: `timeout` 과 같다. 시도 1회를 소모하고 attempts < max_attempts 면 retry_wait, 아니면 failed
  *  - budget_exceeded: 재시도해도 같은 예산이라 소용이 없으므로 시도를 소모하지 않고 needs_review (사람이 예산·명세를 정한다)
  *  - review_required: 재시도해도 같은 조건이라 시도를 소모하지 않고 needs_review (사람이 조건을 풀고 다시 큐에 넣는다)
+ *  - deferred: 어댑터가 일을 시작하지 않고 미뤘다. 시도를 소모하지 않고 `deferDelayMs` 뒤의 retry_wait (시도가 남았는지와 무관하다 — 실패가 아니다)
  * 어느 쪽이든 재전송할 수 없는 unknown 부작용(미지원·창 닫힘)이 남았으면 run 은 effect_unknown, 업무는 needs_review (§3).
  */
 export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOptions): RunEnd {
@@ -371,6 +374,13 @@ export function killRun(db: Db, clock: Clock, lease: Lease, options: KillRunOpti
     const reason = `run ${lease.runId} killed: ${options.reason}: ${options.detail}`.slice(0, 500);
     const blocked = settleRunEffects(tx, lease.runId, now);
     closeRun(tx, lease.runId, blocked ? 'effect_unknown' : 'killed', now);
+    if (options.reason === 'deferred' && !blocked) {
+      transitionTask(tx, {
+        taskId: lease.taskId, from: 'running', to: 'retry_wait', by: 'scheduler', now, reason,
+        set: { next_run_at: isoAfter(clock.nowMs(), options.deferDelayMs ?? options.retryDelayMs) },
+      });
+      return { outcome: 'killed', taskStatus: 'retry_wait' };
+    }
     transitionTask(tx, {
       taskId: lease.taskId, from: 'running', to: 'needs_review', by: 'scheduler', now,
       reason: blocked ? `${unknownEffectReason(lease.runId)}; ${reason}` : reason,

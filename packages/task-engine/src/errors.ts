@@ -67,8 +67,11 @@ export class StaleStateError extends Error {
   }
 }
 
-/** run 을 강제로 끝낸 사유. `review_required` 는 사람이 풀어야 하는 조건(로그인 만료·사용량 한도 등)이라 재시도하지 않고 검토로 보낸다 */
-export type RunKillReason = 'time_limit' | 'budget_exceeded' | 'review_required';
+/**
+ * run 을 강제로 끝낸 사유. `review_required` 는 사람이 풀어야 하는 조건(로그인 만료·사용량 한도 등)이라 재시도하지 않고 검토로 보낸다.
+ * `deferred` 는 어댑터가 일을 시작하지 않고 나중으로 미뤘다(구독 사용량을 사람 몫으로 남기는 게이트): 시도를 소모하지 않고 잠시 뒤 다시 집힌다
+ */
+export type RunKillReason = 'time_limit' | 'budget_exceeded' | 'review_required' | 'deferred';
 
 /** 실행 관리가 run 을 강제로 끝냈다(시간 제한 초과, 예산 초과, 사람의 검토가 필요한 조건). 실행기가 던지면 워커가 run 을 `killed` 로 닫는다 */
 export class RunKilledError extends Error {

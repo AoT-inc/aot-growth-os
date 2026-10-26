@@ -1,6 +1,7 @@
-// claude-code-cli 의 검토 대상 오류 코드(로그인 만료·사용량 한도 등)는 데몬 조립에서 재시도(retry_wait)가 아니라 needs_review 로 간다.
-//  - 시도를 소모하지 않는다(재시도해도 같은 조건). run 은 killed. 사람이 조건을 풀고 다시 큐에 넣는다.
-//  - 그 밖의 어댑터 오류(cli_failed, usage_deferred 등)는 이전과 같이 retry_wait 로 간다(시도 소모).
+// claude-code-cli 의 오류 코드가 데몬 조립에서 업무 상태로 가는 길:
+//  - 검토 대상 코드(로그인 만료·사용량 한도 등)는 재시도(retry_wait)가 아니라 needs_review 로 간다. 시도를 소모하지 않는다(재시도해도 같은 조건). run 은 killed. 사람이 조건을 풀고 다시 큐에 넣는다.
+//  - usage_deferred(사람 우선 게이트가 미룸)는 실패가 아니다: run 은 killed, 업무는 defer 대기 뒤 다시 집히는 retry_wait 이고 시도를 소모하지 않는다 — 몇 번 미뤄져도 failed 가 되지 않는다.
+//  - 그 밖의 어댑터 오류(cli_failed 등)는 이전과 같이 retry_wait 로 간다(시도 소모).
 // 외부 접근은 없다(어댑터 출력을 직접 내는 시험용 어댑터).
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -35,7 +36,7 @@ async function runOnce(t: Parameters<typeof policyEnv>[0], code: string) {
   });
   const taskId = createWithGate(env, readOnlyDraft({}));
   await daemon.worker.tick();
-  return { env, taskId };
+  return { env, daemon, taskId };
 }
 
 for (const code of CLAUDE_CODE_REVIEW_CODES) {
@@ -55,4 +56,26 @@ test('a non-review adapter error (cli_failed) still goes to retry_wait and uses 
   assert.equal(taskStatus(env.db, taskId), 'retry_wait');
   assert.equal(attemptsOf(env.db, taskId), 1);
   assert.deepEqual(runsOf(env.db, taskId).map((run) => run.outcome), ['error']);
+});
+
+test('usage_deferred: run killed, task retry_wait without an attempt; deferred again and again (more times than max_attempts) it never fails', async (t) => {
+  const { env, daemon, taskId } = await runOnce(t, 'usage_deferred');
+  const maxAttempts = Number(env.db.get('SELECT max_attempts FROM task WHERE id = ?', [taskId])?.['max_attempts']);
+  for (let round = 1; round <= maxAttempts + 2; round += 1) {
+    assert.equal(taskStatus(env.db, taskId), 'retry_wait', `round ${round}`);
+    assert.equal(attemptsOf(env.db, taskId), 0);
+    assert.match(lastTransition(env.db, taskId).reason, /killed: deferred: usage_deferred:/);
+    env.clock.advance(15 * 60_000); // defer 대기(기본 15분)가 지나야 다시 집힌다
+    await daemon.worker.tick();
+  }
+  assert.equal(taskStatus(env.db, taskId), 'retry_wait');
+  assert.equal(attemptsOf(env.db, taskId), 0);
+  assert.deepEqual(runsOf(env.db, taskId).map((run) => run.outcome), Array.from({ length: maxAttempts + 3 }, () => 'killed'));
+});
+
+test('usage_deferred is not picked again before the defer delay', async (t) => {
+  const { env, daemon, taskId } = await runOnce(t, 'usage_deferred');
+  env.clock.advance(15 * 60_000 - 1);
+  await daemon.worker.tick();
+  assert.equal(runsOf(env.db, taskId).length, 1, 'still waiting');
 });

@@ -83,6 +83,8 @@ export interface AssembleOptions {
   tools?: Readonly<Record<string, EffectTool>>;
   lease?: Partial<LeaseParams>;
   retryDelayMs?: number;
+  /** 어댑터가 미룬 run 의 retry_wait 대기 시간 (시도 소모 없음). 기본 15분 */
+  deferDelayMs?: number;
   timers?: Timers;
   /**
    * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
@@ -239,6 +241,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     ...(tools === undefined ? {} : { tools }),
     ...(options.lease === undefined ? {} : { lease: options.lease }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
+    ...(options.deferDelayMs === undefined ? {} : { deferDelayMs: options.deferDelayMs }),
     ...(options.timers === undefined ? {} : { timers: options.timers }),
     ...(pack === null ? {} : { routines: { source: pack.templateSource } }),
   });

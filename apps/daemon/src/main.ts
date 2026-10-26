@@ -47,6 +47,8 @@ interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   heartbeat_ms?: number;
   poll_ms?: number;
   retry_delay_ms?: number;
+  /** 어댑터가 미룬(사람 우선 게이트) run 의 retry_wait 대기 시간. 시도를 소모하지 않는다. 기본 15분 */
+  defer_delay_ms?: number;
   /** 기본: AOT_INSTANCE_DIR 또는 instance */
   instance_dir?: string;
   policy_store_dir?: string;
@@ -94,6 +96,7 @@ async function main(): Promise<void> {
     ...(phone === undefined ? {} : { phone: phone.options }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
+    ...(config.defer_delay_ms === undefined ? {} : { deferDelayMs: config.defer_delay_ms }),
   });
   if (daemon.pack !== null && daemon.packSync !== null) {
     const { manifest, templates, signals } = daemon.pack;

@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
-  const { agent, evaluation } = buildAgentRuntime(config, instanceDir, { claudeCodeConsent: () => readClaudeCodeConsent(db), db });
+  const { agent, evaluation, productChannel } = buildAgentRuntime(config, instanceDir, { claudeCodeConsent: () => readClaudeCodeConsent(db), db });
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);
@@ -92,6 +92,7 @@ async function main(): Promise<void> {
       ? { adapter: 'unconfigured', executor: { execute: () => Promise.reject(new Error('no executor configured (set container_agent)')) } }
       : { agent }),
     ...(evaluation === undefined ? {} : { evaluation }),
+    ...(productChannel === undefined ? {} : { productChannel }),
     ...(pack === undefined ? {} : { pack }),
     ...(cycle === undefined ? {} : { cycle }),
     ...(phone === undefined ? {} : { phone: phone.options }),

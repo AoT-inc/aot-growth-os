@@ -81,12 +81,12 @@ function serve(socket: Socket, handle: ApprovalHandler, onError?: (error: unknow
     } catch {
       return reply({ ok: false, error: 'request must be one line of JSON' });
     }
-    try {
-      reply(handle(request));
-    } catch (error) {
+    done = true; // 처리 중에 더 온 데이터로 같은 요청을 두 번 처리하지 않는다
+    // 처리기는 동기일 수도, Promise 를 돌려줄 수도 있다 (상품 등록 채널은 근거 본문을 읽느라 비동기다)
+    Promise.resolve().then(() => handle(request)).then(reply, (error: unknown) => {
       onError?.(error instanceof Error ? error.name : 'error');
       reply({ ok: false, error: 'internal error in the approval engine' });
-    }
+    });
   });
   socket.on('error', () => socket.destroy());
 }

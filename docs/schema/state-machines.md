@@ -154,6 +154,8 @@ queued ─► initiated ─► ringing ─► connected ─► completed
 
 `candidate → verifying → pending_approval → registered`, 검증/승인 단계에서 `rejected`. `registered`로의 전이는 사람 승인(`approval`, `subject_kind='product'`, `product.registration_approval_id`가 가리킴)이 필수이며, 검증 업무의 읽기 전용 증거가 연결되어야 한다. `registered` 전 제품은 업무의 `product_id`가 될 수 없다 ([절차](../products/README.md)).
 
+구현: 사람용 `product` 명령(승인 소켓, `apps/daemon/src/product-channel.ts`)이 전이를 수행한다 — `start`: candidate → verifying(주체 `task_creator`, 검증 업무 생성과 `access_scope=read` 승인을 한 트랜잭션에서), 상태 조회(`status`/`decide`/`pilot`) 때: verifying → pending_approval(주체 `validator`, 검증 업무가 평가를 받고 `needs_review`에 닿았을 때), `decide`: pending_approval → registered(`approval` 필수) 또는 verifying|pending_approval → rejected(둘 다 사람). 사람 결정은 검증 업무의 `needs_review → completed|failed`(사람, `approval` 필수)와 같은 트랜잭션이다. 에이전트가 쓸 수 있는 길은 없다. [절차서](../operations/shadow-pilot.md).
+
 ## 상품 단계 (`product.lifecycle_stage`)
 
 `idea → development → beta → live → maintenance → sunset`. `live` 전환은 위험 변경(ADR-0006).

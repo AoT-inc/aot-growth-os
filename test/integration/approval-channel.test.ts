@@ -74,3 +74,36 @@ test('the server refuses to start in a group/world-accessible directory or over 
   writeFileSync(join(closed, 'approval.sock'), 'not a socket');
   await assert.rejects(startApprovalServer({ socketPath: join(closed, 'approval.sock'), handle: () => ({}) }), /not a socket/);
 });
+
+test('a handler may answer asynchronously; the request is handled once even when more data arrives meanwhile, and a rejected promise gives an error reply', async (t) => {
+  const socket = join(makeTempDir(t, 'aot-sock-'), 'run', 'approval.sock');
+  let calls = 0;
+  const errors: unknown[] = [];
+  const server = await startApprovalServer({
+    socketPath: socket,
+    handle: async (request) => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      if ((request as { boom?: boolean }).boom === true) throw new Error('private detail');
+      return { ok: true, echoed: request };
+    },
+    onError: (error) => errors.push(error),
+  });
+  t.after(() => server.close());
+  assert.deepEqual(await sendApprovalRequest(socket, { n: 1 }), { ok: true, echoed: { n: 1 } });
+  const failed = await sendApprovalRequest(socket, { boom: true }) as { ok: boolean; error: string };
+  assert.deepEqual([failed.ok, failed.error], [false, 'internal error in the approval engine']);
+  assert.deepEqual(errors, ['Error']);
+  // 같은 연결에 처리 중 더 쓰면 요청을 다시 처리하지 않는다
+  const before = calls;
+  const { createConnection } = await import('node:net');
+  const reply = await new Promise<string>((resolve, reject) => {
+    const connection = createConnection(socket);
+    let data = '';
+    connection.setEncoding('utf8').on('data', (chunk: string) => (data += chunk)).on('close', () => resolve(data)).on('error', reject);
+    connection.write('{"n":2}\n');
+    setTimeout(() => connection.write('{"n":3}\n'), 5);
+  });
+  assert.equal(calls - before, 1);
+  assert.deepEqual(JSON.parse(reply.trim()), { ok: true, echoed: { n: 2 } });
+});

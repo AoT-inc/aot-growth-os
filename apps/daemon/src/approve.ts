@@ -22,6 +22,14 @@
 //     consent show | accept --version <show 가 보여 준 판> | revoke
 //             (claude-code-cli 첫 실행 고지 동의. `show` 로 고지 문구와 판을 읽고, 읽은 판을 `accept --version` 에 직접 적어 동의한다. 고지 문구가 바뀌면 이전 동의는
 //              인정되지 않아 다시 동의해야 한다. `revoke` 하면 이후 run 은 consent_required → 업무 needs_review)
+//     product add <slug> --name 이름 --repo <저장소 루트 절대 경로> [--kind software|physical|service|other] [--stage development|...]
+//     product start <slug>             (후보 → 검증 중: 검증 업무를 만들고 이 저장소의 읽기 접근을 승인한다. 상품 등록 도구가 설정(registration_tools)돼 있어야 한다)
+//     product status [<slug>]          (상태·검증 업무·평가·섀도 판정·증거 목록·review_hash. slug 를 생략하면 전체 요약)
+//     product evidence <slug> <증거 id>   (저장된 증거 본문. 읽고 결정한다)
+//     product decide <slug> approve --hash <status 가 보여 준 review_hash> [--comment 글]
+//     product decide <slug> reject --comment 사유
+//     product pilot                    (섀도 파일럿: 검증기 판정 ↔ 사람 결정, 종료 기준 확인)
+//             (상품 등록 채널, apps/daemon/src/product-channel.ts. 사람만)
 // 기본값: --socket = $AOT_APPROVAL_SOCKET 또는 $AOT_INSTANCE_DIR/run/approval.sock, --actor = $AOT_ACTOR
 // TOTP 코드는 명령줄 인자로 받지 않는다(프로세스 목록에 보이므로).
 import { createHash } from 'node:crypto';
@@ -150,6 +158,51 @@ async function main(): Promise<void> {
       request = { cmd, actor, op, ...(version === undefined ? {} : { notice_version: version }) };
       break;
     }
+    case 'product': {
+      const op = kindArg ?? fail('product needs an operation: add|start|status|evidence|decide|pilot');
+      const slug = id;
+      const extra = positional[3];
+      switch (op) {
+        case 'add': {
+          if (slug === undefined || extra !== undefined) fail('usage: product add <slug> --name <name> --repo <absolute path>');
+          const kindFlag = flag('kind');
+          const stageFlag = flag('stage');
+          request = {
+            cmd, actor, op, slug, name: flag('name') ?? fail('product add needs --name'), repo_path: flag('repo') ?? fail('product add needs --repo <repository root, absolute path>'),
+            ...(kindFlag === undefined ? {} : { kind: kindFlag }), ...(stageFlag === undefined ? {} : { stage: stageFlag }),
+          };
+          break;
+        }
+        case 'start':
+          if (slug === undefined || extra !== undefined) fail('usage: product start <slug>');
+          request = { cmd, actor, op, slug };
+          break;
+        case 'status':
+          if (extra !== undefined) fail('usage: product status [<slug>]');
+          request = { cmd, actor, op, ...(slug === undefined ? {} : { slug }) };
+          break;
+        case 'evidence':
+          if (slug === undefined || extra === undefined || positional[4] !== undefined) fail('usage: product evidence <slug> <evidence id>');
+          request = { cmd, actor, op, slug, evidence_id: extra };
+          break;
+        case 'decide': {
+          const decision = extra ?? fail('usage: product decide <slug> approve|reject');
+          if (slug === undefined || (decision !== 'approve' && decision !== 'reject') || positional[4] !== undefined) fail('usage: product decide <slug> approve|reject');
+          const hash = flag('hash');
+          if (decision === 'approve' && hash === undefined) fail('product decide approve needs --hash (the review_hash from `product status`)');
+          if (decision === 'reject' && comment === undefined) fail('product decide reject needs --comment <reason>');
+          request = { cmd, actor, op, slug, decision, ...(hash === undefined ? {} : { hash }), ...(comment === undefined ? {} : { comment }) };
+          break;
+        }
+        case 'pilot':
+          if (slug !== undefined) fail('usage: product pilot');
+          request = { cmd, actor, op };
+          break;
+        default:
+          fail('product needs an operation: add|start|status|evidence|decide|pilot');
+      }
+      break;
+    }
     case 'show':
       needKind();
       request = { cmd, actor, kind, id };
@@ -177,7 +230,7 @@ async function main(): Promise<void> {
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product ...');
   }
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
   process.stdout.write(`${JSON.stringify(response)}\n`);

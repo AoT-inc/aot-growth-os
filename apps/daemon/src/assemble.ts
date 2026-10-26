@@ -35,6 +35,7 @@ import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from '
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createConsentHandler, isConsentCommand } from './consent.ts';
+import { createProductChannel, isProductCommand } from './product-channel.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
@@ -93,6 +94,11 @@ export interface AssembleOptions {
    * `effect` 를 주지 않았고 측정 신호 정의가 있으면 사람이 입력한 측정 값의 조회기(`createMeasurementSignalSource`, 읽기 전용)를 연결한다(A6-U13).
    */
   evaluation?: Omit<EvaluatorDeps, 'db' | 'clock'>;
+  /**
+   * 상품 등록 채널(`product` 명령, product-channel.ts)을 승인 소켓에 얹는다. 주면 사람이 후보 상품을 올리고 검증 업무를 시작하고 등록·반려를 결정할 수 있다.
+   * `forbiddenRoots`: 저장소 경로가 겹치면 안 되는 디렉터리(데몬 인스턴스·근거 저장소). 증거 본문은 `evaluation.evidenceReader` 로 읽는다.
+   */
+  productChannel?: { forbiddenRoots: readonly string[] };
   /**
    * 도메인 팩 (A6 U10). 주면 조립할 때 팩을 읽고 검증해 루틴을 `enabled=0` 으로 DB 에 반영하고(없으면 만들고, 같으면 그대로, 다르면 꺼진 행만 갱신·켜진 행은 거부),
    * 팩의 템플릿 포트를 워커에 연결한다. 생략하면 워커는 루틴을 보지 않는다(기존 동작).
@@ -211,9 +217,14 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const resolveEffects = createEffectResolutionHandler({ db: options.db, clock: options.clock, reauth: (tx, actorId, code, purpose) => engine.reauthenticateInTx(tx, actorId, code, purpose) });
   const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
   const consent = createConsentHandler({ db: options.db, clock: options.clock });
+  const productChannel = options.productChannel === undefined ? null : createProductChannel({
+    db: options.db, clock: options.clock, gate, forbiddenRoots: options.productChannel.forbiddenRoots,
+    ...(options.evaluation?.evidenceReader === undefined ? {} : { evidenceReader: options.evaluation.evidenceReader }),
+  });
   const handleChannelRequest = (request: unknown): unknown => {
     if (isEffectResolutionCommand(request)) return resolveEffects(request);
     if (isConsentCommand(request)) return consent(request);
+    if (isProductCommand(request)) return productChannel === null ? { ok: false, error: 'the product channel is not configured (set registration_tools)' } : productChannel(request);
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
     if (isExperimentDecisionCommand(options.db, request)) return decide(request);
     return engine.handle(request);

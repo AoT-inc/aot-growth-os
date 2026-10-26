@@ -22,6 +22,10 @@ candidate ─► verifying ─► pending_approval ─► registered
 | 3. 승인 대기 (`pending_approval`) | 평가기 + 사람 | 수집 사실과 근거를 사람이 확인. 공개/내부 분류, 소유 역할, 저장소 접근 범위 결정. 권한 부여는 정책 승인 |
 | 4. 등록 (`registered`) | 사람 승인 (`approval`, `subject_kind='product'`) | `product`, `product_repo` 기록, `verified` 근거 연결, 이후 업무에서 `product_id` 사용 가능 |
 
+## 이 절차를 수행하는 법
+
+사람용 `product` 명령(승인 CLI, [절차서](../operations/shadow-pilot.md)): `product add`(후보 등록) → `product start`(검증 업무 생성·읽기 접근 승인) → `product status`/`evidence`(증거 확인) → `product decide approve|reject`(등록·반려). 상품 등록 도구 설정(`registration_tools`)이 있어야 켜진다.
+
 ## 규칙
 
 - 등록 전 제품은 업무 입력 근거로 쓰지 않는다. 업무의 `product_id`는 `registered` 제품만 가리킬 수 있다.

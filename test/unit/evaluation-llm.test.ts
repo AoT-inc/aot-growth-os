@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  buildIsolatedInput, costForRun, evaluateRun, recordCost, ISOLATED_INPUT_KEYS, IsolationError, MAX_STATEMENT_CHARS,
+  buildIsolatedInput, costForRun, evaluateRun, recordCost, ISOLATED_INPUT_KEYS, IsolationError, MAX_STATEMENT_CHARS, SHADOW_VERDICT_SOURCE, SHADOW_VERDICT_TYPE, VerifierUnavailableError,
   type ClaimStatement, type IsolatedVerificationInput, type LlmVerifier,
 } from '@aot/evaluation';
 
@@ -168,4 +168,40 @@ test('a verifier that reports no usable token count adds no ledger entry', async
     await evaluateRun({ db, clock, fetcher, llm: new FakeLlm({ verdict: 'supported', note: 'ok', tokens }) }, { taskId: run.taskId, taskRunId: run.runId });
     assert.equal(db.get<{ n: number }>('SELECT count(*) AS n FROM cost_entry WHERE task_run_id = ?', [run.runId])!.n, 0);
   }
+});
+
+test('shadow mode: the verifier is called and its verdict recorded, but an unsupported verdict does not change the outcome (a person decides)', async (t) => {
+  for (const verdict of ['supported', 'unsupported', 'unclear'] as const) {
+    const { db, clock, run, fetcher } = setup(t);
+    db.writeTx((tx) => recordCost(tx, clock, { taskId: run.taskId, taskRunId: run.runId, category: 'llm', amountUsd: 0, units: { source: 'adapter', tokens: 8000 } }));
+    const llm = new FakeLlm({ verdict, note: `fake says ${verdict}`, tokens: 800 });
+    const { evaluation } = await evaluateRun({ db, clock, fetcher, llm, llmShadow: true }, { taskId: run.taskId, taskRunId: run.runId });
+    assert.equal(llm.inputs.length, 1, 'the verifier was called');
+    assert.equal(evaluation.outcome, 'pass', `the ${verdict} verdict did not decide`);
+    assert.match(evaluation.quality_note ?? '', new RegExp(`shadow fake-verifier@v1: ${verdict}.*recorded only`));
+    const events = db.all<{ source: string; type: string; external_id: string; payload: string }>('SELECT source, type, external_id, payload FROM event WHERE source = ?', [SHADOW_VERDICT_SOURCE]);
+    assert.equal(events.length, 1);
+    assert.deepEqual([events[0]!.type, events[0]!.external_id], [SHADOW_VERDICT_TYPE, run.runId]);
+    assert.deepEqual(JSON.parse(events[0]!.payload), {
+      task_id: run.taskId, task_run_id: run.runId, verifier: 'fake-verifier@v1', verdict, note: `fake says ${verdict}`, claim_count: 1, tokens: 800, run_tokens: 8000,
+    });
+    // 토큰은 평소처럼 원장에 남는다
+    assert.equal(costForRun(db, run.runId).tokens, 8800);
+  }
+});
+
+test('shadow mode: evaluating the same run again records the verdict once, and an unavailable verifier still keeps the task waiting', async (t) => {
+  const { db, clock, run, fetcher } = setup(t);
+  const llm = new FakeLlm({ verdict: 'unsupported', note: 'x' });
+  const deps = { db, clock, fetcher, llm, llmShadow: true };
+  const first = await evaluateRun(deps, { taskId: run.taskId, taskRunId: run.runId });
+  const again = await evaluateRun(deps, { taskId: run.taskId, taskRunId: run.runId });
+  assert.equal(first.created, true);
+  assert.equal(again.created, false);
+  assert.equal(db.get<{ n: number }>('SELECT count(*) AS n FROM event WHERE source = ?', [SHADOW_VERDICT_SOURCE])!.n, 1);
+
+  const waiting = setup(t);
+  const unavailable: LlmVerifier = { id: 'down@v1', verify: () => Promise.reject(new VerifierUnavailableError('usage_limit', 'later')) };
+  await assert.rejects(evaluateRun({ db: waiting.db, clock: waiting.clock, fetcher: waiting.fetcher, llm: unavailable, llmShadow: true }, { taskId: waiting.run.taskId, taskRunId: waiting.run.runId }), VerifierUnavailableError);
+  assert.equal(waiting.db.get<{ n: number }>('SELECT count(*) AS n FROM evaluation')!.n, 0);
 });

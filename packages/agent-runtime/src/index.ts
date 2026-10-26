@@ -58,3 +58,14 @@ export {
 // provider 어댑터(Vapi 등)는 이 패키지에 없다 — 비밀값을 가진 인프라 코드라 apps/daemon 이 PhonePort 로 주입한다.
 export { bindToEffectLedger, isEffectLedgerBound, type EffectLedgerRunner, type LedgerPerform } from './effect-ledger.ts';
 export * from './phone/index.ts';
+// claude-code-cli 어댑터 (Q4 후속, CC1~CC3): 구독 로그인된 사용자 PC 의 공식 `claude -p` 를 격리된 호출 모양으로 실행한다 (스파이크 Q4, ADR-0005 Amendment 2026-10-25·26).
+export { serveGatewaySocket, type GatewaySocket } from './claude-code/gateway-socket.ts';
+export { CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, type ClaudeCodeCliOptions, type ClaudeCodeConsent } from './claude-code/adapter.ts';
+export {
+  BUILTIN_TOOLS as CLAUDE_CODE_BUILTIN_TOOLS, buildBridgeTools, buildClaudeArgs, buildClaudeEnv, buildMcpConfig, buildPrompt, CLAUDE_ENV_NAMES, FORBIDDEN_CLAUDE_FLAGS, GATEWAY_SERVER_NAME,
+  buildWorkdirFiles, mcpToolName, TASK_INSTRUCTIONS, upstreamFileOf, type BridgeTool, type ClaudeArgsInput, type ClaudeEnvInput,
+} from './claude-code/invocation.ts';
+export {
+  applyStreamEvent, checkInit, CLAUDE_CODE_REVIEW_CODES, classifyRun, newStreamState, parseStreamLine, parseStructuredOutput, summarizeStreamEvent, DEFAULT_LIMIT_PATTERNS, DEFAULT_SERVER_LIMIT_PATTERNS, isClaudeCodeReviewCode, resultJsonSchema,
+  type ClaudeCodeReviewCode, type ClassifiedRun, type ExpectedInit, type StreamState,
+} from './claude-code/stream.ts';

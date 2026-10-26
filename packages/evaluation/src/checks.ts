@@ -11,6 +11,7 @@
 //   budget                 비용 원장 합계가 업무 예산(USD, 토큰) 이내다
 //   policy_compliance      보낸 외부 부작용마다 기록된 정책 판정이 있다 (안전성 검사)
 //   uncertainty_listed     run 결과에 `uncertainties` 필드가 있고 형식이 유효하다 (빈 목록은 "알려진 불확실성 없음"이라는 명시로 유효). 누락·형식 오류는 fail
+//   call_completed | call_transcript_present | call_outcome_recorded  전화 업무의 통화 기록·발화 기록·구조화 결과 (ADR-0014 §7, call-checks.ts)
 //   experiment_candidates  기획 업무 결과의 `candidates` 형식이 유효하고(id 중복 없음, 마케팅 업무 명세는 validateTaskSpec 통과), 각 후보의 측정 신호가
 //                          알려진 신호 정의와 맞는다(A6-U14, candidates.ts). 위반은 fail. 신호 정의가 주입되지 않았으면 신호를 확인할 수 없어 unknown
 // 이 목록에 없는 id 는 'unknown' (검증할 수 없음 → 평가는 inconclusive). 필수 테스트 결과(test_result)는 합격 표현 형식이
@@ -22,6 +23,7 @@ import {
   resolveExpectedQuotes, validateTaskSpec, type Db, type EvidenceRow, type ExternalEffectRow, type MeasurementSignal, type TaskRow, type TaskRunRow, type TaskSpec,
 } from '@aot/domain';
 
+import { CALL_COMPLETED_CHECK_ID, CALL_OUTCOME_CHECK_ID, CALL_TRANSCRIPT_CHECK_ID, checkCallCompleted, checkCallOutcome, checkCallTranscript, type CallCheckInput } from './call-checks.ts';
 import { checkExperimentCandidates, EXPERIMENT_CANDIDATES_CHECK_ID } from './candidates.ts';
 import type { ReportedClaim } from './claims.ts';
 import { budgetLimitsOf, costForTask, evaluateBudget } from './cost.ts';
@@ -273,10 +275,15 @@ const experimentCandidates: DeterministicCheck = {
   },
 };
 
+const callInputOf = (context: CheckContext): CallCheckInput => ({ db: context.db, taskId: context.task.id, spec: context.spec, evidence: context.evidence });
+const callCompleted: DeterministicCheck = { id: CALL_COMPLETED_CHECK_ID, safety: false, run: (context) => Promise.resolve(checkCallCompleted(callInputOf(context))) };
+const callTranscriptPresent: DeterministicCheck = { id: CALL_TRANSCRIPT_CHECK_ID, safety: false, run: (context) => Promise.resolve(checkCallTranscript(callInputOf(context))) };
+const callOutcomeRecorded: DeterministicCheck = { id: CALL_OUTCOME_CHECK_ID, safety: false, run: (context) => Promise.resolve(checkCallOutcome(callInputOf(context))) };
+
 /** 검사 id → 검사. `schema` 는 `schema_valid` 의 별칭 */
 export function defaultChecks(): Map<string, DeterministicCheck> {
   const map = new Map<string, DeterministicCheck>();
-  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed, experimentCandidates]) map.set(check.id, check);
+  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed, experimentCandidates, callCompleted, callTranscriptPresent, callOutcomeRecorded]) map.set(check.id, check);
   map.set('schema', schemaValid);
   return map;
 }

@@ -398,6 +398,56 @@ CREATE TABLE publication (
   published_at TEXT
 );
 
+-- ===== 전화 (ADR-0014) =====
+-- Call = 전화 통화 하나. 업무(task)와 다르다: 업무 1 : Call N, 인바운드 Call 은 업무 없이 먼저 생기고(task_id NULL) 나중에 연결된다.
+-- 상태는 provider 값이 아니라 AoT canonical 상태다 (상태 머신: state-machines.md "전화 통화"). 이벤트는 기존 event 테이블(source='phone')에 남는다.
+-- 전화번호는 개인정보다: 인스턴스 DB 에만 있다. provider 원본 payload 와 녹음은 저장하지 않는다.
+CREATE TABLE call (
+  id              TEXT PRIMARY KEY,
+  provider        TEXT NOT NULL,                -- 어댑터 이름 (vapi | fake | ...). 코어는 값의 의미를 모른다
+  provider_call_id TEXT,                        -- provider 쪽 식별자. 발신은 provider 가 접수한 뒤에 채운다
+  direction       TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+  status          TEXT NOT NULL CHECK (status IN
+                    ('queued','initiated','ringing','connected','completed','failed','cancelled','transferred')),
+  from_number     TEXT,                         -- E.164
+  to_number       TEXT NOT NULL,                -- E.164
+  task_id         TEXT REFERENCES task(id),
+  task_run_id     TEXT REFERENCES task_run(id),
+  actor_id        TEXT REFERENCES actor(id),
+  org_unit_id     TEXT REFERENCES org_unit(id),
+  objective       TEXT,                         -- 업무 의도 키 (예: qualify_lead). provider 프롬프트가 아니다
+  effect_key      TEXT UNIQUE,                  -- 발신: external_effect.effect_key (같은 요청의 중복 Call 방지)
+  intent_key      TEXT,                         -- 발신: hash(번호, 목적, 맥락). 같은 업무에서 같은 의도의 통화가 살아 있거나 완료됐으면 새로 걸지 않는다
+  max_duration_seconds INTEGER,
+  allow_transfer  INTEGER NOT NULL DEFAULT 0,
+  recording       INTEGER NOT NULL DEFAULT 0,
+  end_reason      TEXT,                         -- 종료 사유 (canonical 코드 또는 provider 가 밝힌 짧은 문구)
+  started_at      TEXT,                         -- initiated 된 시각
+  connected_at    TEXT,
+  ended_at        TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX call_provider_ref ON call(provider, provider_call_id) WHERE provider_call_id IS NOT NULL;
+CREATE INDEX call_task ON call(task_id);
+CREATE INDEX call_task_intent ON call(task_id, intent_key);
+CREATE INDEX call_status ON call(status);
+
+-- 통화 산출물의 본문. evidence 는 참조·해시만 담으므로 본문은 여기에 둔다 (업무에 연결된 Call 은 evidence 행도 함께 남는다).
+-- transcript 는 스트리밍 갱신으로 덮어쓴다. outcome 은 한 번만 기록한다(같은 내용 재기록은 흡수, 다른 내용은 거부 — 애플리케이션 규칙).
+CREATE TABLE call_artifact (
+  id           TEXT PRIMARY KEY,
+  call_id      TEXT NOT NULL REFERENCES call(id),
+  kind         TEXT NOT NULL CHECK (kind IN ('transcript','outcome')),
+  content      TEXT NOT NULL,                   -- JSON (canonical)
+  content_hash TEXT NOT NULL,
+  source       TEXT NOT NULL CHECK (source IN ('provider_transcript','provider_analysis','extractor','human')),
+  trust_origin TEXT NOT NULL CHECK (trust_origin IN ('internal','external_untrusted')),  -- 상대방의 말에서 나온 것은 external_untrusted. 사람이 직접 기록한 outcome 만 internal
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (call_id, kind)
+);
+
 -- ===== append-only 강제 (SQLite 트리거; Postgres 이식 시 동등한 규칙/트리거로 교체) =====
 CREATE TRIGGER task_transition_no_update BEFORE UPDATE ON task_transition BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER task_transition_no_delete BEFORE DELETE ON task_transition BEGIN SELECT RAISE(ABORT, 'append-only'); END;

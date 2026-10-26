@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
-  ABORT_REASONS, ACTOR_KINDS, APPROVAL_DECISIONS, APPROVAL_SUBJECT_KINDS, CATCH_UP_MODES, CHANGE_CLASSES,
+  ABORT_REASONS, ACTOR_KINDS, CALL_ARTIFACT_KINDS, CALL_ARTIFACT_SOURCES, CALL_DIRECTIONS, CALL_STATUSES, APPROVAL_DECISIONS, APPROVAL_SUBJECT_KINDS, CATCH_UP_MODES, CHANGE_CLASSES,
   COST_CATEGORIES, EVAL_OUTCOMES, EVIDENCE_KINDS, EXTERNAL_EFFECT_STATES, IMPACTS, LIFECYCLES, MEMORY_KINDS,
   MEMORY_VALIDITIES, ORG_PROPOSAL_STATUSES, ORG_VERSION_STATUSES, POLICY_DECISIONS, PRODUCT_KINDS,
   PRODUCT_LIFECYCLE_STAGES, PRODUCT_REGISTRATION_STATUSES, PUBLICATION_STATUSES, REAUTH_METHODS, SAFETY_RESULTS, SCOPES,
@@ -51,6 +51,11 @@ const CHECKS: ReadonlyArray<readonly [string, string, readonly string[]]> = [
   ['memory_item', 'trust_origin', TRUST_ORIGINS],
   ['publication', 'audience', SCOPES],
   ['publication', 'status', PUBLICATION_STATUSES],
+  ['call', 'direction', CALL_DIRECTIONS],
+  ['call', 'status', CALL_STATUSES],
+  ['call_artifact', 'kind', CALL_ARTIFACT_KINDS],
+  ['call_artifact', 'source', CALL_ARTIFACT_SOURCES],
+  ['call_artifact', 'trust_origin', TRUST_ORIGINS],
 ];
 
 test('enum constants equal the CHECK (col IN (...)) lists in schema.sql', () => {

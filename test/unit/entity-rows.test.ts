@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { openDb } from '@aot/domain';
-import type { OrgVersionRow, OrgProposalRow, OrgTrialResultRow, OrgUnitRow, RoleRow, ActorRow, RoleAssignmentRow, ProductRow, ProductRepoRow, ProductEnvironmentRow, PolicyVersionRow, StrategyVersionRow, EventRow, RoutineRow, RoutineFiringRow, TaskRow, TaskDependencyRow, TaskTransitionRow, TaskRunRow, ExternalEffectRow, PolicyDecisionRow, EvidenceRow, CostEntryRow, ApprovalRow, HumanReauthRow, EvaluationRow, MemoryItemRow, PublicationRow } from '@aot/domain';
+import type { OrgVersionRow, OrgProposalRow, OrgTrialResultRow, OrgUnitRow, RoleRow, ActorRow, RoleAssignmentRow, ProductRow, ProductRepoRow, ProductEnvironmentRow, PolicyVersionRow, StrategyVersionRow, EventRow, RoutineRow, RoutineFiringRow, TaskRow, TaskDependencyRow, TaskTransitionRow, TaskRunRow, ExternalEffectRow, PolicyDecisionRow, EvidenceRow, CostEntryRow, ApprovalRow, HumanReauthRow, EvaluationRow, MemoryItemRow, PublicationRow, CallRow, CallArtifactRow } from '@aot/domain';
 
 import { SCHEMA_SQL } from '../support/schema-snapshot.ts';
 
@@ -38,6 +38,8 @@ const COLUMNS = {
   evaluation: { id: true, task_id: true, task_run_id: true, evaluator: true, validation_passed: true, outcome: true, primary_evidence_refs: true, agent_report_used: true, quality: true, quality_note: true, effect: true, effect_note: true, economics: true, economics_note: true, safety: true, safety_note: true, evidence_refs: true, total_cost_usd: true, human_minutes: true, at: true } satisfies Record<keyof EvaluationRow, true>,
   memory_item: { id: true, kind: true, body: true, source_ref: true, observed_at: true, verification_status: true, validity: true, valid_until: true, sensitivity: true, trust_origin: true, superseded_by: true, product_id: true, policy_version_id: true, strategy_version_id: true, created_by: true, created_at: true } satisfies Record<keyof MemoryItemRow, true>,
   publication: { id: true, task_id: true, product_id: true, channel: true, audience: true, content_ref: true, status: true, approval_id: true, published_at: true } satisfies Record<keyof PublicationRow, true>,
+  call: { id: true, provider: true, provider_call_id: true, direction: true, status: true, from_number: true, to_number: true, task_id: true, task_run_id: true, actor_id: true, org_unit_id: true, objective: true, effect_key: true, intent_key: true, max_duration_seconds: true, allow_transfer: true, recording: true, end_reason: true, started_at: true, connected_at: true, ended_at: true, created_at: true, updated_at: true } satisfies Record<keyof CallRow, true>,
+  call_artifact: { id: true, call_id: true, kind: true, content: true, content_hash: true, source: true, trust_origin: true, created_at: true, updated_at: true } satisfies Record<keyof CallArtifactRow, true>,
 };
 
 test('row types list exactly the columns of every table in schema.sql', () => {

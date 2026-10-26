@@ -16,6 +16,7 @@
 | [docs/schema/](docs/schema/README.md) | 데이터 모델 초안 (`schema.sql`, 상태 전이, 업무 명세) |
 | [docs/products/](docs/products/README.md) | 상품 등록 절차 (앱·데몬 구동 후 검증·승인으로 등록) |
 | [workflows/product-registration.md](workflows/product-registration.md) | 상품 등록 검증 업무 템플릿 (`task_spec`, 읽기 전용 수집, 비밀값 스캔, 3단계 검증) |
+| [docs/adr/0014-phone-capability.md](docs/adr/0014-phone-capability.md) | 외부 대화 계층과 첫 채널 전화 (Phone Capability): 위치, Call/Task 분리, 정책·평가 연결, Vapi 어댑터, 구현 기록 ([계획·smoke 절차](docs/plans/phone-capability.md)) |
 | [docs/plans/phase-a.md](docs/plans/phase-a.md) | Phase A 구현 계획 (패키지 순서, 필수 테스트 매핑, 부트스트랩, 스파이크) |
 | [docs/plans/a0-decisions.md](docs/plans/a0-decisions.md) | A0 착수 전 사람 결정 (런타임, 시드 조직, 라이선스, 확장 단위는 2026-10-19 결정. 측정 신호, 승인자, 승인 채널은 대기) |
 | [docs/security/public-repository.md](docs/security/public-repository.md) | 공개 저장소에 두는 것과 두지 않는 것 |

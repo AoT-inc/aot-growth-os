@@ -24,3 +24,7 @@
 ## Amendment (2026-10-23): 기대 인용문 필드
 - 조사 업무가 "이 출처에 이 문장이 있어야 한다"를 구조로 담도록 선택 필드 `expected_quotes: [{source, text}]`를 둔다(`source` = `inputs[]`의 `source_url` 항목 이름). 인용문은 입력 데이터가 아니라 완료 조건에 속하므로 `inputs[]`가 아닌 최상위에 두며, 실행 인자이므로 승인 대상 해시에 포함된다.
 - 검증기의 `quote_in_source`가 명세의 기대 인용문 *전부*를 출처 원문과 에이전트 보고 양쪽에서 확인한다. 하나라도 원문에 없거나 보고에서 빠지면 `fail`이라, 에이전트가 찾은 인용만 보고해도 일부만으로 `pass`가 될 수 없다. `expected_quotes`를 두려면 `validation.deterministic`에 `quote_in_source`가 있어야 한다. 상세는 [task-spec](../schema/task-spec.md).
+
+## Amendment (2026-10-25): 기대 통화 결과 필드
+- 전화 업무가 "통화 결과가 이 형식으로 남아야 한다"를 구조로 담도록 선택 필드 `expected_call_outcome: {dispositions, required_fields?}`를 둔다. `dispositions`는 허용 결과 분류(소문자 이름), `required_fields`는 `structured_data`에 있어야 하는 키다. 영업 절차는 Phone이 아니라 명세가 정한다. 실행 인자이므로 승인 대상 해시에 포함된다.
+- `expected_quotes`와 같은 이유로 `validation.deterministic`에 `call_outcome_recorded`가 없으면 생성 거부한다. 상세는 [task-spec](../schema/task-spec.md), [ADR-0014](0014-phone-capability.md).

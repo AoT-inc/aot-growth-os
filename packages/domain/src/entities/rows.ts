@@ -1,7 +1,7 @@
 // docs/schema/schema.sql 의 테이블별 행 타입. 시간은 UTC ISO 8601 문자열, JSON 열은 JSON 문자열(TEXT),
 // 불리언 열은 0/1 정수다. 열 이름은 SQL 과 같다. (열거형 값은 enums.ts, 열 이름의 일치는 test/unit/entity-rows.test.ts 가 확인한다.)
 import type {
-  AbortReason, ActorKind, ApprovalDecision, ApprovalSubjectKind, CatchUpMode, ChangeClass, CostCategory,
+  AbortReason, ActorKind, ApprovalDecision, ApprovalSubjectKind, CallArtifactKind, CallArtifactSource, CallDirection, CallStatus, CatchUpMode, ChangeClass, CostCategory,
   EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
   OrgProposalStatus, OrgVersionStatus, PolicyDecisionValue, ReauthMethod, ProductKind, ProductLifecycleStage,
   ProductRegistrationStatus, PublicationStatus, SafetyResult, Scope, Sensitivity, StrategyStatus,
@@ -145,4 +145,17 @@ export type MemoryItemRow = {
 export type PublicationRow = {
   id: string; task_id: string; product_id: string | null; channel: string; audience: Scope; content_ref: string;
   status: PublicationStatus; approval_id: string | null; published_at: Iso | null;
+}
+
+export type CallRow = {
+  id: string; provider: string; provider_call_id: string | null; direction: CallDirection; status: CallStatus;
+  from_number: string | null; to_number: string; task_id: string | null; task_run_id: string | null; actor_id: string | null;
+  org_unit_id: string | null; objective: string | null; effect_key: string | null; intent_key: string | null; max_duration_seconds: number | null;
+  allow_transfer: number; recording: number; end_reason: string | null; started_at: Iso | null; connected_at: Iso | null;
+  ended_at: Iso | null; created_at: Iso; updated_at: Iso;
+}
+
+export type CallArtifactRow = {
+  id: string; call_id: string; kind: CallArtifactKind; content: Json; content_hash: string; source: CallArtifactSource;
+  trust_origin: TrustOrigin; created_at: Iso; updated_at: Iso;
 }

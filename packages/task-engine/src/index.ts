@@ -60,8 +60,8 @@ export { checkLeaseParams, DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, type LeasePara
 export { runPolling, type PollingOptions } from './polling.ts';
 export { transitionEffect, transitionTask, type EffectTransitionRequest, type TaskTransitionRequest } from './transitions.ts';
 export {
-  nextValidatingTask, routeVerdict, validateTask,
-  type ValidationEnd, type ValidationOptions, type ValidationRoute, type ValidationTarget,
+  listCallWaits, nextValidatingTask, routeVerdict, validateTask,
+  type CallWait, type ValidationEnd, type ValidationOptions, type ValidationRoute, type ValidationTarget,
 } from './validation.ts';
 export {
   DEFAULT_RETRY_DELAY_MS, realTimers, RunTimeoutError, TaskWorker, VALIDATIONS_PER_TICK,

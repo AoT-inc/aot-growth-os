@@ -206,10 +206,12 @@ export function parseLlmVerifierConfig(value: unknown): LlmVerifierConfig | unde
     const unknown = Object.keys(record).filter((key) => !CLAUDE_VERIFIER_KEYS.has(key));
     if (unknown.length > 0) throw new Error(`llm_verifier has unknown key(s): ${unknown.join(', ')}`);
     const model = record['model'];
-    if (typeof model !== 'string' || !/^[A-Za-z0-9._:[\]-]{1,100}$/.test(model)) throw new Error('llm_verifier.model is required for kind "claude_code_cli" (a model alias or id; use a different tier than the executor, Q22 b)');
+    if (typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/.test(model)) throw new Error('llm_verifier.model is required for kind "claude_code_cli" (a model alias or id; use a different tier than the executor, Q22 b)');
     const allowSame = record['allow_same_model'];
     if (allowSame !== undefined && typeof allowSame !== 'boolean') throw new Error('llm_verifier.allow_same_model must be true or false');
-    for (const key of ['time_limit_ms', 'max_source_bytes', 'max_turns'] as const) {
+    const limit = record['time_limit_ms'];
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit <= 0 || limit > 3_600_000)) throw new Error('llm_verifier.time_limit_ms must be an integer from 1 to 3600000');
+    for (const key of ['max_source_bytes', 'max_turns'] as const) {
       const v = record[key];
       if (v !== undefined && (typeof v !== 'number' || !Number.isInteger(v) || v <= 0)) throw new Error(`llm_verifier.${key} must be a positive integer`);
     }

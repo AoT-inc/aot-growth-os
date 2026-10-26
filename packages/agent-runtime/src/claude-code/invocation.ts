@@ -65,7 +65,7 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   }
   if (input.prompt.trim() === '') throw new Error('prompt must not be empty');
   if (input.maxBudgetUsd !== undefined && !(Number.isFinite(input.maxBudgetUsd) && input.maxBudgetUsd > 0)) throw new Error('maxBudgetUsd must be a positive number');
-  if (input.model !== undefined && !/^[A-Za-z0-9._:[\]-]{1,100}$/.test(input.model)) throw new Error('model must be a model alias or id');
+  if (input.model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/.test(input.model)) throw new Error('model must be a model alias or id');
   // 허용 목록은 쉼표 하나로 합친다: 가변 인자 옵션 뒤에 다른 값이 붙어 삼켜지는 일을 피한다
   const allowed = input.gatewayTools.map(mcpToolName);
   return [

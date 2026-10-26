@@ -30,6 +30,8 @@ export interface ClaudeProcessRequest {
   cwd: string;
   expected: ExpectedInit;
   signal: AbortSignal;
+  /** true 면 init 이벤트 없이 끝난 실행을 격리 위반으로 본다 (init 이 격리 검사의 유일한 근거이므로, 없으면 검사를 건너뛴 채 결과를 믿게 된다) */
+  requireInit?: boolean;
   /** 프롬프트를 인자로 넘기지 않고 stdin 으로 줄 때의 본문. 없으면 stdin 을 바로 닫는다 */
   stdin?: string;
   /** run_log 에 한 줄 남긴다 (마스킹은 호출하는 쪽의 `note` 가 한다) */
@@ -179,7 +181,10 @@ export async function runClaudeProcess(options: ClaudeProcessOptions, request: C
   }
   if (omitted > 0) note(`(${omitted} more output events were not logged)`);
   if (stderrText.trim() !== '') note(`stderr${stderrTruncated ? ' (truncated)' : ''}: ${stderrText.trim().slice(0, 600)}`);
-  const final = ending as ProcessEnding | null;
+  let final = ending as ProcessEnding | null;
   if (final === null) throw new Error('unreachable: the run ended without a reason');
+  if (final.kind === 'closed' && request.requireInit === true && state.init === null) {
+    final = { kind: 'init_problem', code: 'isolation_violation', message: 'the CLI ended without an init event, so its isolation could not be checked' };
+  }
   return { ending: final, state, exit, stderrText };
 }

@@ -208,3 +208,13 @@ describe('claude-code-cli init 검사 (격리)', () => {
     assert.deepEqual(problems, { gatewayProblems: [], isolationProblems: [] });
   });
 });
+
+describe('classifyRun: 사용량 한도 문구가 JSON 결과 없이 stderr 로만 나온 경우', () => {
+  it('한도·서버 제한은 영구 오류(cli_failed)가 아니라 기다릴 상태로 분류한다', () => {
+    const state = newStreamState();
+    const exit = { code: 1, signal: null };
+    assert.equal((classifyRun(state, exit, "You've hit your session limit · resets 3pm") as { code: string }).code, 'usage_limit');
+    assert.equal((classifyRun(state, exit, 'Server is temporarily limiting requests') as { code: string }).code, 'server_limited');
+    assert.equal((classifyRun(state, exit, 'unknown option --nope') as { code: string }).code, 'cli_failed');
+  });
+});

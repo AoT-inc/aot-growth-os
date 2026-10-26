@@ -236,6 +236,74 @@ describe('claude-code-cli 검증기: 판정', () => {
   });
 });
 
+describe('claude-code-cli 검증기: 독립 리뷰에서 재현된 문제', () => {
+  it('주장 id 가 겹치면 판정하지 않는다 (한 번의 답이 두 주장을 덮지 못하게)', async (t) => {
+    const r = rig(t);
+    const dup = inputOf({ claims: [{ id: 'c1', statement: 'true one', sourceRef: 'evidence:e1' }, { id: 'c1', statement: 'false one', sourceRef: 'evidence:e1' }] });
+    await assert.rejects(r.verifier.verify(dup), (e: unknown) => e instanceof Error && !(e instanceof VerifierUnavailableError) && /duplicate ids/.test(e.message));
+    assert.equal(r.docker.spawned.length, 0);
+  });
+
+  it('비밀 모양 값이 든 주장 문장은 모델에 보내지 않고 unclear (서로 다른 값이 같은 [REDACTED] 가 되어 supported 로 보이는 것을 막는다)', async (t) => {
+    const r = rig(t);
+    const key = (value: string): string => ['AK', 'IA', value].join('');
+    const masked = inputOf({
+      claims: [{ id: 'c1', statement: `the id is ${key('A'.repeat(16))}`, sourceRef: 'evidence:e1' }],
+      sources: [{ ref: 'evidence:e1', text: `the id is ${key('B'.repeat(16))}` }],
+    });
+    const result = await r.verifier.verify(masked);
+    assert.equal(result.verdict, 'unclear');
+    assert.match(result.note, /secret-shaped value/);
+    assert.equal(r.docker.spawned.length, 0);
+  });
+
+  it('출처 ref 의 비밀 모양 값도 가려서 보낸다', async (t) => {
+    const r = rig(t);
+    const ref = `https://docs.example.com/a?${['to', 'ken'].join('')}=abcdefghijklmnop12345`;
+    const { done, proc } = r.start(inputOf({ claims: [{ id: 'c1', statement: 'x', sourceRef: ref }], sources: [{ ref, text: 'x' }] }));
+    const prompt = (await proc()).stdinText.join('');
+    assert.ok(!prompt.includes('abcdefghijklmnop12345'));
+    (await proc()).emitClose(1);
+    await done.catch(() => undefined);
+  });
+
+  it('init 이벤트 없이 끝난 호출은 격리를 확인할 수 없으므로 판정을 믿지 않는다', async (t) => {
+    const r = rig(t);
+    await assert.rejects(r.run([verdictResult([{ id: 'c1', verdict: 'supported' }])]), /isolation_violation.*without an init event/);
+  });
+
+  it('MCP 서버가 보이면(이름이 gateway 여도) 격리 위반', async (t) => {
+    const r = rig(t);
+    await assert.rejects(r.run([initEvent({ tools: ['StructuredOutput'], mcpServers: [{ name: 'gateway', status: 'connected' }] }), verdictResult([{ id: 'c1', verdict: 'supported' }])]), /isolation_violation.*unexpected MCP server/);
+  });
+
+  it('잘림 표시는 긴 메모에서도 남는다 (이유가 길어도 id 는 40자로 줄인다)', async (t) => {
+    const r = rig(t, { maxSourceBytes: 100 });
+    const longId = 'c'.repeat(300);
+    const input = inputOf({ claims: [{ id: longId, statement: 'a', sourceRef: 'evidence:e1' }], sources: [{ ref: 'evidence:e1', text: 'y'.repeat(5000) }] });
+    const result = (await r.run(verifierStream([{ id: longId, verdict: 'unsupported', reason: 'r'.repeat(400) }]), 0, input)) as { note: string };
+    assert.ok(result.note.length <= 500);
+    assert.match(result.note, /\[input cut: 1 source\(s\)\]$/);
+  });
+
+  it('JSON 없이 stderr 로만 나온 사용량 한도도 쓸 수 없음으로 본다 (영구 unclear 로 사람에게 넘기지 않는다)', async (t) => {
+    const r = rig(t);
+    const { done, proc } = r.start();
+    const p = await proc();
+    p.emitStdout(toLines([verifierInit()]));
+    p.emitStderr("You've hit your session limit · resets 3pm\n");
+    p.emitClose(1);
+    await assert.rejects(done, (e: unknown) => e instanceof VerifierUnavailableError && e.code === 'usage_limit');
+  });
+
+  it('모델 이름이 옵션처럼 읽히는 값(--help)과 시간 상한 초과는 만들 때 거부한다', (t) => {
+    const base = { claudePath: CLAUDE, runRoot: join(makeTempDir(t, 'aot-ccv-'), 'r'), env: ENV, consent: CONSENT, clock: new FakeClock(START_ISO), gate: createClaudeCodeGate({ clock: new FakeClock(START_ISO) }) };
+    assert.throws(() => createClaudeCodeVerifier({ ...base, model: '--help' }), /model/);
+    assert.throws(() => createClaudeCodeVerifier({ ...base, model: 'ok', timeLimitMs: 2 ** 31 }), /timeLimitMs/);
+    assert.ok(createClaudeCodeVerifier({ ...base, model: 'opus[1m]' }));
+  });
+});
+
 describe('claude-code-cli 검증기: 쓸 수 없을 때와 실패', () => {
   it('동의가 없으면 CLI 를 띄우지 않고 VerifierUnavailableError(consent_required). 동의 기록은 호출마다 읽는다', async (t) => {
     let consent: ClaudeCodeConsent | null = null;

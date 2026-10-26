@@ -22,7 +22,7 @@ import { realGatewayTimers, type GatewayTimers } from '../gateway.ts';
 import { maskString } from '../mask.ts';
 import type { ClaudeCodeConsent } from './adapter.ts';
 import type { ClaudeCodeGate } from './gate.ts';
-import { buildClaudeEnv, buildMcpConfig, GATEWAY_SERVER_NAME, type ClaudeEnvInput } from './invocation.ts';
+import { buildClaudeEnv, buildMcpConfig, type ClaudeEnvInput } from './invocation.ts';
 import { runClaudeProcess } from './process-run.ts';
 import { classifyRun, isClaudeCodeReviewCode } from './stream.ts';
 import { aggregateVerdict, buildVerifierArgs, buildVerifierPrompt, VERIFIER_PROMPT_VERSION } from './verifier-prompt.ts';
@@ -64,6 +64,9 @@ export interface ClaudeCodeVerifierOptions {
   log?: (message: string) => void;
 }
 
+/** 검증기 호출에는 MCP 서버가 하나도 없어야 한다: 어떤 이름의 서버도 기대 밖이다 */
+const NO_MCP_SERVER = '(none)';
+const MAX_TIME_LIMIT_MS = 3_600_000;
 const DEFAULT_TIME_LIMIT_MS = 5 * 60_000;
 const DEFAULT_BACKOFF_MS = 10 * 60_000;
 const DEFAULT_MAX_SOURCE_BYTES = 200_000;
@@ -81,7 +84,7 @@ export function createClaudeCodeVerifier(options: ClaudeCodeVerifierOptions): Ll
   const timeLimitMs = options.timeLimitMs ?? DEFAULT_TIME_LIMIT_MS;
   const maxSourceBytes = options.maxSourceBytes ?? DEFAULT_MAX_SOURCE_BYTES;
   const backoffMs = options.unavailableBackoffMs ?? DEFAULT_BACKOFF_MS;
-  if (!(Number.isInteger(timeLimitMs) && timeLimitMs > 0)) throw new Error('timeLimitMs must be a positive integer');
+  if (!(Number.isInteger(timeLimitMs) && timeLimitMs > 0 && timeLimitMs <= MAX_TIME_LIMIT_MS)) throw new Error(`timeLimitMs must be an integer from 1 to ${MAX_TIME_LIMIT_MS}`);
   if (!(Number.isInteger(maxSourceBytes) && maxSourceBytes > 0)) throw new Error('maxSourceBytes must be a positive integer');
   if (!(Number.isInteger(backoffMs) && backoffMs >= 0)) throw new Error('unavailableBackoffMs must be an integer >= 0');
   const processOptions = {
@@ -100,6 +103,8 @@ export function createClaudeCodeVerifier(options: ClaudeCodeVerifierOptions): Ll
       throw new IsolationError(`the verification input must have exactly the keys ${ISOLATED_INPUT_KEYS.join(', ')}`);
     }
     if (input.claims.length === 0) return { verdict: 'unclear', note: 'no claim to verify' };
+    // 주장 id 는 실행 에이전트가 정한다: 겹치면 한 번의 답이 두 주장을 덮을 수 있으므로 판정하지 않는다
+    if (new Set(input.claims.map((claim) => claim.id)).size !== input.claims.length) throw new Error('the claims have duplicate ids; the verification needs one answer per claim id');
 
     // ----- 시작 전 검사: 여기서 던지면 CLI 를 띄우지 않는다 -----
     const consent = typeof options.consent === 'function' ? options.consent() : options.consent;
@@ -115,6 +120,10 @@ export function createClaudeCodeVerifier(options: ClaudeCodeVerifierOptions): Ll
       prompt = buildVerifierPrompt(input, { maxSourceBytes });
     } catch (cause) {
       throw new Error(`the verification prompt could not be built: ${cause instanceof Error ? cause.message : 'unknown error'}`);
+    }
+    // 비밀 모양 값이 든 주장 문장은 마스킹하면 출처와 대조할 수 없다(서로 다른 값이 같은 `[REDACTED]` 가 된다): 모델에 보내지 않고 사람에게 넘긴다
+    if (prompt.maskedClaimIds.length > 0) {
+      return { verdict: 'unclear', note: `claim(s) ${prompt.maskedClaimIds.slice(0, 5).map((id) => id.slice(0, 40)).join(', ')} contain a secret-shaped value, so they cannot be compared with their sources; not sent to the model` };
     }
     // 자리를 기다리지 않는다: 실행 어댑터가 쓰는 중이면 이번 tick 은 건너뛴다 (tick 을 붙들면 실행 업무도 못 집는다)
     if (!options.gate.tryAcquire()) throw new VerifierUnavailableError('busy', 'the subscription CLI is busy with another run; the verification is retried on a later tick');
@@ -152,7 +161,8 @@ export function createClaudeCodeVerifier(options: ClaudeCodeVerifierOptions): Ll
 
       const processed = await runClaudeProcess(processOptions, {
         args, cwd: workdir, signal: controller.signal, stdin: prompt.text, note: log,
-        expected: { gatewayServer: GATEWAY_SERVER_NAME, gatewayTools: [], builtinTools: [] },
+        expected: { gatewayServer: NO_MCP_SERVER, gatewayTools: [], builtinTools: [] },
+        requireInit: true,
       });
       options.gate.observe(processed.state);
       const tokens = processed.state.result?.tokens ?? null;
@@ -182,8 +192,9 @@ export function createClaudeCodeVerifier(options: ClaudeCodeVerifierOptions): Ll
         throw new Error(`${classified.code}: ${classified.message}`);
       }
       const parsed = aggregateVerdict(classified.result, input.claims.map((claim) => claim.id));
+      // 잘림 표시는 길이 상한에 먼저 자리를 잡는다 (뒤에서 잘려 사라지지 않게)
       const truncatedNote = prompt.truncated.length > 0 ? ` [input cut: ${prompt.truncated.length} source(s)]` : '';
-      return { verdict: parsed.verdict, note: `${parsed.note}${truncatedNote}`.slice(0, 500), ...(classified.tokens === null ? {} : { tokens: classified.tokens }) };
+      return { verdict: parsed.verdict, note: `${parsed.note.slice(0, 500 - truncatedNote.length)}${truncatedNote}`, ...(classified.tokens === null ? {} : { tokens: classified.tokens }) };
     } finally {
       timers.clearTimeout(timer);
       if (created) await rm(runDir, { recursive: true, force: true }).catch(() => undefined);

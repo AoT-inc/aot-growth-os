@@ -177,7 +177,7 @@ describe('llm_verifier: kind claude_code_cli (the subscription verifier, Q22)', 
     assert.deepEqual(parseLlmVerifierConfig({ ...VERIFIER, time_limit_ms: 60000, max_source_bytes: 1000, unavailable_backoff_ms: 0, max_turns: 3, allow_same_model: false }), { ...VERIFIER, time_limit_ms: 60000, max_source_bytes: 1000, unavailable_backoff_ms: 0, max_turns: 3, allow_same_model: false });
     const bad: unknown[] = [
       { ...VERIFIER, cost_usd: 0.1 }, { ...VERIFIER, token: 'x' }, { ...VERIFIER, time_limit_ms: 0 }, { ...VERIFIER, time_limit_ms: 1.5 }, { ...VERIFIER, max_source_bytes: -1 },
-      { ...VERIFIER, unavailable_backoff_ms: -1 }, { ...VERIFIER, max_turns: 0 }, { ...VERIFIER, allow_same_model: 'yes' },
+      { ...VERIFIER, unavailable_backoff_ms: -1 }, { ...VERIFIER, model: '--help' }, { ...VERIFIER, time_limit_ms: 2 ** 31 }, { ...VERIFIER, max_turns: 0 }, { ...VERIFIER, allow_same_model: 'yes' },
     ];
     for (const value of bad) assert.throws(() => parseLlmVerifierConfig(value), /llm_verifier/, JSON.stringify(value));
   });

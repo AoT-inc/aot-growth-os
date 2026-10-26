@@ -14,6 +14,8 @@ import { maskString } from '../mask.ts';
 export const VERIFIER_PROMPT_VERSION = 'v1';
 
 const CONTROL = /[\0\r\n]/;
+/** 모델 별칭·이름: 영숫자로 시작한다 (`--help` 같은 값이 옵션으로 읽히지 않게) */
+export const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/;
 
 export const VERIFIER_VERDICTS = ['supported', 'unsupported', 'unclear'] as const;
 export type VerifierClaimVerdict = (typeof VERIFIER_VERDICTS)[number];
@@ -63,7 +65,7 @@ export interface VerifierArgsInput {
 /** 프롬프트는 인자에 없다(stdin). 내장 도구는 `--tools ""` 로 모두 끈다 */
 export function buildVerifierArgs(input: VerifierArgsInput): string[] {
   if (!isAbsolute(input.mcpConfigPath) || CONTROL.test(input.mcpConfigPath)) throw new Error('mcpConfigPath must be an absolute path');
-  if (!/^[A-Za-z0-9._:[\]-]{1,100}$/.test(input.model)) throw new Error('model must be a model alias or id');
+  if (!MODEL_NAME.test(input.model)) throw new Error('model must be a model alias or id');
   if (input.maxBudgetUsd !== undefined && !(Number.isFinite(input.maxBudgetUsd) && input.maxBudgetUsd > 0)) throw new Error('maxBudgetUsd must be a positive number');
   return [
     '-p',
@@ -87,8 +89,10 @@ export interface VerifierPrompt {
   text: string;
   /** 크기 상한 때문에 줄여 넣은 출처의 ref 와 잘려 나간 바이트 수 */
   truncated: { ref: string; omittedBytes: number }[];
-  /** 마스킹이 값을 가린 출처·주장 수 (가려졌다면 모델은 그 부분을 볼 수 없다) */
+  /** 마스킹이 값을 가린 부분의 수 (가려졌다면 모델은 그 부분을 볼 수 없다) */
   maskedParts: number;
+  /** 문장이 마스킹으로 바뀐 주장의 id. 값이 가려진 문장은 출처와 대조할 수 없다(서로 다른 값이 같은 `[REDACTED]`가 된다): 호출하는 쪽이 이 주장이 있으면 판정하지 않는다 */
+  maskedClaimIds: string[];
 }
 
 /** 출처 본문마다 줄 수 있는 몫을 정한다: 작은 것은 전부, 큰 것은 남은 몫을 균등하게 (오름차순으로 채운다) */
@@ -124,6 +128,7 @@ export function buildVerifierPrompt(input: IsolatedVerificationInput, options: {
     return masked;
   };
   const nonce = options.nonce ?? randomBytes(9).toString('hex');
+  const maskedClaimIds: string[] = [];
   const bodies = input.sources.map((source) => (source.text === null ? null : mask(source.text)));
   if (bodies.some((body) => body !== null && body.includes(nonce))) throw new Error('a source text contains the boundary marker');
   const sizes = bodies.map((body) => (body === null ? 0 : Buffer.byteLength(body, 'utf8')));
@@ -132,7 +137,7 @@ export function buildVerifierPrompt(input: IsolatedVerificationInput, options: {
 
   const sourceBlocks = input.sources.map((source: SourceText, index) => {
     const body = bodies[index] ?? null;
-    const header = `ref=${JSON.stringify(source.ref)} kind=${source.kind} trust=${source.trustOrigin}`;
+    const header = `ref=${JSON.stringify(mask(source.ref))} kind=${source.kind} trust=${source.trustOrigin}`;
     if (body === null) return `===== SOURCE ${nonce} BEGIN ${header} =====\n(the source text could not be read)\n===== SOURCE ${nonce} END =====`;
     const kept = cutUtf8(body, given[index] ?? 0);
     const omitted = sizes[index]! - Buffer.byteLength(kept, 'utf8');
@@ -141,7 +146,11 @@ export function buildVerifierPrompt(input: IsolatedVerificationInput, options: {
     return `===== SOURCE ${nonce} BEGIN ${header} =====\n${kept}${tail}\n===== SOURCE ${nonce} END =====`;
   });
 
-  const claims = input.claims.map((claim) => ({ id: claim.id, statement: mask(claim.statement), source: claim.sourceRef }));
+  const claims = input.claims.map((claim) => {
+    const statement = maskString(claim.statement);
+    if (statement !== claim.statement) maskedClaimIds.push(claim.id);
+    return { id: claim.id, statement: mask(claim.statement), source: mask(claim.sourceRef) };
+  });
   const text = [
     '# Verification',
     `Check: ${input.check}`,
@@ -156,7 +165,7 @@ export function buildVerifierPrompt(input: IsolatedVerificationInput, options: {
     '## Output',
     'Return the structured output: {"claims": [{"id": "...", "verdict": "supported|unsupported|unclear", "reason": "..."}]} with exactly one entry for each claim id above.',
   ].join('\n');
-  return { text, truncated, maskedParts };
+  return { text, truncated, maskedParts, maskedClaimIds };
 }
 
 // ===== 결과 =====
@@ -193,7 +202,8 @@ export function aggregateVerdict(output: JsonObject, claimIds: readonly string[]
   }
   const describe = (id: string): string => {
     const reason = byId.get(id)!.reason.replace(/\s+/g, ' ').trim().slice(0, 120);
-    return reason === '' ? id : `${id} (${reason})`;
+    const shortId = id.slice(0, 40);
+    return reason === '' ? shortId : `${shortId} (${reason})`;
   };
   const unsupported = claimIds.filter((id) => byId.get(id)!.verdict === 'unsupported');
   const unclear = claimIds.filter((id) => byId.get(id)!.verdict === 'unclear');

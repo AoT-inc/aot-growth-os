@@ -5,7 +5,7 @@ import { test } from 'node:test';
 
 import { DENY_ALL_TASK_POLICY_GATE, type Db, type FakeClock } from '@aot/domain';
 import {
-  checkLeaseParams, claimNextTask, DEFAULT_LEASE_PARAMS, failRun, findExpiredRuns, heartbeat, LeaseLostError, promoteDueRetries, saveCheckpoint, submitRun,
+  checkLeaseParams, claimNextTask, DEFAULT_LEASE_PARAMS, failRun, findExpiredRuns, heartbeat, LeaseLostError, promoteDueRetries, recordHostEvidence, saveCheckpoint, submitRun,
   takeOverExpiredRun, TaskWorker, transitionTask, type Lease, type TaskExecutor,
 } from '@aot/task-engine';
 
@@ -228,4 +228,19 @@ test('lease parameters: Q15 defaults (90s / 30s), heartbeat must be shorter than
   assert.throws(() => checkLeaseParams({ leaseMs: 30_000, heartbeatMs: 30_000 }), RangeError);
   assert.throws(() => checkLeaseParams({ leaseMs: 0, heartbeatMs: 1 }), RangeError);
   assert.throws(() => new TaskWorker({ db: undefined as never, clock: undefined as never, workerId: 'w', actorId: 'a', adapter: 'a', executor: { execute: async () => ({ result: null }) }, lease: { heartbeatMs: 120_000 } }), RangeError);
+});
+
+test('recordHostEvidence: the host picks the trust origin and gets the row id back; once the lease is lost nothing is written (fencing)', (t) => {
+  const { db, clock, claim } = setup(t);
+  const taskId = queuedTask(db, clock);
+  const lease = mustClaim(claim('w1', taskId));
+  const hash = 'a'.repeat(64);
+  const id = recordHostEvidence(db, clock, lease, { kind: 'document', ref: `blob:sha256:${hash}`, contentHash: hash, trustOrigin: 'internal', capturedAt: clock.nowIso() });
+  assert.match(id, /^ev-/);
+  assert.deepEqual({ ...db.get('SELECT task_id, task_run_id, kind, ref, content_hash, trust_origin, verified FROM evidence WHERE id = ?', [id]) }, {
+    task_id: taskId, task_run_id: lease.runId, kind: 'document', ref: `blob:sha256:${hash}`, content_hash: hash, trust_origin: 'internal', verified: 0,
+  });
+  clock.advance(LEASE_MS + 1);
+  assert.throws(() => recordHostEvidence(db, clock, lease, { kind: 'document', ref: 'blob:x', contentHash: hash, trustOrigin: 'internal', capturedAt: clock.nowIso() }), LeaseLostError);
+  assert.equal(db.get('SELECT COUNT(*) AS n FROM evidence WHERE task_id = ?', [taskId])?.['n'], 1);
 });

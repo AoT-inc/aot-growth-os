@@ -405,6 +405,32 @@ export interface RunOutputRecord {
   runLogRef: string | null;
 }
 
+/** 호스트(도구 실행기)가 직접 남기는 근거 한 줄. 신뢰 출처는 쓰는 쪽이 밝힌다 — 이 경로는 에이전트가 아니라 호스트 코드만 부를 수 있다 */
+export interface HostEvidence {
+  kind: EvidenceRow['kind'];
+  ref: string;
+  /** 본문의 sha256 (소문자 16진). 평가기가 저장된 본문을 읽어 다시 계산해 대조한다 */
+  contentHash: string;
+  trustOrigin: EvidenceRow['trust_origin'];
+  capturedAt: string;
+}
+
+/**
+ * 도구 실행기가 호출 시점에 본문을 저장하고 근거 행을 만든다(상품 등록 검증의 로컬 근거). 행 id 를 돌려주므로 에이전트가 보고서에서 그 근거를 가리킬 수 있다.
+ * `recordRunOutput`(에이전트가 낸 증거: 항상 `external_untrusted`)과 달리 신뢰 출처를 호출한 호스트 코드가 정한다. lease 펜싱은 같다(잃었으면 던진다).
+ */
+export function recordHostEvidence(db: Db, clock: Clock, lease: Lease, item: HostEvidence, newId: () => string = () => `ev-${randomUUID()}`): string {
+  return db.writeTx((tx) => {
+    assertLeaseHeld(tx, lease, clock.nowIso(), 'record evidence');
+    const id = newId();
+    tx.run(
+      'INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, lease.taskId, lease.runId, item.kind, item.ref, item.contentHash, item.trustOrigin, item.capturedAt],
+    );
+    return id;
+  });
+}
+
 /**
  * 실행 출력(증거 행과 `task_run.run_log_ref`)을 기록한다. 펜싱을 확인한 같은 쓰기 트랜잭션에서만 쓰므로
  * lease 를 잃은 run 은 아무것도 남기지 못한다(LeaseLostError).

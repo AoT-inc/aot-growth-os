@@ -73,13 +73,13 @@ test('the seed is exactly one human owner, one unit, two active roles, one org_v
   assert.deepEqual(snapshot.roles.map((r) => r.slug).sort(), ['generalist', 'registration-verifier']);
 });
 
-test('registration-verifier requests only read tools plus appending to its own evidence', (t) => {
+test('registration-verifier requests only read tools (the host stores tool results as evidence; the agent cannot write evidence)', (t) => {
   const { db } = seededDb(t);
   const tools = JSON.parse(String(db.get("SELECT allowed_tools FROM role WHERE slug = 'registration-verifier'")?.['allowed_tools'])) as Array<{ tool: string; operations: string[] }>;
-  assert.deepEqual(tools.map((x) => x.tool).sort(), ['evidence_store', 'license_check', 'repo_read', 'secret_scan']);
+  assert.deepEqual(tools.map((x) => x.tool).sort(), ['license_check', 'repo_read', 'secret_scan']);
   const operations = tools.flatMap((x) => x.operations);
   assert.ok(!operations.some((op) => /write|delete|exec|push|publish|send|install/.test(op)), operations.join(','));
-  assert.deepEqual(tools.find((x) => x.tool === 'evidence_store')?.operations, ['append']);
+  assert.equal(tools.some((x) => x.tool === 'evidence_store'), false);
 });
 
 test('policy v1: default deny, internal read allowed, write within task scope, external effects and customer/public need approval', (t) => {

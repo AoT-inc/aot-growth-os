@@ -1,0 +1,7 @@
+# 상품 등록 검증 도구 secret_scan 이 쓰는 gitleaks 설정 (데몬 설정 registration_tools.gitleaks_config 의 기본값).
+# 후보 저장소 안의 .gitleaks.toml 은 쓰지 않는다 — 허용 목록으로 스캔을 피할 수 없게 항상 이 파일을 --config 로 준다.
+# 기본 규칙 전체를 쓴다. 인스턴스별 금지어·추가 규칙은 저장소 밖(운영 설정)에서 이 파일을 대체해 넣는다.
+title = "registration scan"
+
+[extend]
+useDefault = true

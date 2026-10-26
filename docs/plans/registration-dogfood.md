@@ -21,11 +21,11 @@ PC 확인 필요: `--tools ""`와 빈 MCP 설정으로 `claude -p`가 구독 로
 - `repo_read`: `list_tree`·`read_file`·`read_metadata`는 `realpath` 포함 검사(저장소 밖 심볼릭 링크 거부), 바이너리·비밀 파일 패턴 거부, 결과 마스킹. `read_history`는 `git`을 고정 인자·정제한 환경·`GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`로 실행하고 저장소 설정이 코드를 실행하지 못하게 `core.fsmonitor`·hooks를 끈다. 작성자 이름·이메일은 뺀다.
 - `secret_scan`: gitleaks 8.30.1(Q21) `--redact`. **출력 필드를 허용 목록으로 걸러** `secret_scan_summary@1`만 만든다. 실행 파일은 설정 `secret_scan.gitleaks_path`(절대 경로)이며 없으면 데몬이 시작하지 않는다.
 - `license_check`: 사실만 보고(라이선스 파일 이름·해시·SPDX 헤더, 매니페스트 `license` 필드). 의존성 라이선스는 1차에서 "수집 불가"로 둔다. 판단은 사람.
-- `evidence_store`는 **도구에서 뺀다**(에이전트가 쓴 근거는 원본이 될 수 없다). 호스트가 위 도구의 결과를 호출 시점에 저장하고(`instance/` 아래 0600, sha256) `evidence` 행으로 만든다. 템플릿 `allowed_tools`와 시드 역할이 바뀐다(역할 v2).
+- `evidence_store`는 **도구에서 뺀다**(에이전트가 쓴 근거는 원본이 될 수 없다). 호스트가 위 도구의 결과를 호출 시점에 저장하고(`instance/` 아래 0600, sha256) `evidence` 행으로 만든다. 템플릿 `allowed_tools`와 시드 역할이 바뀐다.
 
 ## 구현 순서 (PR 단위)
 1. **평가 쪽 (이 PR)**: `VerifierUnavailableError`, `EvidenceReader` 포트, 결정론적 검사 5개, `registration-report@1`·`secret_scan_summary@1` 형식. 가짜 시험만. → [evaluation §9](../operations/evaluation.md)
-2. **도구 3개와 호스트 결과 저장**, 역할 v2·템플릿 개정, `EvidenceReader` 실제 구현. **보안 리뷰 대상**(경로 포함 검사, `git` 실행, 외부 실행 파일, 마스킹).
+2. **도구 3개와 호스트 결과 저장**, 시드 역할·템플릿 개정, `EvidenceReader` 실제 구현. **구현됨**([운영 문서](../operations/registration-tools.md)). 보안 리뷰 대상(경로 포함 검사, `git` 실행, 외부 실행 파일, 마스킹). 구현 중 알게 된 것: 게이트웨이는 도구 이름 하나에 작업 하나라서 에이전트가 부르는 이름을 `<도구>_<작업>`으로 분리했다(`GatewayToolSpec.name`); 역할 `version`은 올리지 않고 시드를 직접 고쳤다(실제 인스턴스 없음).
 3. **`claude-code-cli` 검증기**와 설정 연결(`llm_verifier.kind: "claude_code_cli"`, `model`): 게이트웨이 MCP가 없는 별도 호출 모양, 미룬 동안 안쪽 호출 없이 `VerifierUnavailableError`를 던지는 자체 조절. PC에서 위 전제를 확인한 뒤에 진행한다.
 4. **사용자 PC 섀도 파일럿 5건**, 그다음 Q22와 종료 조건 4번을 닫는다.
 

@@ -8,8 +8,10 @@ import { describe, it } from 'node:test';
 import { RESEARCH_AGENT_NAME, type FetchUrlToolOptions, type SourceFetcherOptions } from '@aot/agent-runtime';
 import { buildIsolatedInput, STUB_LLM_VERIFIER_ID, type LlmVerifier } from '@aot/evaluation';
 
-import { buildAgentRuntime, deriveInstanceId, parseClaudeCodeCliConfig, parseLlmVerifierConfig, type AgentRuntimeConfig, type ClaudeCodeCliConfig } from '../../apps/daemon/src/runtime-config.ts';
+import { buildAgentRuntime, deriveInstanceId, parseClaudeCodeCliConfig, parseLlmVerifierConfig, parseRegistrationToolsConfig, type AgentRuntimeConfig, type ClaudeCodeCliConfig } from '../../apps/daemon/src/runtime-config.ts';
 import { REPO_ROOT } from '../support/schema-snapshot.ts';
+import { seededDb } from '../support/seeded-db.ts';
+import { makeTempDir } from '../support/temp.ts';
 
 const IMAGE = `sha256:${'ab12'.repeat(16)}`;
 const CONTAINER = { docker_path: '/opt/example/bin/docker', memory_mib: 256, cpus: 1, pids_limit: 64, tmpfs_mib: 32 };
@@ -209,6 +211,61 @@ describe('claude_code_cli: the subscription CLI adapter from the settings', () =
   });
 });
 
+const REGISTRATION = { git_path: '/usr/bin/git', gitleaks_path: '/usr/local/bin/gitleaks' };
+
+describe('registration_tools: the product-registration tools, their evidence store and the evaluator reader from the settings', () => {
+  it('adds the seven tool declarations (agent-facing names) and a run executor factory to the agent, and an evidence reader to the evaluation port', (t) => {
+    const { db } = seededDb(t);
+    const built = buildAgentRuntime({ claude_code_cli: CLAUDE, registration_tools: { ...REGISTRATION, evidence_dir: `${makeTempDir(t, 'aot-ev-')}/e` } }, DIR, { db, claudeCodeConsent: () => null, checkExecutable: () => undefined });
+    assert.deepEqual(built.agent?.tools?.map((tool) => tool.name), [
+      'repo_read_list_tree', 'repo_read_read_file', 'repo_read_read_metadata', 'repo_read_read_history', 'secret_scan_scan_tree', 'secret_scan_scan_history', 'license_check_identify',
+    ]);
+    assert.equal(typeof built.agent?.runExecutors, 'function');
+    assert.ok(built.evaluation?.evidenceReader, 'the evaluator reads the stored bodies');
+    assert.equal(built.evaluation?.llm, undefined);
+    assert.equal(built.agent?.adapter.name, 'claude-code-cli', 'the subscription CLI stays the agent');
+  });
+
+  it('keeps the research tools and source fetcher when research_agent is also configured', (t) => {
+    const { db } = seededDb(t);
+    const built = buildAgentRuntime({
+      container_agent: CONTAINER, research_agent: { image: IMAGE, allowed_hosts: ['docs.example.com'] }, claude_code_cli: { ...CLAUDE, roles: ['registration-verifier'] },
+      registration_tools: { ...REGISTRATION, evidence_dir: `${makeTempDir(t, 'aot-ev-')}/e` },
+    }, DIR, { db, claudeCodeConsent: () => null, checkExecutable: () => undefined });
+    assert.equal(built.agent?.tools?.length, 8);
+    assert.equal(built.agent?.tools?.[0]?.tool, 'fetch_url');
+    assert.ok(built.evaluation?.fetcher && built.evaluation.evidenceReader);
+  });
+
+  it('refuses at start: no agent adapter, no database, a missing executable, a tool declared twice', (t) => {
+    const { db } = seededDb(t);
+    const dir = `${makeTempDir(t, 'aot-ev-')}/e`;
+    const config = { claude_code_cli: CLAUDE, registration_tools: { ...REGISTRATION, evidence_dir: dir } };
+    assert.throws(() => buildAgentRuntime({ registration_tools: { ...REGISTRATION, evidence_dir: dir } }, DIR, { db, checkExecutable: () => undefined }), /needs an agent adapter/);
+    assert.throws(() => buildAgentRuntime(config, DIR, { claudeCodeConsent: () => null, checkExecutable: () => undefined }), /needs the database/);
+    assert.throws(() => buildAgentRuntime(config, DIR, { db, claudeCodeConsent: () => null, checkExecutable: (path) => { if (path.endsWith('gitleaks')) throw new Error('nope'); } }), /gitleaks_path '\/usr\/local\/bin\/gitleaks' is not an executable file/);
+    // 기본 확인은 실제 실행 권한을 본다
+    assert.throws(() => buildAgentRuntime({ ...config, registration_tools: { ...REGISTRATION, gitleaks_path: '/nonexistent/gitleaks', evidence_dir: dir } }, DIR, { db, claudeCodeConsent: () => null }), /is not an executable file/);
+  });
+
+  it('settings shape: absolute paths only, no unknown keys, a sane scan limit; off when null or missing', () => {
+    assert.equal(parseRegistrationToolsConfig(null), undefined);
+    assert.deepEqual(parseRegistrationToolsConfig(REGISTRATION), REGISTRATION);
+    const full = { ...REGISTRATION, gitleaks_config: '/srv/example/gitleaks.toml', evidence_dir: '/srv/example/evidence', scan_timeout_ms: 120_000 };
+    assert.deepEqual(parseRegistrationToolsConfig(full), full);
+    const bad: [unknown, RegExp][] = [
+      ['git', /must be an object/],
+      [{ ...REGISTRATION, git_path: 'git' }, /git_path must be an absolute path/],
+      [{ ...REGISTRATION, gitleaks_path: undefined }, /gitleaks_path must be an absolute path/],
+      [{ ...REGISTRATION, gitleaks_config: 'config.toml' }, /gitleaks_config must be an absolute path/],
+      [{ ...REGISTRATION, evidence_dir: 'evidence' }, /evidence_dir must be an absolute path/],
+      [{ ...REGISTRATION, scan_timeout_ms: 10 }, /scan_timeout_ms/],
+      [{ ...REGISTRATION, api_key: 'x' }, /unknown key\(s\): api_key/],
+    ];
+    for (const [value, message] of bad) assert.throws(() => parseRegistrationToolsConfig(value), message, JSON.stringify(value));
+  });
+});
+
 describe('the example settings file', () => {
   it('parses, keeps the agent off by default, and holds no secret-looking value', () => {
     const text = readFileSync(join(REPO_ROOT, 'config', 'daemon.config.example.json'), 'utf8');
@@ -217,6 +274,7 @@ describe('the example settings file', () => {
     assert.equal(config.research_agent, null);
     assert.equal(config.llm_verifier, null, 'no verifier by default');
     assert.equal(config['claude_code_cli'], null, 'the subscription CLI is off by default');
+    assert.equal(config['registration_tools'], null, 'the registration tools are off by default');
     assert.equal(buildAgentRuntime(config, DIR).agent, undefined);
     assert.ok(!/(token|secret|password|api[_-]?key)\s*"\s*:/i.test(text.replace(/"_comment"[^\n]*/, '')), 'no credential-like key in the example settings');
   });

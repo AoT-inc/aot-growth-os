@@ -35,10 +35,25 @@ export {
   type ExperimentCost, type ExperimentResultErrorCode, type RecordedExperimentResult, type RecordExperimentResultInput,
 } from './experiment-result.ts';
 export { createMeasurementSignalSource, MEASUREMENT_SOURCE_EVENT, type MeasurementSignalSourceOptions } from './measurement-source.ts';
+export { EvidenceContentReader, type VerifiedContent } from './evidence-contents.ts';
+export {
+  CLASSIFICATION_CHECK_ID, EVIDENCE_REFS_CHECK_ID, NO_SECRET_CHECK_ID, READ_ONLY_CHECK_ID, SCAN_COVERAGE_CHECK_ID,
+  type RegistrationCheckInput, type RegistrationCheckOutcome,
+} from './registration-checks.ts';
+export {
+  CLASSIFICATIONS, COLLECTION_ITEMS, evidenceClaimsFromResult, MAX_EVIDENCE_IDS_PER_ITEM, parseRegistrationReport, referencedEvidenceIds,
+  type ClassificationProposal, type CollectionEntry, type CollectionItem, type EvidenceClaim, type RegistrationReport, type RegistrationReportParse,
+} from './registration-report.ts';
+export { findSecretShapes, type SecretShapeFinding, type SecretShapeKind } from './secret-patterns.ts';
+export {
+  MAX_SCAN_FINDINGS, parseSecretScanSummary, SCAN_CONFIDENCES, SCAN_SCOPES, SECRET_SCAN_SUMMARY_TYPE,
+  type ScanScope, type SecretScanFindingSummary, type SecretScanSummary, type SecretScanSummaryParse,
+} from './secret-scan-summary.ts';
 export { buildIsolatedInput, ISOLATED_INPUT_KEYS, IsolationError, MAX_CLAIMS, MAX_STATEMENT_CHARS, type IsolatedInputParts } from './isolation.ts';
-export type {
-  ClaimStatement, EffectObservation, EffectSignal, EffectSignalSource, FetchResult, IsolatedVerificationInput, LlmVerdict, LlmVerifier,
-  SourceFetcher, SourceText,
+export {
+  VerifierUnavailableError,
+  type ClaimStatement, type EffectObservation, type EffectSignal, type EffectSignalSource, type EvidenceContent, type EvidenceReader, type FetchResult,
+  type IsolatedVerificationInput, type LlmVerdict, type LlmVerifier, type SourceFetcher, type SourceText,
 } from './ports.ts';
 export { createStubLlmVerifier, STUB_LLM_VERIFIER_ID, substringRule, type StubClaimVerdict, type StubLlmVerifierOptions } from './stub-verifier.ts';
 export {

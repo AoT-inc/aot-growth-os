@@ -11,6 +11,9 @@
 //   budget                 비용 원장 합계가 업무 예산(USD, 토큰) 이내다
 //   policy_compliance      보낸 외부 부작용마다 기록된 정책 판정이 있다 (안전성 검사)
 //   uncertainty_listed     run 결과에 `uncertainties` 필드가 있고 형식이 유효하다 (빈 목록은 "알려진 불확실성 없음"이라는 명시로 유효). 누락·형식 오류는 fail
+//   evidence_refs_resolvable | no_secret_in_outputs | read_only_calls_only | scan_coverage_complete | classification_present
+//                          상품 등록 검증 업무의 검사 5개 (workflows/product-registration.md, registration-checks.ts). 호스트가 저장한 근거 본문을 EvidenceReader 로 읽는다.
+//                          no_secret_in_outputs·read_only_calls_only 는 안전성 검사다. 읽을 포트가 없으면 unknown
 //   call_completed | call_transcript_present | call_outcome_recorded  전화 업무의 통화 기록·발화 기록·구조화 결과 (ADR-0014 §7, call-checks.ts)
 //   experiment_candidates  기획 업무 결과의 `candidates` 형식이 유효하고(id 중복 없음, 마케팅 업무 명세는 validateTaskSpec 통과), 각 후보의 측정 신호가
 //                          알려진 신호 정의와 맞는다(A6-U14, candidates.ts). 위반은 fail. 신호 정의가 주입되지 않았으면 신호를 확인할 수 없어 unknown
@@ -27,7 +30,12 @@ import { CALL_COMPLETED_CHECK_ID, CALL_OUTCOME_CHECK_ID, CALL_TRANSCRIPT_CHECK_I
 import { checkExperimentCandidates, EXPERIMENT_CANDIDATES_CHECK_ID } from './candidates.ts';
 import type { ReportedClaim } from './claims.ts';
 import { budgetLimitsOf, costForTask, evaluateBudget } from './cost.ts';
+import type { EvidenceContentReader } from './evidence-contents.ts';
 import type { FetchResult, SourceFetcher } from './ports.ts';
+import {
+  checkClassificationPresent, checkEvidenceRefsResolvable, checkNoSecretInOutputs, checkReadOnlyCalls, checkScanCoverage,
+  CLASSIFICATION_CHECK_ID, EVIDENCE_REFS_CHECK_ID, NO_SECRET_CHECK_ID, READ_ONLY_CHECK_ID, SCAN_COVERAGE_CHECK_ID, type RegistrationCheckInput,
+} from './registration-checks.ts';
 import { uncertaintiesFromResult } from './uncertainties.ts';
 
 export type CheckStatus = 'pass' | 'fail' | 'unknown';
@@ -53,6 +61,8 @@ export interface CheckContext {
   evidence: readonly EvidenceRow[];
   claims: readonly ReportedClaim[];
   sources: SourceReader;
+  /** 호스트가 저장한 근거 본문 읽기 (상품 등록의 로컬 근거). EvidenceReader 가 연결되지 않았으면 없다 — 읽어야 하는 검사는 unknown */
+  contents?: EvidenceContentReader;
   /** 측정 신호 정의 (팩의 `measurement-signals/`). `experiment_candidates` 가 후보의 신호를 대조한다. 없으면 그 검사는 unknown */
   signals?: readonly MeasurementSignal[];
 }
@@ -280,10 +290,18 @@ const callCompleted: DeterministicCheck = { id: CALL_COMPLETED_CHECK_ID, safety:
 const callTranscriptPresent: DeterministicCheck = { id: CALL_TRANSCRIPT_CHECK_ID, safety: false, run: (context) => Promise.resolve(checkCallTranscript(callInputOf(context))) };
 const callOutcomeRecorded: DeterministicCheck = { id: CALL_OUTCOME_CHECK_ID, safety: false, run: (context) => Promise.resolve(checkCallOutcome(callInputOf(context))) };
 
+const registrationInputOf = (context: CheckContext): RegistrationCheckInput => ({ db: context.db, run: context.run, evidence: context.evidence, contents: context.contents });
+const evidenceRefsResolvable: DeterministicCheck = { id: EVIDENCE_REFS_CHECK_ID, safety: false, run: (context) => checkEvidenceRefsResolvable(registrationInputOf(context)) };
+const noSecretInOutputs: DeterministicCheck = { id: NO_SECRET_CHECK_ID, safety: true, run: (context) => checkNoSecretInOutputs(registrationInputOf(context)) };
+const readOnlyCallsOnly: DeterministicCheck = { id: READ_ONLY_CHECK_ID, safety: true, run: (context) => Promise.resolve(checkReadOnlyCalls(context)) };
+const scanCoverageComplete: DeterministicCheck = { id: SCAN_COVERAGE_CHECK_ID, safety: false, run: (context) => checkScanCoverage(registrationInputOf(context)) };
+const classificationPresent: DeterministicCheck = { id: CLASSIFICATION_CHECK_ID, safety: false, run: (context) => checkClassificationPresent(registrationInputOf(context)) };
+
 /** 검사 id → 검사. `schema` 는 `schema_valid` 의 별칭 */
 export function defaultChecks(): Map<string, DeterministicCheck> {
   const map = new Map<string, DeterministicCheck>();
-  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed, experimentCandidates, callCompleted, callTranscriptPresent, callOutcomeRecorded]) map.set(check.id, check);
+  for (const check of [schemaValid, urlReachable, quoteInSource, dedupe, budget, policyCompliance, uncertaintyListed, experimentCandidates, callCompleted, callTranscriptPresent, callOutcomeRecorded,
+    evidenceRefsResolvable, noSecretInOutputs, readOnlyCallsOnly, scanCoverageComplete, classificationPresent]) map.set(check.id, check);
   map.set('schema', schemaValid);
   return map;
 }

@@ -51,3 +51,9 @@
 
 ## Amendment (2026-10-25): 통화 증거 검사
 결정론적 검사 `call_completed`·`call_transcript_present`·`call_outcome_recorded`를 더했다([task-spec](../schema/task-spec.md)). 에이전트는 통화 상태도 결과도 쓸 수 없으므로 통화 기록·발화 기록·구조화 결과는 보고서가 아닌 원본 증거이고, 업무에 연결된 통화는 `evidence`(`external_untrusted`)로도 남아 `primary_evidence_refs`에 센다. 통화가 하나도 없으면 `fail`, 아직 열린 통화만 있거나 결과가 명세에 못 미치면 `inconclusive`다(결과 추출이 부족하다고 업무를 재시도해 다시 전화하지 않는다). 열린 통화가 있는 동안 업무 검증은 보류된다([ADR-0014](0014-phone-capability.md) §6).
+
+## Amendment (2026-10-26): 로컬 근거와 검증기 불가 상태 (Q22 결정 이행)
+- 평가기는 호스트가 저장한 로컬 근거 본문을 `EvidenceReader` 포트로 직접 읽고 sha256을 `evidence.content_hash`와 대조한다. 보고서는 근거를 가리키는 참조일 뿐이며 원본이 아니다(위 §원본 증거). 포트가 없으면 읽어야 하는 검사는 `unknown`이다.
+- 상품 등록 검증의 결정론적 검사 5개(`evidence_refs_resolvable`, `no_secret_in_outputs`·`read_only_calls_only`(안전성), `scan_coverage_complete`, `classification_present`)와 보고서 형식 `registration-report@1`, 스캔 요약 `secret_scan_summary@1`을 정했다. 상세는 [evaluation §9](../operations/evaluation.md).
+- `LlmVerifier`는 `VerifierUnavailableError`로 "지금은 못 한다"를 알릴 수 있다. 평가기는 이를 `unclear`로 바꾸지 않고 던져 업무를 `validating`에 둔다(다음 tick 재검증). 그 밖의 오류는 `unclear`다.
+- 검증 모델·비용 비율(Q22)의 결정(구독 `claude-code-cli` 별도 호출, 실행과 다른 모델 등급, 검증 토큰 ≤ 업무 토큰의 20%에서 시작, 섀도 파일럿 5건)은 [계획](../plans/registration-dogfood.md)에 있다.

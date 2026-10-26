@@ -13,6 +13,22 @@ export interface SourceFetcher {
   fetch(url: string): Promise<FetchResult>;
 }
 
+// ===== 로컬 근거 본문 =====
+
+/** 근거(evidence) 행 하나의 본문. 읽지 못했으면 사유 */
+export type EvidenceContent =
+  | { readable: true; text: string }
+  | { readable: false; reason: string };
+
+/**
+ * 호스트가 저장한 근거 본문 읽기 (상품 등록 같은 로컬 근거 업무). 출처 URL 은 `SourceFetcher` 가 읽고, 이 포트는 `evidence.ref` 가 URL 이 아닌 행을 읽는다.
+ * 본문은 UTF-8 텍스트이고 `evidence.content_hash` 는 그 바이트의 sha256 이다 — 평가기가 해시를 다시 계산해 대조하므로 구현은 저장된 바이트를 그대로 돌려줘야 한다.
+ * 예외는 "읽을 수 없음"과 같다.
+ */
+export interface EvidenceReader {
+  read(row: { readonly id: string; readonly kind: EvidenceKind; readonly ref: string; readonly content_hash: string | null }): Promise<EvidenceContent>;
+}
+
 // ===== 컨텍스트 분리 LLM 검증 =====
 
 /** 검증 대상 주장 한 문장. 보고서 전문이 아니라 문장 단위로만 넘긴다. */
@@ -63,7 +79,27 @@ export type LlmVerdict = {
 export interface LlmVerifier {
   /** 검증기 식별 (`id@version` 또는 모델 이름). 평가 기록의 메모에 남는다 */
   readonly id: string;
+  /**
+   * 던지는 것의 의미:
+   *  - `VerifierUnavailableError`: 지금은 검증할 수 없다(사용량 한도·로그인 만료·미룸). 평가는 기록되지 않고 업무는 `validating` 에 남아 다음 tick 에 다시 검증된다.
+   *  - 그 밖의 오류: 평가기가 `unclear`(→ `inconclusive` → 사람 검토)로 기록한다.
+   */
   verify(input: IsolatedVerificationInput): Promise<LlmVerdict>;
+}
+
+/**
+ * 검증기가 지금은 일을 할 수 없다. 모델이 판단하지 못한 것(`unclear`)과 다르다: 시간이 지나거나 사람이 로그인하면 풀리는 조건이라 사람 검토 업무로 만들지 않고
+ * 업무를 `validating` 에 그대로 둔다(평가 행을 쓰지 않는다). 구현은 매 tick(기본 5초) 불리므로 스스로 호출을 조절해야 한다(예: 미룬 동안은 안쪽 호출 없이 바로 던진다).
+ */
+export class VerifierUnavailableError extends Error {
+  /** 사람이 읽는 사유 코드 (예: `usage_limit`, `login_required`, `usage_deferred`) */
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(`${code}: ${message}`);
+    this.name = 'VerifierUnavailableError';
+    this.code = code;
+  }
 }
 
 // ===== 효과 측정 신호 =====

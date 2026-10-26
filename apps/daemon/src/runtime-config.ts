@@ -291,7 +291,7 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
   }
   const runtime = createRegistrationRuntime({
     db: overrides.db, clock: overrides.clock ?? systemClock, gitPath: registration.git_path, gitleaksPath: registration.gitleaks_path,
-    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir: registration.evidence_dir ?? join(instanceDir, 'evidence'),
+    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir: registration.evidence_dir ?? join(instanceDir, 'evidence'), instanceDir,
     ...(registration.scan_timeout_ms === undefined ? {} : { scanTimeoutMs: registration.scan_timeout_ms }),
   });
   return {

@@ -26,7 +26,7 @@ test('git runs with a fixed argument array, no shell, a scrubbed environment and
   assert.equal(call?.file, '/usr/bin/git');
   const args = call!.args;
   assert.deepEqual(args.slice(0, 2), ['--no-pager', '--no-optional-locks']);
-  for (const setting of ['core.fsmonitor=false', 'core.hooksPath=/dev/null', 'log.showSignature=false', 'core.pager=cat', 'safe.directory=/srv/example/repo']) {
+  for (const setting of ['core.fsmonitor=false', 'core.hooksPath=/dev/null', 'log.showSignature=false', 'core.pager=cat', 'core.useReplaceRefs=false', 'safe.directory=/srv/example/repo']) {
     assert.ok(args.some((arg, i) => args[i - 1] === '-c' && arg === setting), setting);
   }
   assert.equal(args[args.indexOf('-C') + 1], '/srv/example/repo');
@@ -36,6 +36,8 @@ test('git runs with a fixed argument array, no shell, a scrubbed environment and
   assert.equal(call?.env['GIT_CONFIG_SYSTEM'], '/dev/null');
   assert.equal(call?.env['GIT_CONFIG_NOSYSTEM'], '1');
   assert.equal(call?.env['GIT_TERMINAL_PROMPT'], '0');
+  assert.equal(call?.env['GIT_NO_REPLACE_OBJECTS'], '1', 'a repository cannot hide commits with refs/replace');
+  assert.equal(call?.env['GIT_CEILING_DIRECTORIES'], '/srv/example', 'git does not climb out of the candidate directory');
   assert.deepEqual(Object.keys(call!.env).filter((name) => !name.startsWith('GIT_')).sort(), ['HOME', 'LC_ALL', 'PATH']);
 });
 

@@ -1,12 +1,12 @@
 // license_check 도구 실행기 (identify). **사실만 보고한다**: 라이선스 파일의 이름·해시·SPDX 헤더·잘 알려진 문구, 매니페스트의 license 필드. 어느 라이선스인지의 판단과
 // 의존성 라이선스는 이 도구의 일이 아니다(판단은 사람, 의존성은 후속). 문구 인식(`phrases`)은 휴리스틱이라 확정이 아니라 단서로만 쓴다.
 import { createHash } from 'node:crypto';
-import { readdir, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 
 import type { JsonObject, JsonValue } from '../contract.ts';
 import type { ToolExecutionRequest, ToolExecutionResult } from '../gateway.ts';
 import type { RegistrationToolRun } from './capture.ts';
-import { readTextFile, replaceControlChars, RepoToolError } from './repo-files.ts';
+import { readNames, readTextFile, replaceControlChars, RepoToolError, safeText } from './repo-files.ts';
 
 export const LICENSE_CHECK_TOOL = 'license_check';
 export const LICENSE_CHECK_OPERATIONS = ['identify'] as const;
@@ -60,22 +60,24 @@ export function createLicenseCheckExecutor(deps: { run: RegistrationToolRun }) {
 
   async function identify(): Promise<JsonValue> {
     const { root } = run.repo();
-    let names: string[];
+    let entries;
     try {
-      names = (await readdir(await realpath(root))).sort();
+      entries = (await readNames(await realpath(root))).names;
     } catch {
       throw new RepoToolError('repo_not_bound', 'the repository root cannot be read');
     }
+    // 일반 파일만 후보다: 심볼릭 링크·FIFO·디렉터리는 이름이 LICENSE 여도 읽지 않는다 (`.git/config` 등을 가리키는 링크로 비밀을 읽는 길을 막는다)
+    const names = entries.filter((entry) => entry.kind === 'file').map((entry) => entry.name).sort();
     const licenseFiles: JsonObject[] = [];
     for (const name of names.filter((candidate) => LICENSE_FILE.test(candidate)).slice(0, MAX_LICENSE_FILES)) {
       const file = await readTextFile(root, name, MAX_LICENSE_BYTES);
       if (!file.ok) {
-        licenseFiles.push({ path: name, status: 'unavailable', reason: file.reason });
+        licenseFiles.push({ path: safeText(name, 100), status: 'unavailable', reason: file.reason });
         continue;
       }
       const spdx = SPDX.exec(file.text);
       licenseFiles.push({
-        path: name,
+        path: safeText(name, 100),
         sha256: createHash('sha256').update(file.text, 'utf8').digest('hex'),
         bytes: file.bytes,
         truncated: file.truncated,

@@ -56,3 +56,16 @@ test('the reader refuses anything that is not a stored blob: other schemes, path
   assert.equal(await refused(`blob:sha256:${hash}`), false, 'a symlink is not a regular file');
   assert.equal(await refused(`blob:sha256:${'B'.repeat(64)}`), false, 'uppercase hex is not a reference we produce');
 });
+
+test('a broken blob (right name, wrong size — for example left empty by a crash) is repaired by the next put; leftover temp files are removed at start', async (t) => {
+  const dir = join(makeTempDir(t, 'aot-evstore-'), 'evidence');
+  const first = createEvidenceStore({ dir });
+  const { sha256: hash } = first.put('the real body');
+  writeFileSync(join(dir, hash), '', { mode: 0o600 }); // 충돌이 남긴 빈 파일
+  writeFileSync(join(dir, '.tmp-deadbeef'), 'half written', { mode: 0o600 });
+  const second = createEvidenceStore({ dir });
+  assert.ok(!readdirSync(dir).includes('.tmp-deadbeef'), 'the leftover temp file is gone');
+  assert.deepEqual(await second.reader.read(row(`blob:sha256:${hash}`)), { readable: true, text: '' }, 'still broken until the body is put again (the evaluator would reject it by hash)');
+  second.put('the real body');
+  assert.deepEqual(await second.reader.read(row(`blob:sha256:${hash}`)), { readable: true, text: 'the real body' });
+});

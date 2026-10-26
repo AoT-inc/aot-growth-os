@@ -61,8 +61,8 @@ export function toolRun(root: string, evidence: EvidenceCapture): RegistrationTo
   return { repo: () => ({ slug: 'example-product', root }), evidence };
 }
 
-export const request = (tool: string, operation: string, args: JsonObject = {}): ToolExecutionRequest => ({
-  runId: 'run-1', tool, operation, args, signal: new AbortController().signal, constraints: { max_usd: 1 },
+export const request = (tool: string, operation: string, args: JsonObject = {}, signal: AbortSignal = new AbortController().signal): ToolExecutionRequest => ({
+  runId: 'run-1', tool, operation, args, signal, constraints: { max_usd: 1 },
 });
 
 export type StubScanScenario =
@@ -72,7 +72,9 @@ export type StubScanScenario =
   | { kind: 'findings_without_report' }
   | { kind: 'error'; code: number }
   | { kind: 'hang' }
-  | { kind: 'bad_report' };
+  | { kind: 'bad_report' }
+  /** 정상 종료(exit 0, 빈 보고서)지만 경고 수준 출력으로 파일을 건너뛰었다고 말한다 (권한 없는 파일 등) */
+  | { kind: 'clean_but_skipped_file' };
 
 export interface StubScanner {
   path: string;
@@ -95,6 +97,7 @@ const k = scenario.kind;
 if (k === 'hang') { setInterval(() => {}, 1000); }
 else if (k === 'error') { process.exit(scenario.code); }
 else if (k === 'clean') { fs.writeFileSync(reportPath, '[]'); process.exit(0); }
+else if (k === 'clean_but_skipped_file') { fs.writeFileSync(reportPath, '[]'); process.stderr.write('10:00AM WRN skipping file: permission denied\n'); process.exit(0); }
 else if (k === 'bad_report') { fs.writeFileSync(reportPath, '{not json'); process.exit(3); }
 else if (k === 'findings_without_report') { process.exit(3); }
 else {

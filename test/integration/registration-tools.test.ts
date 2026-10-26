@@ -2,8 +2,8 @@
 // (실제 gitleaks 와의 연결은 registration-real-gitleaks 시험). 외부 접근은 없다.
 // 확인하는 것: 읽기 전용, 결과가 호스트 근거로 저장되고 id 가 돌아온다, 비밀값·이메일·원격 주소가 어디에도 나가지 않는다, 스캐너를 저장소 설정으로 피할 수 없다.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 
 import { createRegistrationTools, LICENSE_CHECK_TOOL, REPO_READ_TOOL, SECRET_SCAN_TOOL, type JsonObject } from '@aot/agent-runtime';
@@ -256,5 +256,151 @@ describe('license_check', () => {
     const result = await call(LICENSE_CHECK_TOOL, 'identify');
     assert.deepEqual(result['license_files'], []);
     assert.deepEqual(result['manifest_fields'], []);
+  });
+});
+
+describe('review findings: confinement of git and the scanner to the approved directory', () => {
+  const callOn = (root: string, scenario: StubScanScenario = { kind: 'clean' }, t?: TestContext) => {
+    const dir = makeTempDir(t as TestContext, 'aot-stub-');
+    const scanner = writeStubGitleaks(dir, scenario);
+    const capture = new MemoryCapture();
+    const tools = createRegistrationTools({ clock, gitPath: GIT, gitleaksPath: scanner.path, gitleaksConfigPath: CONFIG });
+    const executors = tools.executorsFor(toolRun(root, capture));
+    return { scanner, capture, call: async (tool: string, operation: string, args: JsonObject = {}) => (await executors.get(tool)!(request(tool, operation, args))).result as JsonObject, executors };
+  };
+
+  it('a .git FILE pointing at another repository is not followed: no metadata, no history, no history scan from the other repository', async (t) => {
+    const other = makeRepo(t, { 'prod-credentials-notes.txt': 'x' });
+    git(other, 'remote', 'add', 'origin', 'git@github.com:acme/private.git');
+    const candidate = makeRepo(t, { 'README.md': '# candidate\n' }, { commit: false });
+    rmSync(join(candidate, '.git'), { recursive: true });
+    writeFileSync(join(candidate, '.git'), `gitdir: ${join(other, '.git')}\n`);
+    const { call } = callOn(candidate, { kind: 'clean' }, t);
+    const meta = await call(REPO_READ_TOOL, 'read_metadata');
+    assert.equal(meta['is_git'], false);
+    assert.equal('remotes' in meta, false, 'the other repository\'s remote is not reported');
+    assert.deepEqual(await call(REPO_READ_TOOL, 'read_history'), { status: 'unavailable', reason: 'not_found' });
+    await assert.rejects(call(SECRET_SCAN_TOOL, 'scan_history'), /scan_failed: the repository has no \.git directory of its own/);
+  });
+
+  it('a directory inside another git repository (no .git of its own) does not report the parent\'s history', async (t) => {
+    const parent = makeRepo(t, { 'sub/a.txt': 'a', 'top.txt': 't' });
+    const { call } = callOn(join(parent, 'sub'), { kind: 'clean' }, t);
+    assert.equal((await call(REPO_READ_TOOL, 'read_metadata'))['is_git'], false);
+    assert.deepEqual(await call(REPO_READ_TOOL, 'read_history'), { status: 'unavailable', reason: 'not_found' });
+  });
+
+  it('read_history works when a work-tree file is named HEAD (the revision is separated from paths)', async (t) => {
+    const root = makeRepo(t, { HEAD: 'a file called HEAD', 'a.txt': 'a' });
+    const { call } = callOn(root, { kind: 'clean' }, t);
+    assert.equal((await call(REPO_READ_TOOL, 'read_history'))['commit_count'], 1);
+  });
+
+  it('the scanner is run so that the candidate cannot hide findings: gitleaks:allow ignored, replace refs off, git kept at the root; a root .gitleaksignore is itself reported', async (t) => {
+    const root = makeRepo(t, FILES);
+    const { call, scanner } = callOn(root, { kind: 'clean' }, t);
+    const clean = await call(SECRET_SCAN_TOOL, 'scan_tree');
+    assert.equal(clean['findings_count'], 0);
+    const recorded = JSON.parse(readFileSync(scanner.recordPath, 'utf8')) as { args: string[]; env: Record<string, string> };
+    assert.ok(recorded.args.includes('--ignore-gitleaks-allow'));
+    assert.equal(recorded.args[recorded.args.indexOf('--log-level') + 1], 'warn');
+    assert.equal(recorded.env['GIT_NO_REPLACE_OBJECTS'], '1');
+    assert.equal(recorded.env['GIT_CONFIG_KEY_3'], 'core.useReplaceRefs');
+    assert.equal(recorded.env['GIT_CEILING_DIRECTORIES'], dirname(root));
+    // 루트의 .gitleaksignore 는 스캐너가 발견을 지운다: 그 존재를 발견으로 보고한다 (트리·이력 둘 다)
+    writeFileSync(join(root, '.gitleaksignore'), 'anything:rule:1\n');
+    for (const operation of ['scan_tree', 'scan_history']) {
+      const result = await call(SECRET_SCAN_TOOL, operation);
+      assert.equal(result['findings_count'], 1, operation);
+      assert.deepEqual(result['findings'], [{ location: '.gitleaksignore', kind: 'scanner-suppression' }], operation);
+    }
+  });
+
+  it('a shallow repository and a scan that skipped files are errors, never a "complete" scan', async (t) => {
+    const root = makeRepo(t, FILES);
+    const shallow = callOn(root, { kind: 'clean' }, t);
+    const head = git(root, 'rev-parse', 'HEAD').trim();
+    writeFileSync(join(root, '.git', 'shallow'), `${head}\n`);
+    await assert.rejects(shallow.call(SECRET_SCAN_TOOL, 'scan_history'), /scan_failed: the repository is shallow/);
+    rmSync(join(root, '.git', 'shallow'));
+    const skipping = callOn(root, { kind: 'clean_but_skipped_file' }, t);
+    await assert.rejects(skipping.call(SECRET_SCAN_TOOL, 'scan_tree'), /scan_failed: the scanner skipped part of the target/);
+    assert.equal(skipping.capture.saved.length, 0);
+  });
+
+  it('a "leaks found" warning is not mistaken for a skipped file', async (t) => {
+    const { call } = rig(t, FILES, { kind: 'findings', items: [{ RuleID: 'generic-api-key', File: 'ABS:src/index.ts' }] });
+    assert.equal((await call(SECRET_SCAN_TOOL, 'scan_tree'))['findings_count'], 1);
+  });
+
+  it('cancelling the call kills the scanner at once and stores nothing', async (t) => {
+    const root = makeRepo(t, FILES);
+    const hang = callOn(root, { kind: 'hang' }, t);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    const started = Date.now();
+    await assert.rejects(hang.executors.get(SECRET_SCAN_TOOL)!(request(SECRET_SCAN_TOOL, 'scan_tree', {}, controller.signal)), /scan_failed: the scan was cancelled/);
+    assert.ok(Date.now() - started < 5000, 'the scanner did not run to its own time limit');
+    assert.equal(hang.capture.saved.length, 0);
+  });
+
+  it('a LICENSE that is a symlink (here to .git/config) is not read or reported', async (t) => {
+    const root = makeRepo(t, { 'a.txt': 'a' });
+    symlinkSync('.git/config', join(root, 'LICENSE'));
+    const { call, capture } = callOn(root, { kind: 'clean' }, t);
+    const result = await call(LICENSE_CHECK_TOOL, 'identify');
+    assert.deepEqual(result['license_files'], []);
+    assert.ok(!capture.saved.some((saved) => saved.text.includes('[core]')));
+  });
+});
+
+describe('review findings: per-run limits and result size', () => {
+  it('a run has a call quota, a scan quota and an evidence byte quota; the next call is refused', async (t) => {
+    const root = makeRepo(t, FILES);
+    const dir = makeTempDir(t, 'aot-stub-');
+    const scanner = writeStubGitleaks(dir, { kind: 'clean' });
+    const make = (quota: { maxCalls?: number; maxScans?: number; maxEvidenceBytes?: number }) => createRegistrationTools({
+      clock, gitPath: GIT, gitleaksPath: scanner.path, gitleaksConfigPath: CONFIG, quota,
+    }).executorsFor(toolRun(root, new MemoryCapture()));
+    const calls = make({ maxCalls: 3 });
+    for (let i = 0; i < 3; i += 1) await calls.get('repo_read')!(request('repo_read', 'read_metadata'));
+    await assert.rejects(calls.get('repo_read')!(request('repo_read', 'read_metadata')), /quota_exceeded: more than 3 registration tool calls/);
+    const scans = make({ maxScans: 1 });
+    await scans.get('secret_scan')!(request('secret_scan', 'scan_tree'));
+    await assert.rejects(scans.get('secret_scan')!(request('secret_scan', 'scan_tree')), /quota_exceeded: more than 1 secret scans/);
+    const bytes = make({ maxEvidenceBytes: 50 });
+    await assert.rejects(bytes.get('repo_read')!(request('repo_read', 'read_file', { path: 'README.md' })), /quota_exceeded: the evidence storage quota/);
+  });
+
+  it('parallel calls of one run are executed one at a time', async (t) => {
+    const root = makeRepo(t, FILES);
+    let active = 0;
+    let peak = 0;
+    const capture = {
+      saved: 0,
+      async capture() {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+        this.saved += 1;
+        return { evidenceId: `ev-${this.saved}`, sha256: 'x' };
+      },
+    };
+    const executors = createRegistrationTools({ clock, gitPath: GIT, gitleaksPath: '/nonexistent', gitleaksConfigPath: CONFIG }).executorsFor(toolRun(root, capture));
+    await Promise.all([1, 2, 3, 4].map(() => executors.get('repo_read')!(request('repo_read', 'read_file', { path: 'README.md' }))));
+    assert.equal(peak, 1);
+  });
+
+  it('a result larger than the limit is shrunk (not cut by the gateway), keeps evidence_id first, and says it was truncated', async (t) => {
+    // JSON 이스케이프로 두 배가 되는 문자: 512 KiB 본문이 약 1 MiB 직렬화가 된다
+    const root = makeRepo(t, { 'big.txt': '"\n'.repeat(250_000) });
+    const tools = createRegistrationTools({ clock, gitPath: GIT, gitleaksPath: '/nonexistent', gitleaksConfigPath: CONFIG });
+    const store = new MemoryCapture();
+    const result = (await tools.executorsFor(toolRun(root, store)).get('repo_read')!(request('repo_read', 'read_file', { path: 'big.txt', max_bytes: 500_000 }))).result as JsonObject;
+    assert.equal(Object.keys(result)[0], 'evidence_id');
+    assert.equal(result['truncated'], true);
+    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') <= 700_000);
+    assert.equal(JSON.parse(store.last().text)['truncated'], true, 'the stored body is the shrunk one — what the agent saw');
   });
 });

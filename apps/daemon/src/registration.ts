@@ -12,7 +12,8 @@ import type { RunContext } from '@aot/task-engine';
 
 import type { AgentOptions } from './agent-executor.ts';
 import { createEvidenceStore, type EvidenceStore } from './evidence-store.ts';
-import { isAbsolute } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, sep } from 'node:path';
 
 export const REGISTRATION_TOOLS: readonly string[] = [REPO_READ_TOOL, SECRET_SCAN_TOOL, LICENSE_CHECK_TOOL];
 
@@ -29,8 +30,20 @@ export function repoSlugOf(spec: Pick<TaskSpec, 'allowed_tools'>): string {
   return [...slugs][0]!;
 }
 
-/** 슬러그의 `product_repo` 를 해석한다. 상품이 검증 중이고 읽기 접근이 승인돼야 한다 */
-export function bindRepo(db: Db, slug: string): RepoBinding {
+const realpathOrSelf = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+const overlaps = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
+
+/**
+ * 슬러그의 `product_repo` 를 해석한다. 상품이 검증 중이고 읽기 접근이 승인돼야 한다.
+ * `forbiddenRoots`(데몬 인스턴스·근거 디렉터리)와 겹치는 경로는 거부한다 — 저장소 경로가 그것을 품으면 에이전트가 다른 업무의 근거·DB 를 읽는 길이 열린다.
+ */
+export function bindRepo(db: Db, slug: string, forbiddenRoots: readonly string[] = []): RepoBinding {
   const rows = db.all<{ local_path: string | null; access_scope: string; registration_status: string }>(
     'SELECT pr.local_path, pr.access_scope, p.registration_status FROM product_repo pr JOIN product p ON p.id = pr.product_id WHERE p.slug = ?', [slug],
   );
@@ -39,6 +52,10 @@ export function bindRepo(db: Db, slug: string): RepoBinding {
   if (row.registration_status !== 'verifying') throw new RepoToolError('repo_not_bound', `the product is '${row.registration_status}', not under verification`);
   if (row.access_scope !== 'read' && row.access_scope !== 'write_branch') throw new RepoToolError('repo_access_not_granted', 'read access to the repository has not been approved');
   if (row.local_path === null || !isAbsolute(row.local_path)) throw new RepoToolError('repo_not_bound', 'the repository has no absolute local path');
+  const real = realpathOrSelf(row.local_path);
+  if (forbiddenRoots.some((forbidden) => overlaps(real, realpathOrSelf(forbidden)))) {
+    throw new RepoToolError('repo_not_bound', 'the repository path overlaps the daemon instance or evidence directory');
+  }
   return { slug, root: row.local_path };
 }
 
@@ -49,7 +66,7 @@ export interface RegistrationRuntime {
   executorsFor(ctx: RunContext): Map<string, ToolExecutor>;
 }
 
-export function createRegistrationRuntime(options: RegistrationToolsOptions & { db: Db; clock: Clock; evidenceDir: string }): RegistrationRuntime {
+export function createRegistrationRuntime(options: RegistrationToolsOptions & { db: Db; clock: Clock; evidenceDir: string; instanceDir: string }): RegistrationRuntime {
   const store = createEvidenceStore({ dir: options.evidenceDir });
   const tools = createRegistrationTools(options);
   return {
@@ -57,7 +74,7 @@ export function createRegistrationRuntime(options: RegistrationToolsOptions & { 
     tools,
     executorsFor(ctx) {
       return tools.executorsFor({
-        repo: () => bindRepo(options.db, repoSlugOf(ctx.spec)),
+        repo: () => bindRepo(options.db, repoSlugOf(ctx.spec), [options.instanceDir, options.evidenceDir]),
         evidence: {
           capture: (input) => {
             const { sha256, ref } = store.put(input.text);

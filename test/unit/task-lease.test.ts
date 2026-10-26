@@ -5,7 +5,7 @@ import { test } from 'node:test';
 
 import { DENY_ALL_TASK_POLICY_GATE, type Db, type FakeClock } from '@aot/domain';
 import {
-  checkLeaseParams, claimNextTask, DEFAULT_LEASE_PARAMS, failRun, findExpiredRuns, heartbeat, LeaseLostError, promoteDueRetries, recordHostEvidence, saveCheckpoint, submitRun,
+  checkLeaseParams, claimNextTask, DEFAULT_LEASE_PARAMS, failRun, findExpiredRuns, heartbeat, LeaseLostError, promoteDueRetries, recordHostEvidence, recordRunOutput, saveCheckpoint, submitRun,
   takeOverExpiredRun, TaskWorker, transitionTask, type Lease, type TaskExecutor,
 } from '@aot/task-engine';
 
@@ -243,4 +243,22 @@ test('recordHostEvidence: the host picks the trust origin and gets the row id ba
   clock.advance(LEASE_MS + 1);
   assert.throws(() => recordHostEvidence(db, clock, lease, { kind: 'document', ref: 'blob:x', contentHash: hash, trustOrigin: 'internal', capturedAt: clock.nowIso() }), LeaseLostError);
   assert.equal(db.get('SELECT COUNT(*) AS n FROM evidence WHERE task_id = ?', [taskId])?.['n'], 1);
+});
+
+test('the blob: reference namespace belongs to the host: agent output cannot use it, and host evidence must use it', (t) => {
+  const { db, clock, claim } = setup(t);
+  const taskId = queuedTask(db, clock);
+  const lease = mustClaim(claim('w1', taskId));
+  const hash = 'c'.repeat(64);
+  assert.throws(
+    () => recordRunOutput(db, clock, lease, { evidence: [{ kind: 'document', ref: `blob:sha256:${hash}`, capturedAt: clock.nowIso(), contentHash: hash }], runLogRef: null }),
+    /reserved for host-stored evidence/,
+  );
+  assert.throws(
+    () => recordHostEvidence(db, clock, lease, { kind: 'document', ref: 'https://example.com/x', contentHash: hash, trustOrigin: 'internal', capturedAt: clock.nowIso() }),
+    /must start with 'blob:'/,
+  );
+  assert.equal(db.get('SELECT COUNT(*) AS n FROM evidence WHERE task_id = ?', [taskId])?.['n'], 0, 'nothing was written by either refused call');
+  recordRunOutput(db, clock, lease, { evidence: [{ kind: 'source_url', ref: 'https://docs.example.com/a', capturedAt: clock.nowIso() }], runLogRef: null });
+  assert.equal(db.get('SELECT COUNT(*) AS n FROM evidence WHERE task_id = ?', [taskId])?.['n'], 1, 'ordinary agent evidence is unaffected');
 });

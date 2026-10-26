@@ -72,7 +72,7 @@ export {
 } from './claude-code/stream.ts';
 // 상품 등록 검증 업무의 도구 3개 (repo_read · secret_scan · license_check): 호스트 게이트웨이 실행기, 읽기 전용, 결과는 호스트 근거로 저장 (docs/plans/registration-dogfood.md)
 export {
-  countFiles, createGitRunner, createRegistrationTools, findingsFromReport, isDeniedPath, LICENSE_CHECK_TOOL, listTree, manifestLicense, normalizeRelativePath, readTextFile,
+  countFiles, createGitRunner, createRegistrationTools, DEFAULT_REGISTRATION_QUOTA, findingsFromReport, hasOwnGitDir, isDeniedPath, maskRepoText, safeText, LICENSE_CHECK_TOOL, listTree, manifestLicense, normalizeRelativePath, readTextFile,
   REPO_READ_TOOL, REGISTRATION_TOOL_DESCRIPTIONS, registrationToolName, registrationToolSpecs, remoteKind, RepoToolError, SECRET_SCAN_TOOL,
-  type CapturedEvidence, type EvidenceCapture, type GitRunner, type RegistrationTools, type RegistrationToolRun, type RegistrationToolsOptions, type RepoBinding, type RepoToolErrorCode,
+  type CapturedEvidence, type EvidenceCapture, type GitRunner, type RegistrationQuota, type RegistrationTools, type RegistrationToolRun, type RegistrationToolsOptions, type RepoBinding, type RepoToolErrorCode,
 } from './registration/index.ts';

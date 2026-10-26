@@ -420,6 +420,7 @@ export interface HostEvidence {
  * `recordRunOutput`(에이전트가 낸 증거: 항상 `external_untrusted`)과 달리 신뢰 출처를 호출한 호스트 코드가 정한다. lease 펜싱은 같다(잃었으면 던진다).
  */
 export function recordHostEvidence(db: Db, clock: Clock, lease: Lease, item: HostEvidence, newId: () => string = () => `ev-${randomUUID()}`): string {
+  if (!item.ref.startsWith(HOST_EVIDENCE_REF_PREFIX)) throw new Error(`host evidence refs must start with '${HOST_EVIDENCE_REF_PREFIX}' (the namespace reserved for host-stored evidence)`);
   return db.writeTx((tx) => {
     assertLeaseHeld(tx, lease, clock.nowIso(), 'record evidence');
     const id = newId();
@@ -439,7 +440,12 @@ export function recordHostEvidence(db: Db, clock: Clock, lease: Lease, item: Hos
  * 어댑터가 근거의 신뢰 출처를 무엇이라 밝혔든(계약의 `EvidenceItem.trust_origin` 은 어휘 검증만 받는 참고용 자기 신고다) 항상
  * `external_untrusted` 로 쓴다 — 어댑터 출력은 신뢰 경계 밖이므로 자기 신고에 기대지 않는다. 호출자가 객체에 `trustOrigin` 을 몰래 실어도 SQL 에 닿지 않는다.
  */
+/** 호스트 전용 근거 참조 이름 공간: 호스트(도구 실행기)가 저장한 본문만 `blob:` 으로 시작한다. 에이전트가 낸 증거는 이 참조를 쓸 수 없다 */
+export const HOST_EVIDENCE_REF_PREFIX = 'blob:';
+
 export function recordRunOutput(db: Db, clock: Clock, lease: Lease, record: RunOutputRecord, newId: () => string = () => `ev-${randomUUID()}`): void {
+  const reserved = record.evidence.find((item) => item.ref.startsWith(HOST_EVIDENCE_REF_PREFIX));
+  if (reserved !== undefined) throw new Error(`evidence ref '${reserved.ref.slice(0, 40)}' is in the namespace reserved for host-stored evidence`);
   db.writeTx((tx) => {
     assertLeaseHeld(tx, lease, clock.nowIso(), 'record output');
     for (const item of record.evidence) {

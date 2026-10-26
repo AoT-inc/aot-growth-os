@@ -58,3 +58,15 @@ test('bindRepo is re-evaluated at every call: revoking the access closes the too
   db.writeTx((tx) => tx.run("UPDATE product_repo SET access_scope = 'none'"));
   assert.equal(code(() => bindRepo(db, 'example-product')), 'repo_access_not_granted');
 });
+
+test('bindRepo refuses a repository path that overlaps the daemon instance or evidence directory (it would expose other tasks\' evidence)', (t) => {
+  const db = withRepo(t, { path: '/srv/example/instance/repos/example-product' });
+  const forbidden = ['/srv/example/instance', '/srv/example/instance/evidence'];
+  assert.equal(code(() => bindRepo(db, 'example-product', forbidden)), 'repo_not_bound', 'inside the instance directory');
+  db.writeTx((tx) => tx.run("UPDATE product_repo SET local_path = '/srv/example'"));
+  assert.equal(code(() => bindRepo(db, 'example-product', forbidden)), 'repo_not_bound', 'an ancestor of the instance directory');
+  db.writeTx((tx) => tx.run("UPDATE product_repo SET local_path = '/srv/example/instance/evidence'"));
+  assert.equal(code(() => bindRepo(db, 'example-product', forbidden)), 'repo_not_bound', 'the evidence directory itself');
+  db.writeTx((tx) => tx.run("UPDATE product_repo SET local_path = '/srv/example-other/repo'"));
+  assert.equal(bindRepo(db, 'example-product', forbidden).root, '/srv/example-other/repo', 'a sibling with a similar name is fine');
+});

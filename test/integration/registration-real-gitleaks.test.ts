@@ -3,7 +3,7 @@
 // 표본 비밀은 실행 중에 무작위로 만들어 임시 저장소에만 둔다(소스에 키 모양을 두지 않는다).
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { accessSync, constants, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -61,5 +61,37 @@ describe('secret_scan with the real gitleaks', { skip: available ? false : `gitl
     // 저장된 요약과 도구 결과 어디에도 비밀 값이 없다
     for (const text of [...capture.saved.map((saved) => saved.text), JSON.stringify(tree), JSON.stringify(history)]) assert.ok(!text.includes(secret.slice(4)), 'the secret value never leaves');
     for (const saved of capture.saved) assert.ok(parseSecretScanSummary(saved.text).ok, 'each stored summary matches the evaluator format');
+  });
+
+  it('the candidate cannot hide a secret: gitleaks:allow comments, replace refs and a root .gitleaksignore do not make the scan come out clean', async (t) => {
+    const secret = ['gh', 'p_', base62(36)].join('');
+    const root = makeRepo(t, { 'README.md': '# example-product\n', 'plain.txt': `token = ${secret}\n`, 'allowed.txt': `token = ${secret} # gitleaks:allow\n` });
+    const capture = new MemoryCapture();
+    const tools = createRegistrationTools({ clock: new FakeClock('2026-10-26T00:00:00.000Z'), gitPath: GIT, gitleaksPath: GITLEAKS, gitleaksConfigPath: CONFIG });
+    const call = async (operation: string) => (await tools.executorsFor(toolRun(root, capture)).get(SECRET_SCAN_TOOL)!(request(SECRET_SCAN_TOOL, operation))).result as JsonObject;
+    const locations = (result: JsonObject): string[] => (result['findings'] as { location: string }[]).map((finding) => finding.location.replace(/^[0-9a-f]{12}:/, '')).sort();
+
+    // 1. `gitleaks:allow` 주석이 붙은 줄도 발견으로 잡힌다 (트리·이력)
+    assert.deepEqual(locations(await call('scan_tree')), ['allowed.txt', 'plain.txt']);
+    assert.deepEqual(locations(await call('scan_history')), ['allowed.txt', 'plain.txt']);
+
+    // 2. 비밀이 든 커밋을 교체 객체로 가려도 이력 스캔이 찾는다
+    writeFileSync(join(root, 'plain.txt'), 'clean now\n');
+    writeFileSync(join(root, 'allowed.txt'), 'clean now\n');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'clean up');
+    const first = git(root, 'rev-list', '--max-parents=0', 'HEAD').trim();
+    const decoy = git(root, 'commit-tree', 'HEAD^{tree}', '-m', 'decoy').trim();
+    git(root, 'replace', first, decoy);
+    const replaced = await call('scan_history');
+    assert.ok(Number(replaced['findings_count']) >= 2, `replace refs must not hide the secret (found ${String(replaced['findings_count'])})`);
+    git(root, 'replace', '-d', first);
+
+    // 3. 루트의 .gitleaksignore 는 스캐너가 발견을 지우지만, 그 존재가 발견으로 보고된다
+    const real = realpathSync(root);
+    writeFileSync(join(root, '.gitleaksignore'), `${first}:plain.txt:github-pat:1\n${first}:allowed.txt:github-pat:1\n${real}/plain.txt:github-pat:1\n`);
+    const suppressed = await call('scan_history');
+    assert.ok(locations(suppressed).includes('.gitleaksignore'), 'the suppression file itself is a finding');
+    assert.ok((suppressed['findings'] as { kind: string }[]).some((finding) => finding.kind === 'scanner-suppression'));
   });
 });

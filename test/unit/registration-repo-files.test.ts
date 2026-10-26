@@ -20,10 +20,15 @@ test('normalizeRelativePath: only plain relative paths; absolute, parent, NUL, c
 
 test('isDeniedPath: secret-looking file names and anything under .git are never read', () => {
   for (const denied of ['.env', '.env.production', 'config/.env.local', 'server.pem', 'keys/private.key', 'id_rsa', 'id_ed25519.pub', '.npmrc', '.netrc', 'credentials.json', 'secrets.yaml',
-    '.git/config', 'sub/.git/HEAD', 'service-account.json', 'store.p12', 'vault.kdbx']) {
+    '.git/config', 'sub/.git/HEAD', 'service-account.json', 'store.p12', 'vault.kdbx',
+    // 대소문자를 구분하지 않는다 (대소문자 무시 파일시스템에서 `.GIT` 도 `.git` 이다)
+    '.GIT/config', '.Git/HEAD', '.ENV', 'Secrets.YAML',
+    // 일반 설정 파일 이름들
+    'prod.env', 'app.env', '.envrc', '.env_local', 'terraform.tfstate', 'infra/prod.tfvars', '.dockercfg', '.docker/config.json', '.kube/config', 'wp-config.php', '.vault-token',
+    '.yarnrc.yml', 'gcp-key.json', '.s3cfg', '.bash_history', '.aws/credentials', '.ssh/config', 'env.example']) {
     assert.equal(isDeniedPath(denied), true, denied);
   }
-  for (const fine of ['README.md', 'src/index.ts', 'docs/environment.md', 'package.json', '.gitignore', 'env.example', 'secret_santa.md.txt']) {
+  for (const fine of ['README.md', 'src/index.ts', 'docs/environment.md', 'package.json', '.gitignore', 'secret_santa.md.txt', 'src/keyboard.ts', 'docs/tokenizer.md', 'envelope.txt']) {
     assert.equal(isDeniedPath(fine), false, fine);
   }
 });
@@ -35,11 +40,10 @@ test('readTextFile: reads text, masks secret-looking values, truncates on a char
   assert.ok(masked.ok);
   assert.ok(!masked.text.includes(key) && masked.text.includes('[REDACTED]'));
   assert.equal(masked.truncated, false);
-  // 한글은 문자당 3바이트: 10바이트에서 자르면 9바이트(3자)로 물러난다
-  const cut = await readTextFile(root, 'ko.txt', 10);
-  assert.ok(cut.ok);
-  assert.equal(cut.text, '가나다');
-  assert.equal(cut.truncated, true);
+  // 잘리면 마지막 줄 경계까지만 돌려준다 (줄바꿈이 없으면 비운다)
+  const cutOneLine = await readTextFile(root, 'ko.txt', 10);
+  assert.ok(cutOneLine.ok && cutOneLine.truncated);
+  assert.equal(cutOneLine.text, '', 'no newline inside the limit: nothing partial is returned');
   const empty = await readTextFile(root, 'empty.txt', 10);
   assert.ok(empty.ok && empty.text === '' && empty.bytes === 0);
 });

@@ -8,6 +8,7 @@ import type { GatewayToolSpec, ToolExecutor } from '../gateway.ts';
 import type { RegistrationToolRun } from './capture.ts';
 import { createGitRunner } from './git.ts';
 import { createLicenseCheckExecutor, LICENSE_CHECK_OPERATIONS, LICENSE_CHECK_TOOL } from './license-check.ts';
+import { RepoToolError } from './repo-files.ts';
 import { createRepoReadExecutor, REPO_READ_OPERATIONS, REPO_READ_TOOL } from './repo-read.ts';
 import { createSecretScanExecutor, DEFAULT_SCAN_TIMEOUT_MS, SECRET_SCAN_OPERATIONS, SECRET_SCAN_TOOL } from './secret-scan.ts';
 
@@ -31,9 +32,23 @@ export interface RegistrationToolsOptions {
   /** gitleaks 설정 파일의 절대 경로(후보 저장소의 설정을 쓰지 않는다) */
   gitleaksConfigPath: string;
   scanTimeoutMs?: number;
+  /** run 별 호출·저장 상한. 기본 `DEFAULT_REGISTRATION_QUOTA` */
+  quota?: Partial<RegistrationQuota>;
   /** 시험이 프로세스 포트를 가짜로 바꾼다 */
   process?: ProcessPort;
 }
+
+/** run 하나가 쓸 수 있는 양. 프롬프트 주입된 에이전트가 읽기·스캔을 무한히 반복해 호스트를 붙잡지 못하게 한다 */
+export interface RegistrationQuota {
+  /** 도구 호출 총수 */
+  maxCalls: number;
+  /** 그중 secret_scan 호출 수 */
+  maxScans: number;
+  /** 저장하는 근거 본문의 총 바이트 */
+  maxEvidenceBytes: number;
+}
+
+export const DEFAULT_REGISTRATION_QUOTA: RegistrationQuota = { maxCalls: 300, maxScans: 6, maxEvidenceBytes: 64 * 1024 * 1024 };
 
 export interface RegistrationTools {
   specs: readonly GatewayToolSpec[];
@@ -62,13 +77,41 @@ export function createRegistrationTools(options: RegistrationToolsOptions): Regi
   return {
     specs: registrationToolSpecs(scanTimeoutMs),
     executorsFor(run) {
+      const quota = { ...DEFAULT_REGISTRATION_QUOTA, ...options.quota };
+      let calls = 0;
+      let scans = 0;
+      let evidenceBytes = 0;
+      let queue: Promise<unknown> = Promise.resolve();
+      // 저장하는 본문의 총량을 센다
+      const limited: RegistrationToolRun = {
+        repo: run.repo,
+        evidence: {
+          capture: (input) => {
+            evidenceBytes += Buffer.byteLength(input.text, 'utf8');
+            if (evidenceBytes > quota.maxEvidenceBytes) return Promise.reject(new RepoToolError('quota_exceeded', 'the evidence storage quota of this run is used up'));
+            return run.evidence.capture(input);
+          },
+        },
+      };
+      // 호출 수를 세고 run 안에서는 한 번에 하나씩만 실행한다(병렬 호출로 호스트 자원을 몰아 쓰지 못하게)
+      const guard = (tool: string, executor: ToolExecutor): ToolExecutor => (request) => {
+        calls += 1;
+        if (calls > quota.maxCalls) return Promise.reject(new RepoToolError('quota_exceeded', `more than ${quota.maxCalls} registration tool calls in one run`));
+        if (tool === SECRET_SCAN_TOOL) {
+          scans += 1;
+          if (scans > quota.maxScans) return Promise.reject(new RepoToolError('quota_exceeded', `more than ${quota.maxScans} secret scans in one run`));
+        }
+        const result = queue.then(() => executor(request), () => executor(request));
+        queue = result.catch(() => undefined);
+        return result;
+      };
       const git = createGitRunner({ gitPath: options.gitPath, ...(options.process === undefined ? {} : { process: options.process }) });
       return new Map<string, ToolExecutor>([
-        [REPO_READ_TOOL, createRepoReadExecutor({ run, git, clock: options.clock })],
-        [SECRET_SCAN_TOOL, createSecretScanExecutor({
-          run, git, options: { gitleaksPath: options.gitleaksPath, configPath: options.gitleaksConfigPath, timeoutMs: scanTimeoutMs, ...(options.process === undefined ? {} : { process: options.process }) },
-        })],
-        [LICENSE_CHECK_TOOL, createLicenseCheckExecutor({ run })],
+        [REPO_READ_TOOL, guard(REPO_READ_TOOL, createRepoReadExecutor({ run: limited, git, clock: options.clock }))],
+        [SECRET_SCAN_TOOL, guard(SECRET_SCAN_TOOL, createSecretScanExecutor({
+          run: limited, git, options: { gitleaksPath: options.gitleaksPath, configPath: options.gitleaksConfigPath, timeoutMs: scanTimeoutMs, ...(options.process === undefined ? {} : { process: options.process }) },
+        }))],
+        [LICENSE_CHECK_TOOL, guard(LICENSE_CHECK_TOOL, createLicenseCheckExecutor({ run: limited }))],
       ]);
     },
   };
@@ -79,5 +122,5 @@ export { createGitRunner, type GitRunner } from './git.ts';
 export { manifestLicense } from './license-check.ts';
 export { remoteKind } from './repo-read.ts';
 export { findingsFromReport } from './secret-scan.ts';
-export { countFiles, isDeniedPath, listTree, normalizeRelativePath, readTextFile, RepoToolError, type RepoToolErrorCode } from './repo-files.ts';
+export { countFiles, hasOwnGitDir, isDeniedPath, listTree, maskRepoText, normalizeRelativePath, readTextFile, RepoToolError, safeText, type RepoToolErrorCode } from './repo-files.ts';
 export { LICENSE_CHECK_TOOL, REPO_READ_TOOL, SECRET_SCAN_TOOL };

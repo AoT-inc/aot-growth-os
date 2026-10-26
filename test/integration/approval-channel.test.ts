@@ -107,3 +107,14 @@ test('a handler may answer asynchronously; the request is handled once even when
   assert.equal(calls - before, 1);
   assert.deepEqual(JSON.parse(reply.trim()), { ok: true, echoed: { n: 2 } });
 });
+
+test('a reply that cannot be serialized does not crash the daemon: the client gets the error reply', async (t) => {
+  const socket = join(makeTempDir(t, 'aot-sock-'), 'run', 'approval.sock');
+  const errors: unknown[] = [];
+  const server = await startApprovalServer({ socketPath: socket, handle: (request) => ((request as { big?: boolean }).big === true ? { n: 1n } : { ok: true }), onError: (error) => errors.push(error) });
+  t.after(() => server.close());
+  const reply = await sendApprovalRequest(socket, { big: true }) as { ok: boolean; error: string };
+  assert.deepEqual([reply.ok, reply.error], [false, 'internal error in the approval engine']);
+  assert.deepEqual(errors, ['TypeError']);
+  assert.deepEqual(await sendApprovalRequest(socket, { big: false }), { ok: true }, 'the server keeps serving');
+});

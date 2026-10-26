@@ -72,7 +72,7 @@ export interface RegistrationRuntime {
   executorsFor(ctx: RunContext): Map<string, ToolExecutor>;
 }
 
-export function createRegistrationRuntime(options: RegistrationToolsOptions & { db: Db; clock: Clock; evidenceDir: string; instanceDir: string }): RegistrationRuntime {
+export function createRegistrationRuntime(options: RegistrationToolsOptions & { db: Db; clock: Clock; evidenceDir: string; instanceDir: string; forbiddenRoots?: readonly string[] }): RegistrationRuntime {
   const store = createEvidenceStore({ dir: options.evidenceDir });
   const tools = createRegistrationTools(options);
   return {
@@ -80,7 +80,7 @@ export function createRegistrationRuntime(options: RegistrationToolsOptions & { 
     tools,
     executorsFor(ctx) {
       return tools.executorsFor({
-        repo: () => bindRepo(options.db, repoSlugOf(ctx.spec), [options.instanceDir, options.evidenceDir]),
+        repo: () => bindRepo(options.db, repoSlugOf(ctx.spec), options.forbiddenRoots ?? [options.instanceDir, options.evidenceDir]),
         evidence: {
           capture: (input) => {
             const { sha256, ref } = store.put(input.text);

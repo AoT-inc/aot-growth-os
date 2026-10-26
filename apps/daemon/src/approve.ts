@@ -39,6 +39,7 @@ import { join } from 'node:path';
 import { otpauthUri, sendApprovalRequest, TotpSecretStore } from '@aot/policy';
 
 const KINDS = ['task', 'publication', 'policy_version', 'strategy_version'] as const;
+const PRODUCT_FLAGS = ['socket', 'actor', 'name', 'repo', 'kind', 'stage', 'hash', 'comment'];
 const KIND_ALIASES: Readonly<Record<string, string>> = { policy: 'policy_version', strategy: 'strategy_version' };
 
 function fail(message: string): never {
@@ -159,6 +160,8 @@ async function main(): Promise<void> {
       break;
     }
     case 'product': {
+      // 오타 난 옵션이 조용히 무시돼 기본값으로 실행되지 않게 한다 (예: --kinds 를 쓰면 종류가 기본값이 된다)
+      for (const name of flags.keys()) if (!PRODUCT_FLAGS.includes(name)) fail(`unknown option --${name} for product (allowed: ${PRODUCT_FLAGS.join(', ')})`);
       const op = kindArg ?? fail('product needs an operation: add|start|status|evidence|decide|pilot');
       const slug = id;
       const extra = positional[3];

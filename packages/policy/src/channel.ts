@@ -83,9 +83,14 @@ function serve(socket: Socket, handle: ApprovalHandler, onError?: (error: unknow
     }
     done = true; // 처리 중에 더 온 데이터로 같은 요청을 두 번 처리하지 않는다
     // 처리기는 동기일 수도, Promise 를 돌려줄 수도 있다 (상품 등록 채널은 근거 본문을 읽느라 비동기다)
-    Promise.resolve().then(() => handle(request)).then(reply, (error: unknown) => {
+    // reply 가 던져도(직렬화 못 하는 값 등) 처리되지 않은 거부로 데몬이 죽지 않게 같은 오류 응답으로 돌린다
+    Promise.resolve().then(() => handle(request)).then((value) => reply(value)).catch((error: unknown) => {
       onError?.(error instanceof Error ? error.name : 'error');
-      reply({ ok: false, error: 'internal error in the approval engine' });
+      try {
+        reply({ ok: false, error: 'internal error in the approval engine' });
+      } catch {
+        socket.destroy();
+      }
     });
   });
   socket.on('error', () => socket.destroy());

@@ -33,6 +33,7 @@ import { createStubLlmVerifier, type LlmVerifier, type SourceFetcher } from '@ao
 
 import { adapterByRole } from './agent-executor.ts';
 import { createRegistrationRuntime, withRegistrationTools } from './registration.ts';
+import { REGISTRATION_TRIGGER_PREFIX } from './registration-task.ts';
 import type { AssembleOptions } from './assemble.ts';
 
 export interface ContainerAgentConfig {
@@ -152,6 +153,8 @@ export interface AgentRuntimeOverrides {
   claudeCodeConsent?: () => ClaudeCodeConsent | null;
   /** 등록 도구가 저장소 바인딩(product_repo)을 읽는 DB. `registration_tools` 설정이 있으면 필수 */
   db?: Db;
+  /** 상품 저장소 경로가 겹치면 안 되는 데몬 디렉터리를 더한다 (DB·TOTP·정책 저장소·승인 소켓 등 설정으로 인스턴스 밖에 둘 수 있는 것). main.ts 가 넘긴다 */
+  forbiddenRoots?: readonly string[];
   /** 등록 도구 실행 파일 확인 (시작 때). 기본은 실행 권한 확인이고, 던지면 데몬이 시작하지 않는다. 시험이 가짜 경로를 허용하려고 바꾼다 */
   checkExecutable?: (path: string) => void;
   /** `fetch_url` 도구 생성기. 설정에서 만든 옵션(허용 호스트 포함)을 그대로 받는다 */
@@ -360,9 +363,12 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
       throw new Error(`registration_tools.${name} '${path}' is not an executable file`);
     }
   }
+  const evidenceDir = registration.evidence_dir ?? join(instanceDir, 'evidence');
+  const claudeRunRoot = parseClaudeCodeCliConfig(config.claude_code_cli)?.run_root;
+  const forbiddenRoots = [instanceDir, evidenceDir, config.run_log_dir ?? join(instanceDir, 'run-logs'), ...(claudeRunRoot === undefined ? [] : [claudeRunRoot]), ...(overrides.forbiddenRoots ?? [])];
   const runtime = createRegistrationRuntime({
     db: overrides.db, clock: overrides.clock ?? systemClock, gitPath: registration.git_path, gitleaksPath: registration.gitleaks_path,
-    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir: registration.evidence_dir ?? join(instanceDir, 'evidence'), instanceDir,
+    gitleaksConfigPath: registration.gitleaks_config ?? DEFAULT_GITLEAKS_CONFIG, evidenceDir, instanceDir, forbiddenRoots,
     ...(registration.scan_timeout_ms === undefined ? {} : { scanTimeoutMs: registration.scan_timeout_ms }),
   });
   return {
@@ -370,7 +376,7 @@ export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: strin
     agent: withRegistrationTools(built.agent, runtime),
     // 평가기가 저장된 근거 본문을 직접 읽는다. 출처 URL 조회는 research_agent 가 있을 때만 된다
     evaluation: { ...(built.evaluation ?? { fetcher: NO_SOURCE_FETCHER }), evidenceReader: runtime.store.reader },
-    productChannel: { forbiddenRoots: [instanceDir, registration.evidence_dir ?? join(instanceDir, 'evidence')] },
+    productChannel: { forbiddenRoots },
   };
 }
 
@@ -400,7 +406,10 @@ function buildAgentBase(config: AgentRuntimeConfig, instanceDir: string, overrid
   const claudeAdapter = claudeConfig === undefined || claudeGate === undefined ? undefined : buildClaudeAdapter(claudeConfig, clock, claudeGate, overrides, toolDescriptions);
   // 구독 검증기: 출처 URL 조회기가 없는 평가 포트다(로컬 근거 업무). research_agent 가 있으면 아래에서 조회기를 더해 만든다
   const claudeVerifier = llmConfig?.kind === 'claude_code_cli' && claudeConfig !== undefined && claudeGate !== undefined ? buildClaudeVerifier(llmConfig, claudeConfig, clock, claudeGate, overrides) : undefined;
-  const shadow = llmConfig?.kind === 'claude_code_cli' && llmConfig.shadow === true ? { llmShadow: true } : {};
+  // 섀도 모드는 상품 등록 업무에만 적용한다 (다른 업무의 검증은 평소대로: 파일럿이 연구 업무의 `unsupported → fail` 을 끄지 않게)
+  const shadow = llmConfig?.kind === 'claude_code_cli' && llmConfig.shadow === true
+    ? { llmShadow: (task: { trigger_kind: string; trigger_ref: string }) => task.trigger_kind === 'manual' && task.trigger_ref.startsWith(REGISTRATION_TRIGGER_PREFIX) }
+    : {};
   const localEvaluation = claudeVerifier === undefined ? undefined : { fetcher: NO_SOURCE_FETCHER, llm: claudeVerifier, ...shadow };
   if (container === undefined) {
     if (research !== undefined) requireContainer(config);

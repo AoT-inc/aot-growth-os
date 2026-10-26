@@ -19,7 +19,7 @@
 // 기록한다. fail 은 시스템이 거절하고, pass 의 승격은 사람이 승인 CLI `promote` 로 한다.
 // `inputs[kind=measurement]` 업무는 값이 입력될 때까지 집히지 않는다. 출처 조회기는 `research_agent` 가 없으면 연결되지 않아 그 경우 validating 업무는 검증되지 않고 남는다(자동 완료 없음).
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMigrations, openDb, systemClock } from '@aot/domain';
@@ -74,7 +74,11 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
-  const { agent, evaluation, productChannel } = buildAgentRuntime(config, instanceDir, { claudeCodeConsent: () => readClaudeCodeConsent(db), db });
+  const { agent, evaluation, productChannel } = buildAgentRuntime(config, instanceDir, {
+    claudeCodeConsent: () => readClaudeCodeConsent(db), db,
+    // 설정으로 인스턴스 밖에 둘 수 있는 데몬 디렉터리: 상품 저장소가 이것을 품으면 에이전트가 DB·TOTP·정책을 읽을 길이 열린다
+    forbiddenRoots: [config.db_path, config.totp_dir ?? defaults.totpDir, config.policy_store_dir ?? defaults.policyStoreDir, config.approval_socket ?? defaults.approvalSocket].map((path) => resolve(path)),
+  });
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);

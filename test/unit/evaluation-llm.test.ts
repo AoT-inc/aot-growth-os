@@ -205,3 +205,30 @@ test('shadow mode: evaluating the same run again records the verdict once, and a
   await assert.rejects(evaluateRun({ db: waiting.db, clock: waiting.clock, fetcher: waiting.fetcher, llm: unavailable, llmShadow: true }, { taskId: waiting.run.taskId, taskRunId: waiting.run.runId }), VerifierUnavailableError);
   assert.equal(waiting.db.get<{ n: number }>('SELECT count(*) AS n FROM evaluation')!.n, 0);
 });
+
+test('shadow mode is inert in every branch: a failing verifier, no claims or an unisolated spec cannot change the outcome; a predicate limits it to chosen tasks', async (t) => {
+  // 검증기 오류: 평소에는 inconclusive, 섀도에서는 결과에 영향이 없고 이벤트도 없다
+  const broken = setup(t);
+  const failing: LlmVerifier = { id: 'broken@v1', verify: () => Promise.reject(new Error('model exploded')) };
+  const normal = await evaluateRun({ db: broken.db, clock: broken.clock, fetcher: broken.fetcher, llm: failing }, { taskId: broken.run.taskId, taskRunId: broken.run.runId });
+  assert.equal(normal.evaluation.outcome, 'inconclusive');
+  const shadowed = setup(t);
+  const inShadow = await evaluateRun({ db: shadowed.db, clock: shadowed.clock, fetcher: shadowed.fetcher, llm: failing, llmShadow: true }, { taskId: shadowed.run.taskId, taskRunId: shadowed.run.runId });
+  assert.equal(inShadow.evaluation.outcome, 'pass');
+  assert.match(inShadow.evaluation.quality_note ?? '', /shadow: LLM verification failed: model exploded/);
+  assert.equal(shadowed.db.get<{ n: number }>('SELECT count(*) AS n FROM event WHERE source = ?', [SHADOW_VERDICT_SOURCE])!.n, 0);
+
+  // 격리되지 않은 명세(검증기를 부르지 않는 경로)도 같다
+  const shared = setup(t, { validation: { deterministic: ['url_reachable'], llm: { check: 'claim_supported_by_source', isolated_context: false }, human: false } });
+  const sharedResult = await evaluateRun({ db: shared.db, clock: shared.clock, fetcher: shared.fetcher, llm: new FakeLlm(), llmShadow: true }, { taskId: shared.run.taskId, taskRunId: shared.run.runId });
+  assert.equal(sharedResult.evaluation.outcome, 'pass');
+
+  // 함수를 주면 그 업무에만 적용한다
+  const off = setup(t);
+  const llm = new FakeLlm({ verdict: 'unsupported', note: 'x' });
+  const normalForOthers = await evaluateRun({ db: off.db, clock: off.clock, fetcher: off.fetcher, llm, llmShadow: () => false }, { taskId: off.run.taskId, taskRunId: off.run.runId });
+  assert.equal(normalForOthers.evaluation.outcome, 'fail', 'a task the predicate does not select is verified normally');
+  const on = setup(t);
+  const selected = await evaluateRun({ db: on.db, clock: on.clock, fetcher: on.fetcher, llm, llmShadow: (task) => task.id === on.run.taskId }, { taskId: on.run.taskId, taskRunId: on.run.runId });
+  assert.equal(selected.evaluation.outcome, 'pass');
+});

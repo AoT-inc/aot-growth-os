@@ -117,9 +117,9 @@ test('end to end: add -> start -> run -> shadow verification -> evidence read ->
 
   const pilot = await r.send({ op: 'pilot' });
   assert.deepEqual(pilot['rows'].map((row: Reply) => [row['slug'], row['verdict'], row['human']]), [['example-product', 'supported', 'approved']]);
-  assert.equal(pilot['summary'].supported_but_rejected, 0);
+  assert.equal(pilot['summary'].first_decided.supported_but_rejected, 0);
   assert.equal(pilot['summary'].criterion.met, null, 'fewer than five decided products: no verdict on the criterion yet');
-  assert.ok(pilot['summary'].token_ratio_mean > 0);
+  assert.ok(pilot['summary'].first_decided.token_ratio_mean > 0);
 });
 
 test('shadow mode: an unsupported verdict does not fail the task; a rejection records the reason, takes the read access back and fails the task', async (t) => {
@@ -134,26 +134,111 @@ test('shadow mode: an unsupported verdict does not fail the task; a rejection re
   assert.deepEqual([rejected['product'].registration_status, rejected['product'].access_scope, rejected['product'].task.status], ['rejected', 'none', 'failed']);
   const pilot = await r.send({ op: 'pilot' });
   assert.deepEqual([pilot['rows'][0].verdict, pilot['rows'][0].human], ['unsupported', 'rejected']);
-  assert.equal(pilot['summary'].agreement, 1);
+  assert.equal(pilot['summary'].first_decided.agreement, 1);
 });
 
-test('pilot criterion: a verdict of supported that a person rejects is counted and fails the criterion; five decided with none keeps it met', async (t) => {
+test('pilot criterion: judged on the first five decided products only; a later supported-but-rejected is reported but does not flip it; a verifier that never says supported is not a pass', async (t) => {
   const r = rig(t, { default: 'supported' });
   for (const slug of ['p-one', 'p-two', 'p-three', 'p-four']) {
     const status = await r.verified(slug);
     assert.equal((await r.send({ op: 'decide', slug, decision: 'approve', hash: status['product'].review_hash }))['ok'], true);
+    r.env.clock.advance(1000);
   }
   assert.equal((await r.send({ op: 'pilot' }))['summary'].criterion.met, null, 'four decided so far');
   const fifth = await r.verified('p-five');
   assert.equal((await r.send({ op: 'decide', slug: 'p-five', decision: 'approve', hash: fifth['product'].review_hash }))['ok'], true);
+  r.env.clock.advance(1000);
   const done = (await r.send({ op: 'pilot' }))['summary'];
-  assert.deepEqual([done.decided, done.supported_but_rejected, done.criterion.met, done.criterion.failed, done.agreement], [5, 0, true, false, 1]);
+  assert.deepEqual([done.first_decided.decided, done.first_decided.supported_but_rejected, done.criterion.met, done.criterion.failed, done.first_decided.agreement], [5, 0, true, false, 1]);
 
   const sixth = await r.verified('p-six');
   assert.equal(sixth['product'].shadow_verdict.verdict, 'supported');
   assert.equal((await r.send({ op: 'decide', slug: 'p-six', decision: 'reject', comment: 'a person found a secret the scanner missed' }))['ok'], true);
   const after = (await r.send({ op: 'pilot' }))['summary'];
-  assert.deepEqual([after.supported_but_rejected, after.criterion.failed, after.criterion.met], [1, true, false]);
+  assert.deepEqual([after.criterion.met, after.criterion.failed], [true, false], 'the criterion is about the first five');
+  assert.deepEqual([after.first_decided.decided, after.all_decided.decided, after.all_decided.supported_but_rejected], [5, 6, 1], 'the later miss is still visible');
+});
+
+test('pilot criterion: a miss inside the first five fails it, and five approvals of "unclear" verdicts do not count as a pass', async (t) => {
+  const missed = rig(t, { default: 'supported' });
+  const status = await missed.verified('p-one');
+  assert.equal((await missed.send({ op: 'decide', slug: 'p-one', decision: 'reject', comment: 'the README lies about the license' }))['ok'], true);
+  void status;
+  assert.deepEqual([(await missed.send({ op: 'pilot' }))['summary'].criterion.failed], [true]);
+
+  const vague = rig(t, { default: 'unclear' });
+  for (const slug of ['v-one', 'v-two', 'v-three', 'v-four', 'v-five']) {
+    const verified = await vague.verified(slug);
+    assert.equal((await vague.send({ op: 'decide', slug, decision: 'approve', hash: verified['product'].review_hash }))['ok'], true);
+    vague.env.clock.advance(1000);
+  }
+  const criterion = (await vague.send({ op: 'pilot' }))['summary'].criterion;
+  assert.deepEqual([criterion.met, criterion.failed], [false, false]);
+  assert.match(criterion.note, /never answered supported/);
+});
+
+test('one product counts once even when its verification ran again (several verdict events)', async (t) => {
+  const r = rig(t);
+  const status = await r.verified('example-product');
+  const taskId = status['product'].task.id as string;
+  const first = r.env.db.get<{ payload: string }>("SELECT payload FROM event WHERE source = 'shadow-verifier'")!;
+  const earlier = { ...JSON.parse(first.payload), task_run_id: 'run-earlier', verdict: 'unsupported' };
+  r.env.db.writeTx((tx) => tx.run(
+    "INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at) VALUES ('event-x', 'shadow-verifier', 'run-earlier', 'shadow.verdict', ?, NULL, 'shadow-verifier:run-earlier', ?, ?)",
+    [JSON.stringify({ ...earlier, task_id: taskId }), r.env.clock.nowIso(), r.env.clock.nowIso()],
+  ));
+  const pilot = await r.send({ op: 'pilot' });
+  assert.equal(pilot['rows'].length, 1);
+  assert.equal(pilot['summary'].verdicts_recorded, 1);
+});
+
+test('approval needs a passed evaluation and host-stored verified evidence; a retry attempt that never produced a result is not a validation review', async (t) => {
+  const r = rig(t);
+  const status = await r.verified('example-product');
+  const hash = status['product'].review_hash as string;
+  const taskId = status['product'].task.id as string;
+  for (const [outcome, safety] of [['inconclusive', 'pass'], ['fail', 'pass'], ['pass', 'fail']] as const) {
+    r.env.db.writeTx((tx) => tx.run('UPDATE evaluation SET outcome = ?, safety = ? WHERE task_id = ?', [outcome, safety, taskId]));
+    const fresh = (await r.send({ op: 'status', slug: 'example-product' }))['product'].review_hash as string;
+    const refused = await r.send({ op: 'decide', slug: 'example-product', decision: 'approve', hash: fresh });
+    assert.equal(refused['code'], 'evaluation_not_passed', `${outcome}/${safety}`);
+  }
+  r.env.db.writeTx((tx) => tx.run("UPDATE evaluation SET outcome = 'pass', safety = 'pass' WHERE task_id = ?", [taskId]));
+  void hash;
+
+  // 두 번째 시도가 결과 없이(한도) 끝나 needs_review 가 된 경우: 앞 시도의 평가로 pending_approval 이 되면 안 된다
+  const other = rig(t);
+  await other.send({ op: 'add', slug: 'example-product', name: 'X', repo_path: other.repo() });
+  const started = await other.send({ op: 'start', slug: 'example-product' });
+  await other.daemon.worker.tick();
+  await other.daemon.worker.tick();
+  const run1 = other.env.db.get<{ id: string }>('SELECT id FROM task_run WHERE task_id = ?', [started['task_id']])!;
+  other.env.db.writeTx((tx) => {
+    tx.run("UPDATE product SET registration_status = 'verifying' WHERE slug = 'example-product'");
+    tx.run(
+      "INSERT INTO task_run (id, task_id, attempt, actor_id, adapter, started_at, ended_at, lease_owner, lease_expires_at, heartbeat_at, outcome) VALUES ('run-2', ?, 2, ?, 'claude-code-cli', ?, ?, 'w1', ?, ?, 'error')",
+      [started['task_id'], AGENT, other.env.clock.nowIso(), other.env.clock.nowIso(), other.env.clock.nowIso(), other.env.clock.nowIso()],
+    );
+  });
+  assert.ok(run1.id !== 'run-2');
+  assert.equal(other.env.db.get('SELECT status FROM task WHERE id = ?', [started['task_id']])?.['status'], 'needs_review', 'the task is waiting for a person, but not because of a validation');
+  const stale = await other.send({ op: 'status', slug: 'example-product' });
+  assert.equal(stale['product'].registration_status, 'verifying', 'the earlier attempt evaluation does not make the second attempt a validation review');
+  assert.equal(stale['product'].evaluation, null);
+});
+
+test('a repository can be registered once, and start checks the path again', async (t) => {
+  const r = rig(t);
+  const path = r.repo();
+  assert.equal((await r.send({ op: 'add', slug: 'first', name: 'First', repo_path: path }))['ok'], true);
+  const again = await r.send({ op: 'add', slug: 'second', name: 'Second', repo_path: path });
+  assert.deepEqual([again['code'], /already a product/.test(again['error'])], ['duplicate', true]);
+  // add 뒤에 저장소가 사라지면 start 가 읽기 접근을 승인하지 않는다
+  const { rmSync } = await import('node:fs');
+  rmSync(path, { recursive: true, force: true });
+  const started = await r.send({ op: 'start', slug: 'first' });
+  assert.equal(started['code'], 'invalid_repo');
+  assert.equal((await r.send({ op: 'status', slug: 'first' }))['product'].access_scope, 'none');
 });
 
 test('the channel is for humans only and checks its input; the repository must be a git root outside the daemon directories', async (t) => {
@@ -200,9 +285,9 @@ test('the approval CLI reaches the product channel over the real socket: add, st
   const decided = await cli(['decide', 'example-product', 'approve', '--hash', hash]);
   assert.equal(decided.code, 0, decided.stdout);
   const pilot = await cli(['pilot']);
-  assert.equal(((pilot.json!['summary'] as Reply)['decided']), 1);
+  assert.equal((((pilot.json!['summary'] as Reply)['first_decided'] as Reply)['decided']), 1);
   // 사용법 오류는 소켓에 닿기 전에 종료 코드 2
-  for (const args of [['add', 'x'], ['decide', 'example-product', 'maybe'], ['decide', 'example-product', 'reject'], ['evidence', 'example-product'], ['nope']]) {
+  for (const args of [['add', 'x'], ['decide', 'example-product', 'maybe'], ['decide', 'example-product', 'reject'], ['evidence', 'example-product'], ['nope'], ['status', '--typo', '1'], ['add', 'y', '--name', 'Y', '--repo', path, '--kinds', 'software']]) {
     const failed = await cli(args);
     assert.equal(failed.code, 2, args.join(' '));
   }

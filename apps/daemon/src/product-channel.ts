@@ -24,7 +24,7 @@ import { assertTransition, PRODUCT_REGISTRATION_MACHINE, TASK_MACHINE, type Cloc
 import { SHADOW_VERDICT_SOURCE, SHADOW_VERDICT_TYPE, type EvidenceReader } from '@aot/evaluation';
 import { createTaskInTx, TaskCreationError, withRefusalRecord } from '@aot/task-engine';
 
-import { PRODUCT_SLUG, buildRegistrationTaskSpec, REGISTRATION_TASK_SPEC_VERSION, registrationTriggerRef } from './registration-task.ts';
+import { PRODUCT_SLUG, buildRegistrationTaskSpec, REGISTRATION_TASK_SPEC_VERSION, REGISTRATION_TRIGGER_PREFIX, registrationTriggerRef } from './registration-task.ts';
 import { pathOverlapsAny } from './registration.ts';
 
 export const PRODUCT_COMMANDS = ['product'] as const;
@@ -85,12 +85,20 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
   const latestTask = (slug: string, from: Db = db): TaskRow | undefined => from.get<TaskRow>(
     "SELECT id, status, attempts, max_attempts, created_at FROM task WHERE trigger_kind = 'manual' AND trigger_ref = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", [registrationTriggerRef(slug)],
   );
-  const evaluationOf = (taskId: string): EvaluationRow | undefined => db.get<EvaluationRow>(
-    'SELECT id, outcome, safety, quality_note, at FROM evaluation WHERE task_id = ? ORDER BY at DESC, id DESC LIMIT 1', [taskId],
+  /** 업무의 가장 나중 실행(시도). 평가·증거는 *이 실행의 것*만 본다 — 앞선 시도의 평가가 뒤 시도의 사람 검토로 둔갑하지 않게 한다 */
+  const latestRun = (taskId: string): { id: string; outcome: string | null } | undefined => db.get<{ id: string; outcome: string | null }>(
+    'SELECT id, outcome FROM task_run WHERE task_id = ? ORDER BY attempt DESC LIMIT 1', [taskId],
   );
-  const evidenceOf = (taskId: string): EvidenceRow[] => db.all<EvidenceRow>(
-    'SELECT id, kind, ref, content_hash, trust_origin, verified FROM evidence WHERE task_id = ? ORDER BY captured_at, id', [taskId],
-  );
+  const evaluationOf = (taskId: string): EvaluationRow | undefined => {
+    const run = latestRun(taskId);
+    return run === undefined ? undefined : db.get<EvaluationRow>('SELECT id, outcome, safety, quality_note, at FROM evaluation WHERE task_id = ? AND task_run_id = ? ORDER BY at DESC, id DESC LIMIT 1', [taskId, run.id]);
+  };
+  const evidenceOf = (taskId: string): EvidenceRow[] => {
+    const run = latestRun(taskId);
+    return run === undefined ? [] : db.all<EvidenceRow>(
+      'SELECT id, kind, ref, content_hash, trust_origin, verified FROM evidence WHERE task_id = ? AND (task_run_id = ? OR task_run_id IS NULL) ORDER BY captured_at, id', [taskId, run.id],
+    );
+  };
   const shadowOf = (taskId: string): Record<string, unknown> | null => {
     const row = db.get<{ payload: string }>(
       'SELECT payload FROM event WHERE source = ? AND type = ? AND json_extract(payload, \'$.task_id\') = ? ORDER BY rowid DESC LIMIT 1', [SHADOW_VERDICT_SOURCE, SHADOW_VERDICT_TYPE, taskId],
@@ -108,7 +116,8 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     const waiting = db.all<{ slug: string }>("SELECT slug FROM product WHERE registration_status = 'verifying'");
     for (const { slug } of waiting) {
       const task = latestTask(slug);
-      if (task === undefined || task.status !== 'needs_review' || evaluationOf(task.id) === undefined) continue;
+      // 사람 검토 중(needs_review)이고 *가장 나중 실행*이 결과를 내서 평가를 받았을 때만. 실행 전 승인 대기·한도/로그인 때문에 멈춘 재시도는 검증 검토가 아니다
+      if (task === undefined || task.status !== 'needs_review' || latestRun(task.id)?.outcome !== 'submitted' || evaluationOf(task.id) === undefined) continue;
       db.writeTx((tx) => {
         assertTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'verifying', to: 'pending_approval', by: 'validator' });
         tx.run("UPDATE product SET registration_status = 'pending_approval', updated_at = ? WHERE slug = ? AND registration_status = 'verifying'", [clock.nowIso(), slug]);
@@ -137,9 +146,25 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
       shadow_verdict: task === undefined ? null : shadowOf(task.id),
       evidence: evidence.map((row) => ({ id: row.id, kind: row.kind, verified: Number(row.verified) === 1, trust_origin: row.trust_origin })),
       review_hash: task === undefined ? null : reviewHash(task, evaluation, evidence),
+      ...(task !== undefined && task.status === 'needs_review' && evaluation === undefined
+        ? { next: `the task is waiting before its run (policy approval, consent or a usage limit): see \`approve task ${task.id}\` / the daemon log` } : {}),
       decision: decision ?? null,
       registered_at: product.registered_at,
     };
+  };
+
+  /** 저장소 루트 검사: 실경로가 디렉터리이고 자기 `.git` 디렉터리가 있고 데몬 디렉터리와 겹치지 않는다. 통과하면 실경로, 아니면 거절 응답 */
+  const checkRepoRoot = (repoPath: string): string | Record<string, unknown> => {
+    let real: string;
+    try {
+      real = realpathSync(repoPath);
+      if (!statSync(real).isDirectory()) return refused('invalid_repo', 'repo_path is not a directory');
+      if (!lstatSync(join(real, '.git')).isDirectory()) return refused('invalid_repo', 'repo_path is not the root of a git repository (it needs its own .git directory)');
+    } catch {
+      return refused('invalid_repo', 'repo_path does not exist or is not a git repository root');
+    }
+    if (pathOverlapsAny(real, options.forbiddenRoots)) return refused('invalid_repo', 'repo_path overlaps a daemon directory (instance, evidence, database, TOTP, policy store, approval socket or run directories)');
+    return real;
   };
 
   // ----- add -----
@@ -154,16 +179,12 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     if (typeof kind !== 'string' || !KINDS.includes(kind)) return refused('invalid_request', `kind must be one of ${KINDS.join(', ')}`);
     if (typeof stage !== 'string' || !STAGES.includes(stage)) return refused('invalid_request', `stage must be one of ${STAGES.join(', ')}`);
     if (typeof repoPath !== 'string' || !isAbsolute(repoPath) || /[\0\r\n]/.test(repoPath)) return refused('invalid_request', 'repo_path must be an absolute path');
-    let real: string;
-    try {
-      real = realpathSync(repoPath);
-      if (!statSync(real).isDirectory()) return refused('invalid_repo', 'repo_path is not a directory');
-      if (!lstatSync(join(real, '.git')).isDirectory()) return refused('invalid_repo', 'repo_path is not the root of a git repository (it needs its own .git directory)');
-    } catch {
-      return refused('invalid_repo', 'repo_path does not exist or is not a git repository root');
-    }
-    if (pathOverlapsAny(real, options.forbiddenRoots)) return refused('invalid_repo', 'repo_path overlaps the daemon instance or evidence directory');
+    const checked = checkRepoRoot(repoPath);
+    if (typeof checked !== 'string') return checked;
+    const real = checked;
     if (productBySlug(slug) !== undefined) return refused('duplicate', `a product with slug '${slug}' already exists`);
+    const sameRepo = db.get<{ slug: string }>('SELECT p.slug FROM product_repo pr JOIN product p ON p.id = pr.product_id WHERE pr.local_path = ?', [real]);
+    if (sameRepo !== undefined) return refused('duplicate', `this repository is already a product ('${sameRepo.slug}'); register it once`);
     const now = clock.nowIso();
     const productId = `product-${randomUUID()}`;
     db.writeTx((tx) => {
@@ -186,6 +207,9 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     const repo = repoOf(product.id);
     if (repo === undefined || repo.local_path === null) return refused('invalid_repo', 'the product has no repository path');
     if (repo.access_scope !== 'none') return refused('wrong_state', `the repository access is already '${repo.access_scope}'`);
+    // 읽기 접근을 승인하기 직전에 경로를 다시 확인한다 (add 이후 바뀌었거나 데몬 디렉터리 설정이 늘었을 수 있다)
+    const recheck = checkRepoRoot(repo.local_path);
+    if (typeof recheck !== 'string') return recheck;
     let taskId: string;
     try {
       taskId = withRefusalRecord(db, () => db.writeTx((tx) => {
@@ -209,12 +233,10 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
       if (error instanceof TaskCreationError) return refused('task_refused', error.message.slice(0, 600));
       throw error;
     }
-    const task = db.get<{ status: string }>('SELECT status FROM task WHERE id = ?', [taskId])!;
     return {
       ok: true,
       product: view(productBySlug(slug)!),
       task_id: taskId,
-      ...(task.status === 'needs_review' ? { next: `the policy asks for approval before the run: aot-approve show task ${taskId}, then approve task ${taskId} --hash <hash>` } : {}),
     };
   };
 
@@ -258,7 +280,11 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     if (!content.readable) return refused('unreadable', content.reason.slice(0, 300));
     const hashOk = row.content_hash !== null && sha256(content.text) === row.content_hash.replace(/^sha256:/, '');
     const bytes = Buffer.byteLength(content.text, 'utf8');
-    const text = bytes > MAX_EVIDENCE_TEXT_BYTES ? Buffer.from(content.text, 'utf8').subarray(0, MAX_EVIDENCE_TEXT_BYTES).toString('utf8') : content.text;
+    let text = content.text;
+    if (bytes > MAX_EVIDENCE_TEXT_BYTES) {
+      text = Buffer.from(content.text, 'utf8').subarray(0, MAX_EVIDENCE_TEXT_BYTES).toString('utf8');
+      if (text.endsWith('\uFFFD')) text = text.slice(0, -1); // 문자 중간에서 잘린 조각
+    }
     return { ok: true, evidence: { id: row.id, kind: row.kind, trust_origin: row.trust_origin, hash_matches: hashOk, bytes, truncated: bytes > MAX_EVIDENCE_TEXT_BYTES, text } };
   };
 
@@ -284,7 +310,10 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     if (decision === 'approve') {
       if (product.registration_status !== 'pending_approval') return refused('wrong_state', `the product is '${product.registration_status}'; only a pending_approval product can be registered`);
       if (task.status !== 'needs_review') return refused('wrong_state', `the verification task is '${task.status}', not needs_review`);
-      if (evidenceRows.length === 0) return refused('no_evidence', 'the verification task has no read-only evidence linked');
+      if (evaluation === undefined || evaluation.outcome !== 'pass' || evaluation.safety !== 'pass') {
+        return refused('evaluation_not_passed', `the evaluation is ${evaluation === undefined ? 'missing' : `outcome '${evaluation.outcome}', safety '${evaluation.safety}'`}; only a passed evaluation can be approved (reject it, or let the task retry)`);
+      }
+      if (!evidenceRows.some((row) => row.ref.startsWith('blob:') && Number(row.verified) === 1)) return refused('no_evidence', 'the verification task has no host-stored, verified evidence linked');
       if (hash === undefined) return refused('hash_required', 'approve needs the review_hash that `product status` shows for the evidence you read');
       if (hash !== reviewHash(task, evaluation, evidenceRows)) return refused('hash_mismatch', 'the task, evaluation or evidence changed since you looked; run `product status` again');
     } else if (product.registration_status !== 'verifying' && product.registration_status !== 'pending_approval') {
@@ -301,13 +330,15 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
       const productApprovalId = `approval-${randomUUID()}`;
       tx.run(
         'INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [productApprovalId, 'product', product.id, approved ? 'approved' : 'rejected', typeof hash === 'string' ? hash : null, actorId, comment ?? null, now],
+        [productApprovalId, 'product', product.id, approved ? 'approved' : 'rejected', approved && typeof hash === 'string' ? hash : null, actorId, comment ?? null, now],
       );
       assertTransition(PRODUCT_REGISTRATION_MACHINE, { from: product.registration_status as never, to: approved ? 'registered' : 'rejected', by: 'human', approvalId: productApprovalId });
       if (approved) {
-        tx.run("UPDATE product SET registration_status = 'registered', registration_approval_id = ?, registered_at = ?, updated_at = ? WHERE id = ?", [productApprovalId, now, now, product.id]);
+        const changed = tx.run("UPDATE product SET registration_status = 'registered', registration_approval_id = ?, registered_at = ?, updated_at = ? WHERE id = ? AND registration_status = ?", [productApprovalId, now, now, product.id, product.registration_status]);
+        if (changed.changes !== 1) throw new Error('the product changed while deciding');
       } else {
-        tx.run("UPDATE product SET registration_status = 'rejected', updated_at = ? WHERE id = ?", [now, product.id]);
+        const changed = tx.run("UPDATE product SET registration_status = 'rejected', updated_at = ? WHERE id = ? AND registration_status = ?", [now, product.id, product.registration_status]);
+        if (changed.changes !== 1) throw new Error('the product changed while deciding');
         // 반려하면 읽기 접근을 회수한다 (도구는 다음 호출부터 닫힌다)
         tx.run("UPDATE product_repo SET access_scope = 'none' WHERE product_id = ? AND access_scope <> 'none'", [product.id]);
         const eventId = `event-${randomUUID()}`;
@@ -337,48 +368,63 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
   const pilot = (): Record<string, unknown> => {
     syncStatus();
     const events = db.all<{ payload: string }>('SELECT payload FROM event WHERE source = ? AND type = ? ORDER BY rowid', [SHADOW_VERDICT_SOURCE, SHADOW_VERDICT_TYPE]);
-    const rows: Record<string, unknown>[] = [];
+    // 상품마다 *가장 나중* 판정 하나만 센다 (재실행·재평가로 같은 상품의 판정이 여러 번 쌓여도 한 건이다)
+    const latest = new Map<string, { payload: Record<string, unknown>; slug: string }>();
     for (const event of events) {
-      const payload = JSON.parse(event.payload) as { task_id?: string; verdict?: string; tokens?: number; run_tokens?: number; verifier?: string; note?: string };
-      const task = db.get<{ trigger_ref: string }>('SELECT trigger_ref FROM task WHERE id = ?', [payload.task_id ?? '']);
-      if (task === undefined || !task.trigger_ref.startsWith('product-registration:')) continue;
-      const slug = task.trigger_ref.slice('product-registration:'.length);
+      const payload = JSON.parse(event.payload) as Record<string, unknown>;
+      const task = db.get<{ trigger_ref: string }>('SELECT trigger_ref FROM task WHERE id = ?', [String(payload['task_id'] ?? '')]);
+      if (task === undefined || !task.trigger_ref.startsWith(REGISTRATION_TRIGGER_PREFIX)) continue;
+      const slug = task.trigger_ref.slice(REGISTRATION_TRIGGER_PREFIX.length);
+      latest.set(slug, { payload, slug });
+    }
+    interface PilotRow { slug: string; verifier: unknown; verdict: string | null; verdict_note: unknown; human: 'approved' | 'rejected' | 'pending'; human_comment: string | null; decided_at: string | null; verifier_tokens: number | null; run_tokens: number | null; token_ratio: number | null }
+    const rows: PilotRow[] = [];
+    for (const { payload, slug } of latest.values()) {
       const product = productBySlug(slug);
-      const human = product === undefined ? undefined : db.get<{ decision: string; comment: string | null }>(
-        "SELECT decision, comment FROM approval WHERE subject_kind = 'product' AND subject_id = ? ORDER BY at DESC, rowid DESC LIMIT 1", [product.id],
+      const human = product === undefined ? undefined : db.get<{ decision: string; comment: string | null; at: string }>(
+        "SELECT decision, comment, at FROM approval WHERE subject_kind = 'product' AND subject_id = ? ORDER BY at DESC, rowid DESC LIMIT 1", [product.id],
       );
-      const ratio = typeof payload.tokens === 'number' && typeof payload.run_tokens === 'number' && payload.run_tokens > 0 ? payload.tokens / payload.run_tokens : null;
+      const tokens = typeof payload['tokens'] === 'number' ? payload['tokens'] : null;
+      const runTokens = typeof payload['run_tokens'] === 'number' ? payload['run_tokens'] : null;
       rows.push({
-        slug, verifier: payload.verifier ?? null, verdict: payload.verdict ?? null, verdict_note: payload.note ?? null,
-        human: human === undefined ? 'pending' : human.decision === 'approved' ? 'approved' : 'rejected', human_comment: human?.comment ?? null,
-        verifier_tokens: payload.tokens ?? null, run_tokens: payload.run_tokens ?? null, token_ratio: ratio,
+        slug, verifier: payload['verifier'] ?? null, verdict: typeof payload['verdict'] === 'string' ? payload['verdict'] : null, verdict_note: payload['note'] ?? null,
+        human: human === undefined ? 'pending' : human.decision === 'approved' ? 'approved' : 'rejected', human_comment: human?.comment ?? null, decided_at: human?.at ?? null,
+        verifier_tokens: tokens, run_tokens: runTokens, token_ratio: tokens !== null && runTokens !== null && runTokens > 0 ? tokens / runTokens : null,
       });
     }
-    const decided = rows.filter((row) => row['human'] !== 'pending');
-    const count = (predicate: (row: Record<string, unknown>) => boolean): number => decided.filter(predicate).length;
-    const supportedButRejected = count((row) => row['verdict'] === 'supported' && row['human'] === 'rejected');
-    const unsupportedButApproved = count((row) => row['verdict'] === 'unsupported' && row['human'] === 'approved');
-    const clear = decided.filter((row) => row['verdict'] === 'supported' || row['verdict'] === 'unsupported');
-    const agree = clear.filter((row) => (row['verdict'] === 'supported') === (row['human'] === 'approved')).length;
-    const ratios = rows.map((row) => row['token_ratio']).filter((value): value is number => typeof value === 'number');
+    // 종료 기준은 *처음 결정된 5건*에 대해서만 본다 (결정 시각 순). 그 뒤 건은 참고용 요약에만 든다
+    const decidedAll = rows.filter((row) => row.human !== 'pending').sort((a, b) => (a.decided_at ?? '').localeCompare(b.decided_at ?? '') || a.slug.localeCompare(b.slug));
+    const window = decidedAll.slice(0, PILOT_TARGET_COUNT);
+    const stats = (set: readonly PilotRow[]) => {
+      const clear = set.filter((row) => row.verdict === 'supported' || row.verdict === 'unsupported');
+      const ratios = set.map((row) => row.token_ratio).filter((value): value is number => value !== null);
+      return {
+        decided: set.length,
+        supported: set.filter((row) => row.verdict === 'supported').length,
+        supported_but_rejected: set.filter((row) => row.verdict === 'supported' && row.human === 'rejected').length,
+        unsupported_but_approved: set.filter((row) => row.verdict === 'unsupported' && row.human === 'approved').length,
+        unclear: set.filter((row) => row.verdict === 'unclear').length,
+        agreement: clear.length === 0 ? null : clear.filter((row) => (row.verdict === 'supported') === (row.human === 'approved')).length / clear.length,
+        token_ratio_mean: ratios.length === 0 ? null : ratios.reduce((sum, value) => sum + value, 0) / ratios.length,
+        token_ratio_max: ratios.length === 0 ? null : Math.max(...ratios),
+      };
+    };
+    const first = stats(window);
     return {
       ok: true,
       rows,
       summary: {
         verdicts_recorded: rows.length,
-        decided: decided.length,
-        pending_human: rows.length - decided.length,
-        supported_but_rejected: supportedButRejected,
-        unsupported_but_approved: unsupportedButApproved,
-        unclear: count((row) => row['verdict'] === 'unclear'),
-        agreement: clear.length === 0 ? null : agree / clear.length,
-        token_ratio_mean: ratios.length === 0 ? null : ratios.reduce((sum, value) => sum + value, 0) / ratios.length,
-        token_ratio_max: ratios.length === 0 ? null : Math.max(...ratios),
+        pending_human: rows.length - decidedAll.length,
+        all_decided: stats(decidedAll),
+        first_decided: first,
         criterion: {
           target_count: PILOT_TARGET_COUNT,
-          // 기준: 처음 5건에서 "검증기 supported 인데 사람이 반려" = 0. 5건이 채워지기 전에는 판정하지 않는다
-          met: decided.length >= PILOT_TARGET_COUNT ? supportedButRejected === 0 : null,
-          failed: supportedButRejected > 0,
+          // 기준: 처음 결정된 5건에서 "검증기 supported 인데 사람이 반려" = 0. 5건이 채워지기 전에는 충족 여부를 정하지 않는다.
+          // 검증기가 한 번도 supported 를 내지 않았다면(전부 unclear/unsupported) 0건은 의미가 없으므로 충족으로 치지 않는다
+          met: window.length < PILOT_TARGET_COUNT ? null : first.supported_but_rejected === 0 && first.supported > 0,
+          failed: first.supported_but_rejected > 0,
+          ...(window.length >= PILOT_TARGET_COUNT && first.supported === 0 ? { note: 'the verifier never answered supported in the first decided products, so zero supported-but-rejected says nothing' } : {}),
         },
       },
     };

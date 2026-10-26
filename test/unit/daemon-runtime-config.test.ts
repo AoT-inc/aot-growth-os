@@ -175,7 +175,12 @@ describe('llm_verifier: kind claude_code_cli (the subscription verifier, Q22)', 
 
   it('shadow mode (Q22 f) reaches the evaluation port only when asked; it must be a boolean', () => {
     const build = (llm_verifier: Record<string, unknown>) => buildAgentRuntime({ claude_code_cli: { ...CLAUDE, model: 'executor-alias' }, llm_verifier } as unknown as AgentRuntimeConfig, DIR, CONSENT_SOURCE);
-    assert.equal(build({ ...VERIFIER, shadow: true }).evaluation?.llmShadow, true);
+    const predicate = build({ ...VERIFIER, shadow: true }).evaluation?.llmShadow;
+    assert.equal(typeof predicate, 'function', 'shadow applies to chosen tasks only');
+    const select = predicate as (task: { trigger_kind: string; trigger_ref: string }) => boolean;
+    assert.equal(select({ trigger_kind: 'manual', trigger_ref: 'product-registration:example-product' }), true);
+    assert.equal(select({ trigger_kind: 'manual', trigger_ref: 'research:weekly' }), false, 'other tasks are verified normally');
+    assert.equal(select({ trigger_kind: 'routine', trigger_ref: 'product-registration:example-product' }), false);
     assert.equal(build({ ...VERIFIER, shadow: false }).evaluation?.llmShadow, undefined);
     assert.equal(build(VERIFIER).evaluation?.llmShadow, undefined);
     assert.throws(() => parseLlmVerifierConfig({ ...VERIFIER, shadow: 'yes' }), /llm_verifier\.shadow must be true or false/);
@@ -183,7 +188,7 @@ describe('llm_verifier: kind claude_code_cli (the subscription verifier, Q22)', 
     const withResearch = buildAgentRuntime({
       container_agent: CONTAINER, research_agent: { image: IMAGE, allowed_hosts: ['docs.example.com'] }, claude_code_cli: { ...CLAUDE, roles: ['coder'] }, llm_verifier: { ...VERIFIER, shadow: true },
     }, DIR, CONSENT_SOURCE);
-    assert.equal(withResearch.evaluation?.llmShadow, true);
+    assert.equal(typeof withResearch.evaluation?.llmShadow, 'function');
   });
 
   it('the shape check rejects unknown keys (no cost_usd here) and bad numbers', () => {
@@ -287,7 +292,9 @@ describe('registration_tools: the product-registration tools, their evidence sto
     ]);
     assert.equal(typeof built.agent?.runExecutors, 'function');
     assert.ok(built.evaluation?.evidenceReader, 'the evaluator reads the stored bodies');
-    assert.deepEqual(built.productChannel?.forbiddenRoots, [DIR, evidenceDir], 'repositories may not overlap the instance or evidence directory');
+    assert.deepEqual(built.productChannel?.forbiddenRoots, [DIR, evidenceDir, join(DIR, 'run-logs'), CLAUDE.run_root], 'repositories may not overlap the instance, evidence, run-log or run directories');
+    const more = buildAgentRuntime({ claude_code_cli: CLAUDE, registration_tools: { ...REGISTRATION, evidence_dir: evidenceDir } }, DIR, { db, claudeCodeConsent: () => null, checkExecutable: () => undefined, forbiddenRoots: ['/srv/example/db/aot.db', '/srv/example/totp'] });
+    assert.deepEqual(more.productChannel?.forbiddenRoots?.slice(-2), ['/srv/example/db/aot.db', '/srv/example/totp'], 'the daemon passes the directories the settings can place outside the instance');
     assert.equal(built.evaluation?.llm, undefined);
     assert.equal(built.agent?.adapter.name, 'claude-code-cli', 'the subscription CLI stays the agent');
   });

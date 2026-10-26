@@ -368,7 +368,7 @@ A6-U17(마지막 단위)의 기록과 A6 전체의 대응표다. U17 은 시험�
 | 결과 | 2026-10-26 실측 완료: 판정 (1)~(5) 통과(호출 모양 정정), (6)은 로그인 구분만 통과·한도 도달 미수행, 후보 유지. 약관 허용 범위는 확인 못 함(2026-10-26 사용자가 위험을 감수하고 진행하기로 결정). [q4 기록](../spikes/q4-claude-code-cli.md) §4.1 |
 | 약관 | 공식 CLI를 로그인된 PC에서 실행하는 방식만 쓴다. 구독 인증 토큰을 꺼내 자체 코드나 제3자 도구에서 쓰는 설계는 배제한다. 현재 허용 범위는 사람이 확인한다 |
 
-**구현 단위 제안 (`claude-code-cli` 어댑터, 가드레일 5개를 설계 제약으로 두고 착수 가능 — 이 절은 제안일 뿐 구현은 하지 않았다):**
+**구현 단위 (`claude-code-cli` 어댑터, 가드레일 5개를 설계 제약으로 둔다). 2026-10-26 CC1~CC4 구현·CC5 문서화: 아래 "구현 기록" 참고. 운영·설정·재시험 절차는 [operations/claude-code-cli.md](../operations/claude-code-cli.md):**
 
 | 단위 | 내용 | 확인할 것 |
 |---|---|---|
@@ -377,6 +377,16 @@ A6-U17(마지막 단위)의 기록과 A6 전체의 대응표다. U17 은 시험�
 | CC3 한도·로그인 처리 | 로그인 없음·401·`rate_limit_event`·한도 문구를 `needs_review`(재시도 대상)로 매핑 | 한도 도달 실제 문구 한 건 관찰 후 확정 |
 | CC4 계약 시험 | 격리 회귀 시험: 밖 읽기 거부, 훅 미실행, 전역 CLAUDE.md·스킬·MCP 미노출, Bash 미노출, 비밀값 미노출 | 버전 변경(특히 `--bare`가 `-p` 기본이 되는 경우) 시 재실행 |
 | CC5 데몬 계정 | 데몬 전용 OS 계정·사무실 PC에서 같은 호출 모양 재시험, 동시 실행 수 제한 | `USER`·`LOGNAME` 전달로 키체인 로그인이 읽히는지 |
+
+**구현 기록 (2026-10-26, `packages/agent-runtime/src/claude-code/`):** 구독 로그인이 없는 클라우드 세션에서 가짜 `claude` 스크립트와 고정 JSON으로 시험했다. 실제 `claude` 로는 확인하지 못했다.
+
+| 단위 | 상태 | 구현·시험 |
+|---|---|---|
+| CC1 호출기 | 구현됨 | `invocation.ts`(호출 모양: `--safe-mode`·`--bare` 없음, 환경 네 개, 내장 도구는 Read·Grep·Glob뿐), `gateway-socket.ts`+`gateway-mcp-bridge.ts`(CLI의 MCP 자식 → 유닉스 소켓 → `ToolGateway`; run별 토큰·0700 디렉터리), `adapter.ts`(버전 기록, stdin 닫기, SIGTERM→SIGKILL, init `mcp_servers`·`tools`·`skills` 검사, 턴 계수, 동시 1). 시험: `claude-code-invocation`·`claude-code-adapter`(단위), `claude-code-stub`(실제 프로세스·브리지) |
+| CC2 결과 변환 | 구현됨 | `stream.ts`: `structured_output`→`result`·`evidence`(항상 `external_untrusted`), 토큰 합→`cost.tokens`, 추정 USD는 run_log에만, `permission_denials`→`permission_denied`. 시험: `claude-code-stream` |
+| CC3 한도·로그인 | 코드 구현됨, **문구 미확정** | `login_required`·`usage_limit`·`server_limited` 등 검토 대상 코드를 `error.code` 로 낸다. 한도 문구는 설정 목록이고 UNVERIFIED 표시. `needs_review` 상태 연결은 하지 않았다([운영 문서 §5](../operations/claude-code-cli.md)) |
+| CC4 계약 시험 | A층 구현, B층은 사용자 PC | `test/integration/claude-code-isolation.test.ts`: A층(고정 JSON)은 항상, B층(실제 `claude`)은 `AOT_CLAUDE_BIN` 이 있을 때만 |
+| CC5 데몬 계정 | 문서화만 | [운영 문서 §4](../operations/claude-code-cli.md) 재시험 절차. 실행은 사용자 PC |
 
 ### 스파이크 3: Q14 멱등 키 지원 조사
 

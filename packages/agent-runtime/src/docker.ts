@@ -33,16 +33,17 @@ export interface ExecResult {
 }
 
 export interface ProcessPort {
-  spawn(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>> }): SpawnedProcess;
+  /** `cwd` 를 주면 그 디렉터리에서 시작한다(claude-code-cli 어댑터). `env` 는 부모 환경을 잇지 않고 이것만 자식에게 간다 */
+  spawn(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; cwd?: string }): SpawnedProcess;
   /** 짧은 명령을 끝까지 실행하고 출력을 모은다. 던지지 않는다 */
-  exec(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; timeoutMs: number }): Promise<ExecResult>;
+  exec(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; timeoutMs: number; cwd?: string }): Promise<ExecResult>;
 }
 
 const MAX_EXEC_OUTPUT_BYTES = 1024 * 1024;
 
 export const nodeProcessPort: ProcessPort = {
   spawn(file, args, options) {
-    const child = spawn(file, [...args], { env: { ...options.env }, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true });
+    const child = spawn(file, [...args], { env: { ...options.env }, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
     child.stdin.on('error', () => undefined); // EPIPE: 컨테이너가 이미 끝났다. 종료는 close 이벤트로 안다
     return {
       writeStdin: (text) => void child.stdin.write(text),
@@ -62,7 +63,7 @@ export const nodeProcessPort: ProcessPort = {
       let spawnError: string | undefined;
       let child;
       try {
-        child = spawn(file, [...args], { env: { ...options.env }, stdio: ['ignore', 'pipe', 'pipe'], shell: false, windowsHide: true });
+        child = spawn(file, [...args], { env: { ...options.env }, stdio: ['ignore', 'pipe', 'pipe'], shell: false, windowsHide: true, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
       } catch (error) {
         resolve({ code: null, stdout, stderr, spawnError: error instanceof Error ? error.message : 'spawn failed', timedOut });
         return;

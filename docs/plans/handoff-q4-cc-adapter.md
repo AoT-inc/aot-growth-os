@@ -26,3 +26,9 @@ CC1 호출기 → CC2 결과 변환 → CC3 한도·로그인 처리(`needs_revi
 - 요금제(Pro → Max 5x → API 전환 기준)는 시범 운영의 `total_cost_usd`·`rate_limit_event.utilization` 측정 후 정한다. 어댑터는 두 값을 `cost_entry`와 한도 접근 경고로 남길 것.
 - `--max-budget-usd`를 추정치 기준 상한으로 쓸지, 턴 한도를 `assistant` 이벤트 계수로 강제할지는 CC1에서 제안 후 확인.
 - 고지 동의(가드레일 4)를 앱 어느 화면·CLI에서 받을지.
+
+## 진행 결과 (2026-10-26, 클라우드 세션)
+- CC1~CC4 구현, CC5는 문서화: [phase-a.md 구현 기록](phase-a.md), [operations/claude-code-cli.md](../operations/claude-code-cli.md). 새 코드는 `packages/agent-runtime/src/claude-code/`, 시험은 `test/unit/claude-code-*.test.ts`·`test/integration/claude-code-*.test.ts`.
+- 확인: typecheck·lint·lint:boundaries·단위(1183)·경계(3) 통과. 통합 시험의 실패 2건(소켓 권한 EACCES)은 이 컨테이너가 root라서 생기며 변경 전에도 같다. `check:schema`(sqlite3)·`scan:secrets`(gitleaks)는 이 컨테이너에 도구가 없어 실행하지 못했다. 로컬 Node는 22.22였다(저장소는 24 요구): `.ts` 직접 실행은 그대로 동작했다.
+- 사용자 결정 필요(운영 문서 §5): 검토 대상 코드의 `needs_review` 연결, 비용 단위(`subscription_estimate`), 고지 동의를 받는 곳, `--max-budget-usd`·턴 한도 값.
+- 사용자 PC에서 할 일(운영 문서 §4): 격리 회귀 B층 실행, 한도 도달 문구 확정, 데몬 계정 재시험.

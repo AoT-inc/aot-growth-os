@@ -55,8 +55,8 @@ export class FakeProcess implements SpawnedProcess {
   }
 }
 
-export interface SpawnRecord { file: string; args: readonly string[]; env: Readonly<Record<string, string>>; proc: FakeProcess }
-export interface ExecRecord { file: string; args: readonly string[]; env: Readonly<Record<string, string>>; timeoutMs: number }
+export interface SpawnRecord { file: string; args: readonly string[]; env: Readonly<Record<string, string>>; cwd?: string; proc: FakeProcess }
+export interface ExecRecord { file: string; args: readonly string[]; env: Readonly<Record<string, string>>; cwd?: string; timeoutMs: number }
 
 export type ExecScript = (record: ExecRecord, docker: FakeDocker) => Partial<ExecResult> | Promise<Partial<ExecResult>>;
 
@@ -75,15 +75,15 @@ export class FakeDocker implements ProcessPort {
     return { code: 0 };
   };
 
-  spawn(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>> }): SpawnedProcess {
+  spawn(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; cwd?: string }): SpawnedProcess {
     if (this.spawnThrows) throw this.spawnThrows;
     const proc = new FakeProcess();
-    this.spawned.push({ file, args: [...args], env: { ...options.env }, proc });
+    this.spawned.push({ file, args: [...args], env: { ...options.env }, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), proc });
     return proc;
   }
 
-  async exec(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; timeoutMs: number }): Promise<ExecResult> {
-    const record: ExecRecord = { file, args: [...args], env: { ...options.env }, timeoutMs: options.timeoutMs };
+  async exec(file: string, args: readonly string[], options: { env: Readonly<Record<string, string>>; timeoutMs: number; cwd?: string }): Promise<ExecResult> {
+    const record: ExecRecord = { file, args: [...args], env: { ...options.env }, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), timeoutMs: options.timeoutMs };
     this.execs.push(record);
     const partial = await this.script(record, this);
     return { code: 0, stdout: '', stderr: '', timedOut: false, ...partial };

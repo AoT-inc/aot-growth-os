@@ -30,14 +30,17 @@ export function initEvent(options: InitOptions = {}): JsonObject {
   };
 }
 
-export function rateLimitEvent(info: { status?: string; five_hour?: number; seven_day?: number } = {}): JsonObject {
+export function rateLimitEvent(info: { status?: string; five_hour?: number; seven_day?: number; five_hour_resets?: number | null } = {}): JsonObject {
   return {
     type: 'rate_limit_event',
     rate_limit_info: {
       status: info.status ?? 'allowed',
       rateLimitType: 'five_hour',
       resetsAt: 1_790_000_000,
-      unifiedWindows: { five_hour: { utilization: info.five_hour ?? 0.1 }, seven_day: { utilization: info.seven_day ?? 0.02 } },
+      unifiedWindows: {
+        five_hour: { utilization: info.five_hour ?? 0.1, ...(info.five_hour_resets === null ? {} : { resetsAt: info.five_hour_resets ?? 1_790_000_000 }) },
+        seven_day: { utilization: info.seven_day ?? 0.02 },
+      },
     },
   };
 }

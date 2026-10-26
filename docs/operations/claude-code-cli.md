@@ -25,6 +25,7 @@
 | `maxConcurrent` | 동시 실행 수(기본 1) |
 | `limitPatterns`, `serverLimitPatterns` | 사용량 한도 문구 목록. 기본값은 공식 문서의 문구이고 **실제 JSON에서 어떻게 나오는지는 미확인**이다 |
 | `warnUtilization` | `rate_limit_event` 사용률이 이 값 이상이면 run_log에 `usage_warning`(기본 0.8) |
+| `yieldUtilization` | 사람 우선 게이트. `{five_hour: 0.7, seven_day: 0.8}`처럼 창별 임계값. 직전 run이 본 사용률이 임계값 이상이고 그 창이 리셋 전이면 새 run을 **시작하지 않고** `usage_deferred`로 끝낸다(CLI를 띄우지 않아 사용량을 쓰지 않음). 구독 풀을 사용자가 직접 쓰는 에이전트와 나눠 쓰므로 사용자 몫을 남기는 장치. 기본 꺼짐, 메모리 상태라 데몬 재시작 후 첫 run이 다시 측정, 리셋 시각을 모르면 15분 뒤 낡은 값으로 취급 |
 | `model`, `toolDescriptions` | 모델 별칭, 게이트웨이 도구 설명 |
 
 ## 3. 오류 코드와 분류
@@ -38,6 +39,7 @@
 | `server_limited` | 서버 쪽 제한·429(미확인 문구) | 예 |
 | `cli_unavailable` | `claude` 를 못 찾거나 실행 못 함 | 예 |
 | `consent_required` | 고지 동의 없음 | 예 |
+| `usage_deferred` | 사람 우선 게이트가 새 run을 미룸(`yieldUtilization`). 실패가 아니라 "나중에 다시"이므로 실행기의 재시도/다음 주기에 맡긴다 | 아니오 |
 | `permission_denied` | 에이전트가 허용 밖 도구를 시도(`permission_denials`). 결과를 믿지 않는다 | 아니오 |
 | `isolation_violation` | init에 기대 밖 도구(Bash 등)·MCP 서버·스킬이 보임. CLI를 바로 멈춘다 | 아니오 |
 | `gateway_unavailable` | 게이트웨이 MCP가 연결되지 않음(종료 코드 0이라 init에서만 드러난다) | 아니오 |

@@ -47,6 +47,8 @@ export interface RateLimitInfo {
   resetsAt: string | number | null;
   /** 0~1 (또는 0~100 으로 보고하면 그대로). 창 이름 → 사용률 */
   utilization: Record<string, number>;
+  /** 창 이름 → 그 창의 리셋 시각(에포크 밀리초). 보고가 없으면 null (사람 우선 게이트가 쓴다) */
+  windowResetsMs: Record<string, number | null>;
 }
 
 export interface ResultInfo {
@@ -99,15 +101,28 @@ function parseInit(event: JsonObject): InitInfo {
   };
 }
 
+/** 리셋 시각: 에포크 초(관찰값) 또는 밀리초 숫자, ISO 문자열을 받아 에포크 밀리초로. 알 수 없으면 null */
+function resetsToMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value < 1e12 ? value * 1000 : value;
+  if (typeof value === 'string') {
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+
 function parseRateLimit(event: JsonObject): RateLimitInfo {
   const info = asObject(event['rate_limit_info']) ?? {};
   const resets = info['resetsAt'];
   const utilization: Record<string, number> = {};
+  const windowResetsMs: Record<string, number | null> = {};
   const windows = asObject(info['unifiedWindows']);
   if (windows !== null) {
     for (const [name, value] of Object.entries(windows)) {
       const u = asNumber(asObject(value)?.['utilization']);
-      if (u !== null) utilization[name] = u;
+      if (u === null) continue;
+      utilization[name] = u;
+      windowResetsMs[name] = resetsToMs(asObject(value)?.['resetsAt']);
     }
   }
   return {
@@ -115,6 +130,7 @@ function parseRateLimit(event: JsonObject): RateLimitInfo {
     rateLimitType: asString(info['rateLimitType']),
     resetsAt: typeof resets === 'string' || typeof resets === 'number' ? resets : null,
     utilization,
+    windowResetsMs,
   };
 }
 

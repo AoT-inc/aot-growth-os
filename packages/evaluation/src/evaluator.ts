@@ -23,8 +23,10 @@ import {
 } from './checks.ts';
 import { claimsFromResult, type ReportedClaim } from './claims.ts';
 import { costForRun, recordCost } from './cost.ts';
+import { EvidenceContentReader } from './evidence-contents.ts';
 import { buildIsolatedInput } from './isolation.ts';
-import type { EffectObservation, EffectSignalSource, LlmVerdict, LlmVerifier, SourceFetcher, SourceText } from './ports.ts';
+import { VerifierUnavailableError, type EffectObservation, type EffectSignalSource, type EvidenceReader, type LlmVerdict, type LlmVerifier, type SourceFetcher, type SourceText } from './ports.ts';
+import { evidenceClaimsFromResult, type EvidenceClaim } from './registration-report.ts';
 
 export const EVALUATOR_ID = 'task-evaluator';
 export const EVALUATOR_VERSION = 'v1';
@@ -105,6 +107,8 @@ export interface EvaluatorDeps {
   db: Db;
   clock: Clock;
   fetcher: SourceFetcher;
+  /** 호스트가 저장한 근거 본문 읽기(상품 등록의 로컬 근거). 없으면 근거 본문을 읽어야 하는 검사는 unknown(→ inconclusive)이고 근거 주장은 LLM 검증에 넘기지 않는다 */
+  evidenceReader?: EvidenceReader;
   /** 없으면 LLM 검증을 요구하는 업무는 inconclusive */
   llm?: LlmVerifier;
   /** 없으면 효과는 측정하지 않는다 (effect = null) */
@@ -163,15 +167,19 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
   const evidence = db.all<EvidenceRow>(
     'SELECT * FROM evidence WHERE task_id = ? AND (task_run_id = ? OR task_run_id IS NULL) ORDER BY captured_at, id', [task.id, run.id],
   );
+  const evidenceClaims = evidenceClaimsFromResult(run.result);
   const sources = new SourceReader(deps.fetcher);
-  const context: CheckContext = { db, task, spec, run, evidence, claims, sources, ...(deps.signals === undefined ? {} : { signals: deps.signals }) };
+  const contents = deps.evidenceReader === undefined ? undefined : new EvidenceContentReader(deps.evidenceReader);
+  const context: CheckContext = {
+    db, task, spec, run, evidence, claims, sources, ...(contents === undefined ? {} : { contents }), ...(deps.signals === undefined ? {} : { signals: deps.signals }),
+  };
 
   // 1층: 결정론적 검증
   const deterministic = await runDeterministicChecks(context, spec.validation.deterministic, deps.extraChecks);
   const allChecksPass = deterministic.checks.every((check) => check.status === 'pass');
 
   // 2층: 컨텍스트 분리 LLM 검증 (앞 층이 모두 통과했을 때만)
-  const llm = await runLlmVerification(deps, spec, claims, evidence, sources, allChecksPass);
+  const llm = await runLlmVerification(deps, spec, claims, evidenceClaims, evidence, sources, contents, allChecksPass);
 
   // 효과 측정 (외부에서 주입된 관측 값)
   const observation = deps.effect === undefined ? null : await deps.effect.read({ taskId: task.id, taskRunId: run.id });
@@ -196,7 +204,7 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
     effect,
   });
 
-  const reportUsed = claims.length > 0;
+  const reportUsed = claims.length > 0 || evidenceClaims.length > 0;
   const row = buildRow({
     deps, task, run, spec, deterministic, llmState: llm.state, llmNote: llm.note, effect, decision, primary, evidence, totalCostUsd, humanMinutes: runCost.humanMinutes, reportUsed,
   });
@@ -233,14 +241,16 @@ interface LlmRun {
 }
 
 async function runLlmVerification(
-  deps: EvaluatorDeps, spec: TaskSpec, claims: readonly ReportedClaim[], evidence: readonly EvidenceRow[], sources: SourceReader, allChecksPass: boolean,
+  deps: EvaluatorDeps, spec: TaskSpec, claims: readonly ReportedClaim[], evidenceClaims: readonly EvidenceClaim[], evidence: readonly EvidenceRow[],
+  sources: SourceReader, contents: EvidenceContentReader | undefined, allChecksPass: boolean,
 ): Promise<LlmRun> {
   const wanted = spec.validation.llm;
   if (wanted === null) return { state: 'not_configured', note: 'no LLM verification requested', verdict: null };
   if (!allChecksPass) return { state: 'skipped', note: 'skipped: deterministic checks did not all pass', verdict: null };
   if (wanted.isolated_context === false) return { state: 'unclear', note: 'LLM verification without an isolated context is not supported', verdict: null };
   if (!deps.llm) return { state: 'unclear', note: 'no LLM verifier is configured', verdict: null };
-  if (claims.length === 0) return { state: 'unclear', note: 'no claim to verify', verdict: null };
+  if (claims.length === 0 && evidenceClaims.length === 0) return { state: 'unclear', note: 'no claim to verify', verdict: null };
+  if (claims.length === 0 && contents === undefined) return { state: 'unclear', note: 'the claims cite stored evidence but no evidence reader is configured', verdict: null };
   try {
     const fetched = await sources.fetched();
     const texts: SourceText[] = [];
@@ -249,15 +259,35 @@ async function runLlmVerification(
       // 본문은 검증기가 출처 조회기로 바깥에서 직접 읽은 것이므로, 근거 행의 `evidence.trust_origin` 이 무엇이든(에이전트 출처 행은 호스트가 항상 external_untrusted 로 쓴다) 외부 입력이다
       texts.push({ ref: url, kind: 'source_url', text: result.reachable ? result.text : null, contentHash: row?.content_hash ?? null, trustOrigin: 'external_untrusted' });
     }
+    // 로컬 근거를 가리키는 주장: 본문은 호스트가 저장한 것을 평가기가 직접 읽고(해시 대조), 읽지 못했으면 text=null 로 넘긴다. 신뢰 출처는 근거 행이 밝힌 값 그대로다
+    const evidenceRefs: { claim: EvidenceClaim; ref: string }[] = [];
+    if (contents !== undefined) {
+      const byId = new Map(evidence.map((row) => [row.id, row]));
+      for (const claim of evidenceClaims) {
+        const row = byId.get(claim.evidenceId);
+        if (row === undefined) continue; // 근거 행이 아닌 참조는 주장으로 세지 않는다(evidence_refs_resolvable 이 실패로 알린다)
+        const ref = `evidence:${row.id}`;
+        evidenceRefs.push({ claim, ref });
+        if (!texts.some((text) => text.ref === ref)) {
+          const content = await contents.read(row);
+          texts.push({ ref, kind: row.kind, text: content.ok ? content.text : null, contentHash: row.content_hash, trustOrigin: row.trust_origin });
+        }
+      }
+    }
     const input = buildIsolatedInput({
       check: wanted.check,
       criteria: spec.acceptance_criteria,
-      claims: claims.map((claim) => ({ id: claim.id, statement: claim.statement, sourceRef: claim.sourceUrl })),
+      claims: [
+        ...claims.map((claim) => ({ id: claim.id, statement: claim.statement, sourceRef: claim.sourceUrl })),
+        ...evidenceRefs.map(({ claim, ref }) => ({ id: claim.id, statement: claim.statement, sourceRef: ref })),
+      ],
       sources: texts,
     });
     const verdict = await deps.llm.verify(input);
     return { state: verdict.verdict, note: `${deps.llm.id}: ${verdict.verdict} (${verdict.note})`, verdict };
   } catch (error) {
+    // 검증기가 지금은 일을 못 한다(한도·로그인·미룸): 평가를 기록하지 않고 위로 던져 업무를 validating 에 둔다(다음 tick 에 다시 검증). 쓴 것이 없어 되돌릴 것도 없다
+    if (error instanceof VerifierUnavailableError) throw error;
     return { state: 'unclear', note: `LLM verification failed: ${error instanceof Error ? error.message : String(error)}`, verdict: null };
   }
 }

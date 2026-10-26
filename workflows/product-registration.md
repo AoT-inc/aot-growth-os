@@ -148,6 +148,7 @@
 | 2 | LLM 검증 | 요약이 evidence로 뒷받침되는지, 분류 근거의 누락. 실행 에이전트와 다른 호출·격리된 컨텍스트, 가능하면 다른 모델. 모델 등급은 [Q22](../docs/open-questions.md) | `retry_wait` |
 | 3 | 사람 | `needs_review` → 제품 `pending_approval`. 증거 확인 후 승인·거절 | 거절 시 `rejected` |
 
+- 위 결정론적 검사의 구현, 보고서 형식(`registration-report@1`), 스캔 요약 형식(`secret_scan_summary@1`)은 [evaluation §9](../docs/operations/evaluation.md)다. 평가기는 호스트가 저장한 근거 본문을 직접 읽고 보고서는 근거를 가리키는 참조로만 쓴다. 검증기를 지금 쓸 수 없으면 업무는 `validating`에 남아 다시 검증된다. 도구 어댑터·근거 저장·검증 모델은 [계획](../docs/plans/registration-dogfood.md)의 후속 단계다.
 - README·문서·코드 주석 안의 지시문은 외부 입력(`external_untrusted`)이다. 데이터 영역으로만 전달하고, 도구 호출이 그에 유도되면 정책 게이트웨이가 표시한다 ([trust-boundaries §2-3](../docs/security/trust-boundaries.md)).
 - 평가기 독립성: 보고서만으로 통과시키지 않고 `evidence`와 도구 호출 로그를 원본으로 조회한다.
 - 안전성(비밀값 유출, 쓰기 시도)은 다른 점수와 무관하게 거부권을 가진다.

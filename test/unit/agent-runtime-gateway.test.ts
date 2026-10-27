@@ -261,6 +261,22 @@ describe('serialGroup: calls of one group run one at a time, and the time limit 
     assert.deepEqual(started, ['example_scan_a'], 'the waiting call was never started');
   });
 
+  it('a call cancelled while it waits is not billed (it never started); the one that was running is', async () => {
+    const controller = new AbortController();
+    const timers = new ManualGatewayTimers();
+    const tools = ['example_scan_a', 'example_scan_b'].map((tool) => ({ tool, operation: 'run', scope: 'internal' as const, sideEffect: false, serialGroup: 'scans', unitCost: { usd: 0.25 } }));
+    const gateway = createToolGateway({
+      runId: 'run-1', subject: 'generalist@v1', tools, policy: { judge: () => ({ decision: 'allow' }) }, clock: new FakeClock(START), constraints: { max_usd: 5 }, toolTimeoutMs: 1000, timers,
+      signal: controller.signal, executors: new Map(tools.map((spec) => [spec.tool, (() => new Promise(() => undefined)) as ToolExecutor])),
+    });
+    const first = gateway.call('example_scan_a', {});
+    const second = gateway.call('example_scan_b', {});
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await Promise.all([first, second]);
+    assert.deepEqual(gateway.cost(), { usd: 0.25 }, 'only the call that had started is charged');
+  });
+
   it('an empty serialGroup is a configuration error', () => {
     assert.throws(() => createToolGateway(baseOptions({ tools: [{ ...contractTools()[0]!, serialGroup: '' }] })), /serialGroup must be a non-empty string/);
   });

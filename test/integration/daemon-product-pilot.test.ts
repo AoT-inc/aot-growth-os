@@ -264,8 +264,10 @@ test('restart also works while the product is still verifying (a task waiting fo
   assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x' }))['code'], 'wrong_state', 'a candidate has nothing to restart');
   const started = await r.send({ op: 'start', slug: 'example-product' });
   const taskId = started['task_id'] as string;
-  r.env.db.writeTx((tx) => tx.run("UPDATE task SET status = 'running' WHERE id = ?", [taskId]));
-  assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x' }))['code'], 'task_active');
+  for (const busy of ['running', 'validating']) {
+    r.env.db.writeTx((tx) => tx.run('UPDATE task SET status = ? WHERE id = ?', [busy, taskId]));
+    assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x' }))['code'], 'task_active', busy);
+  }
   r.env.db.writeTx((tx) => tx.run("UPDATE task SET status = 'retry_wait' WHERE id = ?", [taskId]));
   const restarted = await r.send({ op: 'restart', slug: 'example-product', comment: 'the first attempt hit a budget limit' });
   assert.equal(restarted['ok'], true, JSON.stringify(restarted));

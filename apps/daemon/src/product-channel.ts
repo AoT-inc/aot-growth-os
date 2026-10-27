@@ -261,7 +261,10 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     if (typeof recheck !== 'string') return recheck;
     const old = latestTask(slug);
     if (old === undefined) return refused('wrong_state', 'the product has no verification task (use start)');
-    if (old.status === 'running') return refused('task_active', 'the verification task is running; wait for it to stop (or for its time limit) before restarting');
+    // 실행 중이거나 검증 중이면 거부한다: 검증 중 업무는 검증기 호출이 진행 중일 수 있고, 취소해도 그 호출은 끝까지 가서 토큰을 쓰고 취소된 업무에 판정을 남긴다
+    if (old.status === 'running' || old.status === 'validating') {
+      return refused('task_active', `the verification task is ${old.status}; wait until it stops (or, while the verifier is unavailable, until the cause such as a usage limit or login is resolved) before restarting`);
+    }
     if (old.status === 'completed') return refused('wrong_state', 'the verification task already completed');
     let taskId: string;
     try {
@@ -269,7 +272,7 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
         const now = clock.nowIso();
         // 이전 업무는 취소한다 (끝난 업무는 그대로). 실행 중이 아닌 업무만 여기까지 온다
         const current = latestTask(slug, tx)!;
-        if (current.id !== old.id || current.status === 'running') throw new Error('the verification task changed while restarting');
+        if (current.id !== old.id || current.status === 'running' || current.status === 'validating') throw new Error('the verification task changed while restarting');
         if (!['completed', 'failed', 'cancelled'].includes(current.status)) {
           assertTransition(TASK_MACHINE, { from: current.status as never, to: 'cancelled', by: 'human', reason: comment });
           const cancelled = tx.run("UPDATE task SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = ?", [now, current.id, current.status]);

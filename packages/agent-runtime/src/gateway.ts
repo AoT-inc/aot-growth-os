@@ -55,7 +55,9 @@ export interface GatewayToolSpec {
   /**
    * 같은 run 안에서 같은 그룹 이름을 가진 도구의 호출은 한 번에 하나씩 실행한다(앞 호출이 끝나야 다음이 시작). 호스트 자원을 몰아 쓰는 도구(저장소 읽기·스캔)가 쓴다.
    * 기다리는 동안은 타임아웃이 시작되지 않는다 — 에이전트가 오래 걸리는 호출 둘을 동시에 불러도 두 번째가 기다린 시간만큼 모자란 시간으로 시작하지 않는다.
-   * 기다리는 중 run 이 취소되면 실행하지 않고 취소로 끝난다.
+   * 기다리는 중 run 이 취소되면 실행하지 않고 취소로 끝난다(비용도 매기지 않는다).
+   * 전제: 이 그룹의 실행기는 취소·타임아웃 신호(`request.signal`)를 지킨다. 신호를 무시하는 실행기는 타임아웃 뒤에도 계속 돌아 다음 호출과 겹칠 수 있다.
+   * 정책 판정은 대기 *앞*에서 한다 — 오래 기다린 호출의 판정은 낡을 수 있으므로 실행기가 자기 권한을 호출마다 다시 확인해야 한다(등록 도구는 `bindRepo` 로 한다).
    */
   serialGroup?: string;
 }
@@ -201,7 +203,8 @@ type ExecOutcome =
   | { kind: 'done'; value: unknown }
   | { kind: 'error'; error: unknown }
   | { kind: 'timeout' }
-  | { kind: 'cancelled' };
+  /** `notStarted`: `serialGroup` 대기 중에 취소되어 실행기를 부르지 않았다(자원을 쓰지 않았으니 단위 비용을 매기지 않는다) */
+  | { kind: 'cancelled'; notStarted?: boolean };
 
 interface Conclusion {
   outcome: ToolCallOutcome;
@@ -254,7 +257,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
     if (group === undefined) return executeNow(spec, executor, args);
     const previous = serialChains.get(group) ?? Promise.resolve();
     // 앞 호출이 끝난 뒤에 시작한다. 그 사이 run 이 취소되었으면 실행하지 않는다
-    const mine = previous.then((): Promise<ExecOutcome> | ExecOutcome => (runSignal.aborted ? { kind: 'cancelled' } : executeNow(spec, executor, args)));
+    const mine = previous.then((): Promise<ExecOutcome> | ExecOutcome => (runSignal.aborted ? { kind: 'cancelled', notStarted: true } : executeNow(spec, executor, args)));
     serialChains.set(group, mine.then(() => undefined, () => undefined));
     return mine;
   };
@@ -380,7 +383,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
         case 'timeout':
           return done({ ...base, outcome: 'tool_timeout', decision: recorded, reason: `no result within ${spec.timeoutMs ?? options.toolTimeoutMs} ms`, cost: applyCost(unitCost), response: refuse('tool_timeout') });
         case 'cancelled':
-          return done({ ...base, outcome: 'run_cancelled', decision: recorded, cost: applyCost(unitCost), response: refuse('run_cancelled') });
+          return done({ ...base, outcome: 'run_cancelled', decision: recorded, cost: outcome.notStarted === true ? {} : applyCost(unitCost), response: refuse('run_cancelled') });
         case 'error':
           return done({ ...base, outcome: 'tool_error', decision: recorded, reason: errorText(outcome.error), cost: applyCost(unitCost), response: refuse('tool_error') });
         case 'done': {

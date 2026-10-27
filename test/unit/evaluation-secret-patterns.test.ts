@@ -53,7 +53,7 @@ test('prose that merely mentions tokens, keys or passwords is not a finding', ()
 // ----- 치환 문법(자리표시자)은 값이 아니다 -----
 const PLACEHOLDER_PASSWORDS = ['${POSTGRES_PASSWORD}', '${db_password}', '${db.password}', '$DB_PASSWORD', '<password>', '<YOUR_DB-PASSWORD>', '{{db_password}}', '{db_password}', '%(password)s', '%DB_PASSWORD%'];
 // 값일 수 있는 것: 기본값을 품은 치환, 리터럴이 섞인 것, 숫자·소문자가 섞인 `$` 값, 숫자가 든 꺾쇠 값
-const VALUE_LIKE_PASSWORDS = ['${PASS:-hunter2}', '${PASS}hunter2', 'pa${X}ss', '$hunter2', '$ecret', '<hunter2>', 'hunter2', '${}', '$', '${A B}'];
+const VALUE_LIKE_PASSWORDS = ['${PASS:-hunter2}', '${PASS}hunter2', 'pa${X}ss', '$hunter2', '$ecret', '<hunter2>', 'hunter2', '$HUNTER2', '$HUNTER', '${Tr0ub4dor}', '<hunter>', '{hunter}', '%hunter%', '{{hunter}}', '%(hunter)s', '${}', '$', '${A B}'];
 
 test('a placeholder in the password slot of a URL is not a credential, in the finder and in the masker alike', () => {
   for (const placeholder of PLACEHOLDER_PASSWORDS) {
@@ -76,11 +76,42 @@ test('a value-like password stays a finding and is masked, even when the user pa
   }
 });
 
+test('the user slot counts too: a plain name or a placeholder keeps the exemption, an opaque token as the user does not', () => {
+  const url = (user: string): string => join('https:', `//${user}:\${DB_PASSWORD}@git.example.com/r.git`);
+  for (const user of ['deploy', 'admin01', 'ci-bot', 'svc_account', '${GIT_USER}', '$GIT_USER']) {
+    assert.deepEqual(findSecretShapes(url(user)), [], user);
+    assert.equal(maskString(url(user)), url(user), user);
+  }
+  for (const user of ['Ab12Cd34Ef56Gh78Ij90', 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8', 'user:extra']) {
+    // 어느 모양이든 두 구현(검사와 마스킹)이 같은 판정을 한다
+    assert.equal(maskString(url(user)) !== url(user), findSecretShapes(url(user)).length > 0, user);
+  }
+  for (const user of ['Ab12Cd34Ef56Gh78Ij90', 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8']) {
+    assert.deepEqual(findSecretShapes(url(user)).map((finding) => finding.kind), ['url_credentials'], user);
+    assert.notEqual(maskString(url(user)), url(user), user);
+  }
+});
+
 test('the same holds for query values: ?token=${TOKEN} is a reference, ?token=${TOKEN:-abc123} is not', () => {
   assert.deepEqual(findSecretShapes('curl https://api.example.com/v1?token=${API_TOKEN}&x=1'), []);
   assert.equal(maskString('https://api.example.com/v1?token=${API_TOKEN}'), 'https://api.example.com/v1?token=${API_TOKEN}');
   assert.deepEqual(findSecretShapes('https://api.example.com/v1?token=${API_TOKEN:-abc123}').map((finding) => finding.kind), ['query_secret']);
+  for (const value of ['$ABC', '$HUNTER2', '{hunter}']) assert.deepEqual(findSecretShapes(`https://api.example.com/v1?token=${value}`).map((finding) => finding.kind), ['query_secret'], value);
   assert.notEqual(maskString('https://api.example.com/v1?token=${API_TOKEN:-abc123}'), 'https://api.example.com/v1?token=${API_TOKEN:-abc123}');
+});
+
+test('parity fuzz: for generated passwords, users and query values the finder and the masker always agree', () => {
+  const pieces = ['$', '${', '}', '{', '}}', '<', '>', '%', '(', ')s', 'DB_PASSWORD', 'PASS', 'pass', 'hunter', 'Hunter2', 'a1', ':-', '.', '-', '_', 'x'];
+  let seed = 12345;
+  const next = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed;
+  };
+  const gen = (): string => Array.from({ length: 1 + (next() % 5) }, () => pieces[next() % pieces.length]!).join('');
+  for (let i = 0; i < 4000; i += 1) {
+    const text = `${join('x: https:', '//')}${gen().replace(/[:@/\s]/g, '')}:${gen().replace(/[@/\s]/g, '')}@h.example.com and https://a.example.com/p?key=${gen().replace(/[&\s#]/g, '')}`;
+    assert.equal(maskString(text) !== text, findSecretShapes(text).length > 0, text);
+  }
 });
 
 test('one placeholder next to one real credential counts only the real one', () => {

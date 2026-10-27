@@ -12,7 +12,7 @@
 | `gitleaks_path` | gitleaks **8.30.1**(Q21)의 절대 경로 |
 | `gitleaks_config` | 스캐너 설정 파일의 절대 경로. 생략하면 저장소의 `config/gitleaks-registration.toml`(기본 규칙 전체). **후보 저장소 안의 `.gitleaks.toml`은 쓰지 않는다** — 허용 목록으로 스캔을 피할 수 없다. 인스턴스별 금지어·추가 규칙은 이 파일을 대체해 저장소 밖에 둔다 |
 | `evidence_dir` | 근거 본문 디렉터리(0700). 기본 `<instance_dir>/evidence` |
-| `scan_timeout_ms` | 스캐너 제한 시간(1000~3600000, 기본 10분). **큰 저장소**(파일럿에서 6 GB 저장소의 트리 스캔이 약 9분)는 이력 스캔이 더 오래 걸리므로 20~30분으로 올린다. 도구 제한 시간은 이 값 + 30초이고 *실행을 시작한 뒤부터* 센다(아래). 업무의 `time_limit`(템플릿 90분)은 스캔 둘의 합 + 에이전트 턴을 담아야 한다 |
+| `scan_timeout_ms` | 스캐너 제한 시간(1000~3600000, 기본 10분). **큰 저장소**(파일럿에서 6 GB 저장소의 트리 스캔이 약 9분)는 이력 스캔이 더 오래 걸리므로 20~30분으로 올린다. **스캔 둘의 합(`2 × scan_timeout_ms` + 에이전트 턴)이 업무 `time_limit`(템플릿 90분) 안에 들어가야 한다** — 최대값(1시간)을 쓰면 `time_limit`도 올려야 한다. 도구 제한 시간은 이 값 + 30초이고 *실행을 시작한 뒤부터* 센다(아래). 업무의 `time_limit`(템플릿 90분)은 스캔 둘의 합 + 에이전트 턴을 담아야 한다 |
 
 - `claude_code_cli` 또는 `container_agent`가 있어야 한다(도구를 부를 에이전트). 실행 파일이 없거나 실행할 수 없으면 데몬이 **시작하지 않는다**.
 - 에이전트 역할을 `claude_code_cli.roles`에 `registration-verifier`로 매핑한다([claude-code-cli 운영](claude-code-cli.md) §2).

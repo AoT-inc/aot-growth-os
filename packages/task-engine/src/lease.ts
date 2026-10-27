@@ -449,6 +449,9 @@ export function recordRunOutput(db: Db, clock: Clock, lease: Lease, record: RunO
   db.writeTx((tx) => {
     assertLeaseHeld(tx, lease, clock.nowIso(), 'record output');
     for (const item of record.evidence) {
+      // 같은 업무의 기존 근거 행 id 를 `ref` 로 낸 항목은 *인용*이다(예: 호스트가 저장한 근거를 보고서가 다시 가리킴). 새 근거가 아니며, 행으로 만들면
+      // 저장된 본문이 없는 행이 늘어 본문을 읽는 검사가 읽지 못한 행으로 센다. 행을 만들지 않는다.
+      if (tx.get('SELECT 1 AS one FROM evidence WHERE id = ? AND task_id = ?', [item.ref, lease.taskId])) continue;
       tx.run(
         "INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES (?, ?, ?, ?, ?, ?, 'external_untrusted', ?)",
         [newId(), lease.taskId, lease.runId, item.kind, item.ref, item.contentHash ?? null, item.capturedAt],

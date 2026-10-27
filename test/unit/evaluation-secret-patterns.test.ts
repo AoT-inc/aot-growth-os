@@ -49,3 +49,41 @@ test('counts every occurrence and never returns the matched text', () => {
 test('prose that merely mentions tokens, keys or passwords is not a finding', () => {
   assert.deepEqual(findSecretShapes('Set the password in your environment; the API key goes in a vault. Tokens expire.'), []);
 });
+
+// ----- 치환 문법(자리표시자)은 값이 아니다 -----
+const PLACEHOLDER_PASSWORDS = ['${POSTGRES_PASSWORD}', '${db_password}', '${db.password}', '$DB_PASSWORD', '<password>', '<YOUR_DB-PASSWORD>', '{{db_password}}', '{db_password}', '%(password)s', '%DB_PASSWORD%'];
+// 값일 수 있는 것: 기본값을 품은 치환, 리터럴이 섞인 것, 숫자·소문자가 섞인 `$` 값, 숫자가 든 꺾쇠 값
+const VALUE_LIKE_PASSWORDS = ['${PASS:-hunter2}', '${PASS}hunter2', 'pa${X}ss', '$hunter2', '$ecret', '<hunter2>', 'hunter2', '${}', '$', '${A B}'];
+
+test('a placeholder in the password slot of a URL is not a credential, in the finder and in the masker alike', () => {
+  for (const placeholder of PLACEHOLDER_PASSWORDS) {
+    const text = join('postgresql+psycopg:', `//\${POSTGRES_USER}:${placeholder}@db.example.com:5432/app`);
+    assert.deepEqual(findSecretShapes(text), [], placeholder);
+    assert.equal(maskString(text), text, `masking leaves the placeholder visible: ${placeholder}`);
+  }
+});
+
+test('a value-like password stays a finding and is masked, even when the user part is a placeholder', () => {
+  for (const value of VALUE_LIKE_PASSWORDS) {
+    const text = join('postgres:', `//\${POSTGRES_USER}:${value}@db.example.com/app`);
+    if (value === '${}' || value === '$' || value === '${A B}') {
+      // 문법이 아닌 조각은 어느 쪽이든 두 구현이 같은 판정을 한다
+      assert.equal(maskString(text) !== text, findSecretShapes(text).length > 0, value);
+      continue;
+    }
+    assert.deepEqual(findSecretShapes(text).map((finding) => finding.kind), ['url_credentials'], value);
+    assert.notEqual(maskString(text), text, value);
+  }
+});
+
+test('the same holds for query values: ?token=${TOKEN} is a reference, ?token=${TOKEN:-abc123} is not', () => {
+  assert.deepEqual(findSecretShapes('curl https://api.example.com/v1?token=${API_TOKEN}&x=1'), []);
+  assert.equal(maskString('https://api.example.com/v1?token=${API_TOKEN}'), 'https://api.example.com/v1?token=${API_TOKEN}');
+  assert.deepEqual(findSecretShapes('https://api.example.com/v1?token=${API_TOKEN:-abc123}').map((finding) => finding.kind), ['query_secret']);
+  assert.notEqual(maskString('https://api.example.com/v1?token=${API_TOKEN:-abc123}'), 'https://api.example.com/v1?token=${API_TOKEN:-abc123}');
+});
+
+test('one placeholder next to one real credential counts only the real one', () => {
+  const text = `${join('a: https:', '//ci:${CI_PASSWORD}@x.example.com')} and ${join('b: https:', '//ci:realpassword@y.example.com')}`;
+  assert.deepEqual(findSecretShapes(text), [{ kind: 'url_credentials', count: 1 }]);
+});

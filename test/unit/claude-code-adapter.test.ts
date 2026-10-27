@@ -118,6 +118,12 @@ describe('claude-code-cli 어댑터: 호출', () => {
     assert.deepEqual(output.cost, { tokens: 880 });
   });
 
+  it('run_log 의 추정 비용 줄에 토큰 구성을 적는다 (캐시 읽기가 합계의 대부분일 수 있어 예산 초과 원인을 알아볼 수 있게)', async (t) => {
+    const h = harness(t);
+    const { output } = await h.runWith(successStream());
+    assert.ok(output.run_log.some((e) => /880 tokens \(input 100, output 50, cache write 700, cache read 30\)/.test(e.message)), output.run_log.map((e) => e.message).join('\n'));
+  });
+
   it('claude --version 을 한 번 기록하고, 인자·환경·작업 디렉터리·stdin 을 호출 모양대로 넘긴다', async (t) => {
     const h = harness(t, { keepRunDir: true });
     const { output, proc } = await h.runWith(successStream());

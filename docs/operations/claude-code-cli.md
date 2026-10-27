@@ -130,6 +130,10 @@ node apps/daemon/src/approve.ts --actor <사람 actor> consent revoke           
 
 **검증한 것.** 가짜 포트·가짜 실행 파일 시험(호출 모양, 판정 합치기, 자체 조절, 게이트 공유, 인젝션 문구가 데이터로 남음, 큰 프롬프트가 stdin 파이프로 온전히 감)과 클라우드 컨테이너의 `claude` 2.1.310으로 한 번 확인한 것: `--tools ""` + 빈 MCP 설정 + `--json-schema` + stdin 프롬프트가 도구 없는 구조화 출력(`init.tools=["StructuredOutput"]`, `mcp_servers=[]`, 2턴)을 낸다. **사용자 PC의 구독 로그인(2.1.263~)에서의 같은 호출은 아직 확인 전이다** — §4의 5번.
 
+**브리지의 호출 대기 상한.** 게이트웨이 MCP 브리지는 도구 호출 하나를 기다리는 안전망 시간이 있다. 이전에는 10분 고정이라 게이트웨이의 도구 제한(스캔은 스캐너 제한 + 30초)보다 먼저 `tool_timeout`을 냈다. 어댑터가 `AOT_GATEWAY_CALL_TIMEOUT_MS`(= run의 `time_limit_ms`)를 넘겨 주므로 권위 있는 제한은 호스트 게이트웨이의 도구별 시간이고, 브리지는 호스트가 아예 답하지 않을 때만 끊는다.
+
+**토큰 구성.** run_log의 추정 비용 줄에 `input / output / cache write / cache read`를 적는다. 합계(`cost.tokens`, 예산·검증 비율의 기준)에서 캐시 읽기는 턴마다 쌓여 긴 run의 대부분이 될 수 있다(파일럿: 26턴·도구 25회 = 328,018 토큰, 추정 0.32 USD). 합계의 정의는 바꾸지 않았고, 등록 템플릿의 `max_tokens`를 100만으로 올렸다([템플릿](../../workflows/product-registration.md) §7).
+
 ## 5. 열린 결정
 
 | 항목 | 현재 |

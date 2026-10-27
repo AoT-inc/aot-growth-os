@@ -35,6 +35,7 @@ approve.ts product status <slug>                    # pending_approval 이 될 �
 approve.ts product evidence <slug> <증거 id>         # 증거를 읽는다 (아래 체크리스트)
 approve.ts product decide <slug> approve --hash <status 의 review_hash> [--comment 글]
 approve.ts product decide <slug> reject --comment "<사유>"
+approve.ts product restart <slug> --comment "<사유>"     # 재검증 (아래)
 approve.ts product pilot                            # 언제든: 지금까지의 비교와 기준
 ```
 
@@ -44,6 +45,7 @@ approve.ts product pilot                            # 언제든: 지금까지의
 - **`status`가 보여 주는 것**: 상품·저장소 접근 범위, 업무(상태·시도), 평가(`outcome`·`safety`·메모), **`shadow_verdict`**(검증기 판정, 토큰), 증거 목록(id·종류·`verified`·신뢰 출처), `review_hash`.
 - **`decide approve`**는 평가가 `pass`(안전성도 `pass`)이고 호스트가 저장한 검증된 증거가 있을 때만 된다(`evaluation_not_passed`·`no_evidence`) — 평가가 `fail`/`inconclusive`면 반려하거나 재시도를 기다린다. 그리고 `status`가 보여 준 `review_hash`를 요구한다: 승인이 *읽은 증거 집합*에 묶이고, 그 사이 업무·평가·증거가 바뀌면 `hash_mismatch`다. 승인하면 상품이 `registered`가 되고(`approval` 행) 검증 업무가 `needs_review → completed`가 된다. 읽기 접근(`read`)은 그대로 둔다.
 - **`decide reject`**는 사유가 필수다(파일럿이 검증기 판정과 대조한다). 상품이 `rejected`, 업무가 `failed`, 읽기 접근이 `none`으로 회수된다. 업무가 아직 실행 중이면 `task_active`로 거절되니 `needs_review`에 닿은 뒤(또는 업무를 취소한 뒤) 한다.
+- **`restart`**: 이전 검증 업무를 취소(사유 기록)하고 *현재* 템플릿으로 새 검증 업무를 만든다. `verifying`이거나 `pending_approval`(재검증으로 `verifying`에 되돌아온다)인 상품에만, 업무가 실행 중이 아닐 때만 된다. 코드를 고친 뒤 다시 돌리거나(한도·버그로 막힌 후보), 증거가 못 미더울 때 쓴다. 읽기 접근은 그대로이고, 파일럿 보고에는 *새 업무의 판정*만 센다(이전 판정은 낡은 것). 새 증거 집합이라 `review_hash`가 바뀐다 — 이전 `status`의 해시로는 승인되지 않는다.
 - 등록된 상품은 이 채널로 반려할 수 없다(등록 뒤 변경은 일반 변경 절차).
 
 ## 4. 사람이 증거를 읽을 때 (체크리스트)
@@ -62,6 +64,12 @@ approve.ts product pilot                            # 언제든: 지금까지의
 상품마다 *가장 나중* 판정 하나만 센다(재실행으로 판정이 여러 번 쌓여도 한 건). 종료 기준은 **처음 결정된 5건**(결정 시각 순)에 대해서만 판정하고(`first_decided`), 그 뒤 건은 `all_decided`에 참고로 든다. 검증기가 그 5건에서 한 번도 `supported`를 내지 않았으면 0건 반려가 의미가 없으므로 충족으로 치지 않는다(`met: false` + `note`).
 
 각 행: `slug`, `verdict`(검증기), `human`(`approved`/`rejected`/`pending`), 반려 사유, 검증 토큰·실행 토큰·비율. 요약(`first_decided`·`all_decided` 각각): `decided`, `supported`, `supported_but_rejected`(기준: 0), `unsupported_but_approved`, `unclear`, `agreement`(`unclear` 제외), 토큰 비율 평균·최대. `criterion`(`target_count: 5`; 5건이 결정되기 전에는 `met: null`, 처음 5건에 *supported인데 반려*가 있으면 `failed: true`).
+
+## 5-1. 큰 저장소와 한도 (파일럿 1차에서 확인된 것)
+
+- **스캔이 오래 걸리는 저장소**(수 GB): 트리 스캔만 약 9분이 걸렸다. `registration_tools.scan_timeout_ms`를 20~30분(1200000~1800000)으로 올린다. 도구 제한 시간은 이 값 + 30초이며 *실행을 시작한 뒤부터* 센다(이전에는 동시에 부른 둘째 스캔이 앞 스캔을 기다린 만큼 모자랐고, 브리지의 고정 10분도 먼저 걸렸다 — 둘 다 고쳤다). 업무 `time_limit`은 템플릿 v2에서 90분이다.
+- **토큰 한도**: 템플릿 v2의 `max_tokens`는 100만이다(v1의 20만은 구독 CLI의 캐시 읽기를 합친 합계에 비해 너무 작았다). 한도를 넘으면 정상 종료한 결과도 버려지고 `needs_review`가 되니, run_log의 `cache read` 몫을 보고 조정한다.
+- 템플릿 v2는 **새로 만드는 업무**부터 적용된다. 이미 만들어진 업무는 v1 값 그대로이므로, 한도·검사 오류로 막힌 후보는 `product restart <slug> --comment …`로 다시 시작한다(데몬을 새 코드로 다시 띄운 뒤).
 
 ## 6. 끝난 뒤
 

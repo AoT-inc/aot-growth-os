@@ -149,6 +149,8 @@ export interface GatewayMcpConfigInput {
   socketPath: string;
   toolsPath: string;
   token: string;
+  /** 브리지가 호출 하나를 기다리는 상한(ms). 보통 run 의 시간 제한. 생략하면 브리지 기본(10분) */
+  callTimeoutMs?: number;
 }
 
 /** `--mcp-config` 파일 내용. 도구가 없으면 서버가 없는 설정이다(그래도 `--strict-mcp-config` 로 MCP 를 전부 막는다) */
@@ -163,7 +165,7 @@ export function buildMcpConfig(input: GatewayMcpConfigInput | null): string {
         type: 'stdio',
         command: input.nodePath,
         args: [input.bridgePath, input.socketPath, input.toolsPath],
-        env: { AOT_GATEWAY_TOKEN: input.token },
+        env: { AOT_GATEWAY_TOKEN: input.token, ...(input.callTimeoutMs === undefined ? {} : { AOT_GATEWAY_CALL_TIMEOUT_MS: String(Math.max(1, Math.min(2 ** 31 - 1, Math.floor(input.callTimeoutMs)))) }) },
       },
     },
   }, null, 2)}\n`;

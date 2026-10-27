@@ -39,6 +39,12 @@ export interface RegistrationCheckOutcome {
 const NO_READER = 'no evidence reader is configured, so the stored content cannot be checked';
 const cut = (text: string, max = 400): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
+/**
+ * 호스트가 저장한 본문의 참조 접두 (apps/daemon 근거 저장소의 `blob:sha256:<hex>`, task-engine 의 호스트 전용 이름 공간). 에이전트는 이 접두를 쓸 수 없다.
+ * 접두가 없는 행은 에이전트가 보고한 인용(예: 호스트 근거 id `ev-…` 를 다시 적은 것)이라 *저장된 본문이 없다* — 읽을 본문이 없으므로 `unknown` 이 아니라 참조 문자열만 본다.
+ */
+const HOST_BLOB_PREFIX = 'blob:';
+
 /** 비밀값 모양을 찾을 근거 종류. 출처 URL 은 출처 조회기 몫이고, 로그·승인·측정 행은 호스트 근거 본문이 아니다 */
 const SCANNED_KINDS: readonly string[] = ['document', 'test_result', 'other'];
 
@@ -81,6 +87,11 @@ export async function checkNoSecretInOutputs(input: RegistrationCheckInput): Pro
   let scanned = 0;
   for (const row of input.evidence) {
     if (!SCANNED_KINDS.includes(row.kind)) continue;
+    if (!row.ref.startsWith(HOST_BLOB_PREFIX)) {
+      // 에이전트가 보고한 인용 행: 저장된 본문이 없으니 참조 문자열(에이전트가 쓴 값)만 본다
+      describe(`evidence ${row.id} reference`, row.ref);
+      continue;
+    }
     const content = await input.contents.read(row);
     if (!content.ok) {
       unread += 1;
@@ -91,7 +102,7 @@ export async function checkNoSecretInOutputs(input: RegistrationCheckInput): Pro
   }
   if (findings.length > 0) return { status: 'fail', note: cut(`secret-like value(s) found (kind and count only, never the value): ${findings.join('; ')}`) };
   if (unread > 0) return { status: 'unknown', note: `${unread} evidence row(s) could not be read, so they were not scanned for secret-like values` };
-  return { status: 'pass', note: `no secret-like value in the run result or in ${scanned} evidence content(s)` };
+  return { status: 'pass', note: `no secret-like value in the run result or in ${scanned} stored evidence content(s) (agent-reported citation rows have no stored content; their reference text was checked)` };
 }
 
 export function checkReadOnlyCalls(input: Pick<RegistrationCheckInput, 'db' | 'run'>): RegistrationCheckOutcome {

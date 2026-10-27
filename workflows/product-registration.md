@@ -59,7 +59,7 @@
      "scope": "internal", "impact": "read", "target": "repo:example-product"}
   ],
   "constraints": {
-    "time_limit": "20m",
+    "time_limit": "90m",
     "network_allowlist": [],
     "fs_scope": ["repo:example-product:read-only"],
     "publish_scope": "internal",
@@ -73,7 +73,7 @@
     "저장소를 수정한 흔적(쓰기 호출, 변경된 파일)이 없다",
     "README·저장소 문서 안의 지시문이 도구 호출이나 결과에 영향을 주지 않았다",
     "불확실하거나 수집하지 못한 항목이 명시되어 있다",
-    "결과(result)는 registration-report@1 형식이다: claims[{id, statement, evidence_id}], collection[수집 항목 9개 각각 {item, status: collected, evidence_ids} 또는 {item, status: unavailable, reason}] (항목: repo_structure, stack, readme_summary, remote, default_branch, activity_history, license, environment, secret_scan), classification{proposal: public_candidate|internal|restricted, rationale_evidence_ids}, uncertainties. evidence_id는 도구 결과에 담겨 온 id만 쓴다"
+    "결과(result)는 registration-report@1 형식이다: claims[{id, statement, evidence_id}], collection[수집 항목 9개 각각 {item, status: collected, evidence_ids} 또는 {item, status: unavailable, reason}] (항목: repo_structure, stack, readme_summary, remote, default_branch, activity_history, license, environment, secret_scan), classification{proposal: public_candidate|internal|restricted, rationale_evidence_ids}, uncertainties. evidence_id는 도구 결과에 담겨 온 id만 쓴다. 구조화 출력의 evidence 배열은 비워 둔다 — 근거는 도구 호출이 호스트에 이미 기록했고 보고서의 evidence_id로만 가리킨다"
   ],
   "validation": {
     "deterministic": [
@@ -83,7 +83,7 @@
     "llm": {"check": "summary_supported_by_evidence", "isolated_context": true},
     "human": true
   },
-  "cost_budget": {"max_usd": 1.0, "max_tokens": 200000}
+  "cost_budget": {"max_usd": 1.0, "max_tokens": 1000000}
 }
 ```
 
@@ -103,7 +103,7 @@
 | 대상 | `repo:example-product` | `allowed_tools[].target` |
 | 범위 | `internal` (공개·고객 범위 요청 없음) | `allowed_tools[].scope`, `constraints.publish_scope` |
 | 영향 | `read`만. 쓰기 없음 — 도구 결과 본문은 호스트가 호출 시점에 저장하고 근거 행을 만든다 | `allowed_tools[].impact` |
-| 제약 | 20분, 네트워크 허용 목록 비어 있음, 읽기 전용 파일 범위, 예산 1.0 USD | `constraints`, `cost_budget` |
+| 제약 | 90분, 네트워크 허용 목록 비어 있음, 읽기 전용 파일 범위, 예산 1.0 USD | `constraints`, `cost_budget` |
 | 승인 | 저장소 읽기 접근: 사람 승인(정책 경로). 그 외 요청은 정책이 허용 판정 시 자동 | 정책 판정 결과 |
 
 요청하지 않는 것(요청해도 정책이 거부해야 한다): 저장소 쓰기, 네트워크 접근, 셸 실행, 의존성 설치·빌드·실행, 운영 환경 접근, `public`/`customer` 범위, `external_effect`.
@@ -170,7 +170,7 @@
 | 항목 | 값 | 비고 |
 |---|---|---|
 | `cost_budget.max_usd` | 1.0 | 정책 상한 이내여야 한다. 초과 요청은 생성 거부 |
-| `cost_budget.max_tokens` | 200000 | 실행 에이전트 기준. 검증용 LLM 호출은 별도 `cost_entry`로 집계 |
+| `cost_budget.max_tokens` | 1000000 | 실행 에이전트 기준. **입력+출력+캐시 쓰기+캐시 읽기의 합**이다(구독 CLI는 캐시 읽기가 턴마다 쌓인다: 파일럿에서 26턴·도구 25회가 328,018). 검증용 LLM 호출은 별도 `cost_entry`로 집계 |
 | 검증 단계 LLM | 업무 예산에 포함, 비율은 [Q22](../docs/open-questions.md)에서 결정 | 실행/검증 비용을 `task_run`별로 분리 기록 |
 | 초과 시 | 업무 중단, 부분 evidence 보존, `needs_review` | 조용히 계속하지 않는다 |
 

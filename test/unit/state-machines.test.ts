@@ -36,7 +36,7 @@ const PUBLICATION_ALLOWED: Pair[] = [
 ];
 const REGISTRATION_ALLOWED: Pair[] = [
   ['candidate', 'verifying'], ['verifying', 'pending_approval'], ['pending_approval', 'registered'],
-  ['verifying', 'rejected'], ['pending_approval', 'rejected'],
+  ['verifying', 'rejected'], ['pending_approval', 'rejected'], ['pending_approval', 'verifying'],
 ];
 const LIFECYCLE_ALLOWED: Pair[] = [
   ['idea', 'development'], ['development', 'beta'], ['beta', 'live'], ['live', 'maintenance'], ['maintenance', 'sunset'],
@@ -202,6 +202,12 @@ test('product registration: only a human with an approval can register; the veri
   }
   assert.equal(checkTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'verifying', to: 'registered', by: 'human', approvalId: 'approval-1' }).ok, false);
   assert.ok(checkTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'verifying', to: 'pending_approval', by: 'validator' }).ok);
+  // 재검증: 승인 대기에서 검증으로 되돌리는 것은 새 검증 업무를 만드는 쪽(task_creator)만. 에이전트·검증기는 못 한다
+  assert.ok(checkTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'pending_approval', to: 'verifying', by: 'task_creator' }).ok);
+  for (const by of ['agent', 'validator', 'system', 'policy', 'scheduler'] as const) {
+    assert.equal(checkTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'pending_approval', to: 'verifying', by }).ok, false, by);
+  }
+  assert.equal(checkTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'registered', to: 'verifying', by: 'task_creator' }).ok, false, 'a registered product is not re-verified through this table');
 });
 
 test('every rule documents its allowed actors, and the table has no duplicate (from, to, actor)', () => {

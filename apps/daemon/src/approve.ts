@@ -24,6 +24,7 @@
 //              인정되지 않아 다시 동의해야 한다. `revoke` 하면 이후 run 은 consent_required → 업무 needs_review)
 //     product add <slug> --name 이름 --repo <저장소 루트 절대 경로> [--kind software|physical|service|other] [--stage development|...]
 //     product start <slug>             (후보 → 검증 중: 검증 업무를 만들고 이 저장소의 읽기 접근을 승인한다. 상품 등록 도구가 설정(registration_tools)돼 있어야 한다)
+//     product restart <slug> --comment 사유   (재검증: 이전 검증 업무를 취소하고 현재 템플릿으로 새 검증 업무를 만든다. 수정된 코드로 다시 돌릴 때. 실행 중이면 거부)
 //     product status [<slug>]          (상태·검증 업무·평가·섀도 판정·증거 목록·review_hash. slug 를 생략하면 전체 요약)
 //     product evidence <slug> <증거 id>   (저장된 증거 본문. 읽고 결정한다)
 //     product decide <slug> approve --hash <status 가 보여 준 review_hash> [--comment 글]
@@ -162,7 +163,7 @@ async function main(): Promise<void> {
     case 'product': {
       // 오타 난 옵션이 조용히 무시돼 기본값으로 실행되지 않게 한다 (예: --kinds 를 쓰면 종류가 기본값이 된다)
       for (const name of flags.keys()) if (!PRODUCT_FLAGS.includes(name)) fail(`unknown option --${name} for product (allowed: ${PRODUCT_FLAGS.join(', ')})`);
-      const op = kindArg ?? fail('product needs an operation: add|start|status|evidence|decide|pilot');
+      const op = kindArg ?? fail('product needs an operation: add|start|restart|status|evidence|decide|pilot');
       const slug = id;
       const extra = positional[3];
       switch (op) {
@@ -179,6 +180,10 @@ async function main(): Promise<void> {
         case 'start':
           if (slug === undefined || extra !== undefined) fail('usage: product start <slug>');
           request = { cmd, actor, op, slug };
+          break;
+        case 'restart':
+          if (slug === undefined || extra !== undefined) fail('usage: product restart <slug> --comment <reason>');
+          request = { cmd, actor, op, slug, comment: comment ?? fail('product restart needs --comment <reason>') };
           break;
         case 'status':
           if (extra !== undefined) fail('usage: product status [<slug>]');
@@ -202,7 +207,7 @@ async function main(): Promise<void> {
           request = { cmd, actor, op };
           break;
         default:
-          fail('product needs an operation: add|start|status|evidence|decide|pilot');
+          fail('product needs an operation: add|start|restart|status|evidence|decide|pilot');
       }
       break;
     }

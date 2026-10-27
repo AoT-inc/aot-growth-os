@@ -15,11 +15,27 @@ export function isSecretKey(key: string): boolean {
   return SECRET_KEY.test(compact) || SECRET_KEY_SUFFIX.test(compact);
 }
 
-const VALUE_PATTERNS: readonly (readonly [RegExp, string])[] = [
+/**
+ * 값 자리에 치환 문법만 있는 경우(`${DB_PASSWORD}`, `$DB_PASS`, `<password>` …)는 비밀이 없으므로 가리지 않는다 — 가리면 설정 예시의 구조를 읽을 수 없고,
+ * 같은 모양을 비밀로 오인하는 검증(evaluation/src/secret-patterns.ts)과 어긋난다. 기본값(`${P:-x}`)·리터럴이 섞인 값은 값일 수 있어 가린다. 두 파일의 규칙은 같아야 한다(시험이 대조).
+ */
+const PLACEHOLDER = new RegExp([
+  String.raw`\$\{[A-Za-z_][A-Za-z0-9_.-]{0,63}\}`,
+  String.raw`\$[A-Z_][A-Z0-9_]{1,63}`,
+  String.raw`<[A-Za-z_][A-Za-z_-]{0,40}>`,
+  String.raw`\{\{[A-Za-z_][A-Za-z_.-]{0,63}\}\}`,
+  String.raw`\{[A-Za-z_][A-Za-z_]{0,63}\}`,
+  String.raw`%\([A-Za-z_][A-Za-z_]{0,63}\)s`,
+  String.raw`%[A-Za-z_][A-Za-z_]{0,63}%`,
+].map((part) => `(?:${part})`).join('|').replace(/^/, '^(?:').replace(/$/, ')$'));
+
+type Replacer = string | ((match: string, prefix: string) => string);
+
+const VALUE_PATTERNS: readonly (readonly [RegExp, Replacer])[] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, REDACTED],
   [/\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${REDACTED}`],
-  [/(:\/\/[^/\s:@]+:)[^/\s@]+@/g, `$1${REDACTED}@`],
-  [/([?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret|password|passwd|sig|signature)=)[^&\s#]+/gi, `$1${REDACTED}`],
+  [/(:\/\/[^/\s:@]+:)([^/\s@]+)@/g, (match, prefix) => (PLACEHOLDER.test(match.slice(prefix.length, -1)) ? match : `${prefix}${REDACTED}@`)],
+  [/([?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret|password|passwd|sig|signature)=)([^&\s#]+)/gi, (match, prefix) => (PLACEHOLDER.test(match.slice(prefix.length)) ? match : `${prefix}${REDACTED}`)],
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED],
   [/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, REDACTED],
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, REDACTED],
@@ -29,7 +45,7 @@ const VALUE_PATTERNS: readonly (readonly [RegExp, string])[] = [
 
 export function maskString(text: string): string {
   let out = text;
-  for (const [pattern, replacement] of VALUE_PATTERNS) out = out.replace(pattern, replacement);
+  for (const [pattern, replacement] of VALUE_PATTERNS) out = out.replace(pattern, replacement as never);
   return out;
 }
 

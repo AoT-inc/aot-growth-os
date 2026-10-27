@@ -17,6 +17,24 @@ const SHAPES: readonly (readonly [SecretShapeKind, RegExp])[] = [
   ['aws_access_key', /\bAKIA[0-9A-Z]{16}\b/g],
 ];
 
+/**
+ * 값 자리에 *값이 아니라 치환 문법*만 있는 경우(`${DB_PASSWORD}`, `$DB_PASS`, `<password>`, `{{db_pass}}`, `%(pass)s`): 비밀이 없으므로 찾지 않는다.
+ * 설정 예시·compose 파일·문서에 흔한 모양이라 `postgres://${USER}:${PASS}@db` 를 자격 증명으로 오인하면 업무가 영구히 fail 이 된다.
+ * 기본값을 품은 `${PASS:-hunter2}`, 리터럴이 섞인 `pa${X}ss`, 숫자·소문자가 섞인 `$hunter2`, `<hunter2>` 는 값일 수 있으므로 치환 문법으로 보지 않는다.
+ * agent-runtime/src/mask.ts 와 같은 규칙이다(어긋나지 않는지 시험이 대조한다).
+ */
+const PLACEHOLDER = new RegExp([
+  String.raw`\$\{[A-Za-z_][A-Za-z0-9_.-]{0,63}\}`, // ${NAME} (기본값 `:-` 은 불가)
+  String.raw`\$[A-Z_][A-Z0-9_]{1,63}`, // $NAME (대문자 환경 변수 관례)
+  String.raw`<[A-Za-z_][A-Za-z_-]{0,40}>`, // <password>
+  String.raw`\{\{[A-Za-z_][A-Za-z_.-]{0,63}\}\}`, // {{name}}
+  String.raw`\{[A-Za-z_][A-Za-z_]{0,63}\}`, // {name}
+  String.raw`%\([A-Za-z_][A-Za-z_]{0,63}\)s`, // %(name)s
+  String.raw`%[A-Za-z_][A-Za-z_]{0,63}%`, // %NAME%
+].map((part) => `(?:${part})`).join('|').replace(/^/, '^(?:').replace(/$/, ')$'));
+
+export const isPlaceholderValue = (value: string): boolean => PLACEHOLDER.test(value);
+
 export interface SecretShapeFinding {
   kind: SecretShapeKind;
   count: number;
@@ -26,7 +44,13 @@ export interface SecretShapeFinding {
 export function findSecretShapes(text: string): SecretShapeFinding[] {
   const found: SecretShapeFinding[] = [];
   for (const [kind, pattern] of SHAPES) {
-    const count = [...text.matchAll(new RegExp(pattern.source, pattern.flags))].length;
+    let count = 0;
+    for (const match of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
+      // 비밀 자리가 치환 문법뿐이면 값이 없다: url_credentials 는 `://user:<값>@`, query_secret 은 `?key=<값>`
+      const secret = kind === 'url_credentials' ? match[0].slice(match[1]!.length, -1) : kind === 'query_secret' ? match[0].slice(match[1]!.length) : null;
+      if (secret !== null && isPlaceholderValue(secret)) continue;
+      count += 1;
+    }
     if (count > 0) found.push({ kind, count });
   }
   return found;

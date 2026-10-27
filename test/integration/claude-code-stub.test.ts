@@ -120,8 +120,8 @@ describe('claude-code-cli 어댑터 + 가짜 claude 프로세스', () => {
 
 describe('게이트웨이 MCP 브리지 (실제 프로세스)', () => {
   /** 브리지를 띄워 줄 단위 JSON-RPC 를 주고받는다 */
-  function startBridge(socketPath: string, toolsPath: string, token: string) {
-    const child = spawn(process.execPath, [BRIDGE, socketPath, toolsPath], { env: { AOT_GATEWAY_TOKEN: token, PATH: process.env['PATH'] ?? '' }, stdio: ['pipe', 'pipe', 'ignore'] });
+  function startBridge(socketPath: string, toolsPath: string, token: string, extraEnv: Record<string, string> = {}) {
+    const child = spawn(process.execPath, [BRIDGE, socketPath, toolsPath], { env: { AOT_GATEWAY_TOKEN: token, PATH: process.env['PATH'] ?? '', ...extraEnv }, stdio: ['pipe', 'pipe', 'ignore'] });
     const pending = new Map<number, (message: Record<string, unknown>) => void>();
     let buffer = '';
     let nextId = 1;
@@ -160,6 +160,38 @@ describe('게이트웨이 MCP 브리지 (실제 프로세스)', () => {
     writeFileSync(toolsPath, JSON.stringify([{ name: 'example_search', description: 'Search.' }]));
     return { socket, toolsPath, calls };
   }
+
+  it('호출 대기 상한은 환경 변수로 정한다(어댑터가 run 의 시간 제한을 넘긴다): 호스트가 답하지 않으면 그 시간 뒤 tool_timeout, 긴 호출은 상한 안에서 기다린다', async (t) => {
+    const dir = makeTempDir(t, 'aot-brg-');
+    let release: (() => void) | undefined;
+    const socket = await serveGatewaySocket({
+      dir, allowedTools: ['example_search'],
+      gateway: { call: () => new Promise<ToolGatewayResponse>((resolve) => { release = () => resolve({ ok: true, result: { slow: true } }); }) },
+    });
+    t.after(() => socket.close());
+    const { writeFileSync } = await import('node:fs');
+    const toolsPath = join(dir, 'tools.json');
+    writeFileSync(toolsPath, JSON.stringify([{ name: 'example_search', description: 'Search.' }]));
+    const init = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } };
+
+    const impatient = startBridge(socket.path, toolsPath, socket.token, { AOT_GATEWAY_CALL_TIMEOUT_MS: '300' });
+    t.after(() => impatient.stop());
+    await impatient.rpc('initialize', init);
+    const started = Date.now();
+    const timedOut = await impatient.rpc('tools/call', { name: 'example_search', arguments: {} });
+    assert.match(JSON.stringify(timedOut['result']), /tool_timeout/);
+    assert.ok(Date.now() - started >= 250, 'it waited for the configured time first');
+
+    impatient.stop(); // 게이트웨이 소켓은 한 번에 브리지 하나만 받는다
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const patient = startBridge(socket.path, toolsPath, socket.token, { AOT_GATEWAY_CALL_TIMEOUT_MS: '5000' });
+    t.after(() => patient.stop());
+    await patient.rpc('initialize', init);
+    const slow = patient.rpc('tools/call', { name: 'example_search', arguments: {} });
+    await new Promise((resolve) => setTimeout(resolve, 600)); // 위의 300ms 상한보다 오래 기다려도
+    release?.();
+    assert.match(JSON.stringify((await slow)['result']), /slow/);
+  });
 
   it('initialize·tools/list·tools/call 을 MCP 로 처리하고 호출을 게이트웨이로 넘긴다', async (t) => {
     const s = await socketRig(t, { ok: true, result: { hits: 3 } });

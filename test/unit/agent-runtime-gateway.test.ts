@@ -198,3 +198,70 @@ describe('agent-facing tool names (one tool, several operations)', () => {
     assert.throws(() => build([spec('list_tree', '  ')]), /name must not be blank/);
   });
 });
+
+describe('serialGroup: calls of one group run one at a time, and the time limit starts when the call actually starts', () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+  function rig(options: { signal?: AbortSignal } = {}) {
+    const timers = new ManualGatewayTimers();
+    const started: string[] = [];
+    const gates = new Map<string, () => void>();
+    const executor = (name: string): ToolExecutor => (request) => {
+      started.push(name);
+      return new Promise((resolve, reject) => {
+        gates.set(name, () => resolve({ result: { done: name } }));
+        request.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    };
+    const tools = ['example_scan_a', 'example_scan_b'].map((tool) => ({ tool, operation: 'run', scope: 'internal' as const, sideEffect: false, timeoutMs: 1000, serialGroup: 'scans' }));
+    const gateway = createToolGateway({
+      runId: 'run-1', subject: 'generalist@v1', tools, executors: new Map(tools.map((spec) => [spec.tool, executor(spec.tool)])),
+      policy: { judge: () => ({ decision: 'allow' }) }, clock: new FakeClock(START), constraints: { max_usd: 2 }, toolTimeoutMs: 5000, timers,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    return { gateway, timers, started, release: (name: string) => gates.get(name)?.() };
+  }
+
+  it('the second call waits for the first; its time limit does not include the wait', async () => {
+    const { gateway, timers, started, release } = rig();
+    const first = gateway.call('example_scan_a', {});
+    const second = gateway.call('example_scan_b', {});
+    await flush();
+    assert.deepEqual(started, ['example_scan_a'], 'the second call has not started');
+    timers.advance(900); // 첫 호출이 오래 걸린다 (아직 제한 안)
+    release('example_scan_a');
+    assert.deepEqual(await first, { ok: true, result: { done: 'example_scan_a' } });
+    await flush();
+    assert.deepEqual(started, ['example_scan_a', 'example_scan_b']);
+    timers.advance(900); // 둘째는 시작한 지 900ms: 기다린 900ms 를 합치면 1800ms 지만 제한(1000ms)은 시작부터 센다
+    release('example_scan_b');
+    assert.deepEqual(await second, { ok: true, result: { done: 'example_scan_b' } });
+  });
+
+  it('a call that really runs too long still times out, counted from its own start', async () => {
+    const { gateway, timers, release } = rig();
+    const first = gateway.call('example_scan_a', {});
+    const second = gateway.call('example_scan_b', {});
+    await flush();
+    release('example_scan_a');
+    await first;
+    await flush();
+    timers.advance(1000);
+    assert.deepEqual(await second, { ok: false, error: 'tool_timeout' });
+  });
+
+  it('a run cancelled while a call waits ends the waiting call without running it', async () => {
+    const controller = new AbortController();
+    const { gateway, started } = rig({ signal: controller.signal });
+    const first = gateway.call('example_scan_a', {});
+    const second = gateway.call('example_scan_b', {});
+    await flush();
+    controller.abort();
+    assert.deepEqual((await first).ok, false);
+    assert.deepEqual(await second, { ok: false, error: 'run_cancelled' });
+    assert.deepEqual(started, ['example_scan_a'], 'the waiting call was never started');
+  });
+
+  it('an empty serialGroup is a configuration error', () => {
+    assert.throws(() => createToolGateway(baseOptions({ tools: [{ ...contractTools()[0]!, serialGroup: '' }] })), /serialGroup must be a non-empty string/);
+  });
+});

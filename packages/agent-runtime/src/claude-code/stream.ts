@@ -61,6 +61,8 @@ export interface ResultInfo {
   numTurns: number | null;
   totalCostUsd: number | null;
   tokens: number | null;
+  /** `tokens` 의 구성 (`usage` 에 있는 것만). 캐시 읽기는 턴마다 쌓여 긴 run 에서 합계의 대부분이 될 수 있다 */
+  tokenParts: { input: number | null; output: number | null; cacheCreation: number | null; cacheRead: number | null } | null;
   permissionDenials: string[];
 }
 
@@ -137,7 +139,13 @@ function parseRateLimit(event: JsonObject): RateLimitInfo {
 function parseResult(event: JsonObject): ResultInfo {
   const usage = asObject(event['usage']);
   let tokens: number | null = null;
+  let tokenParts: ResultInfo['tokenParts'] = null;
   if (usage !== null) {
+    const part = (key: string): number | null => {
+      const value = asNumber(usage[key]);
+      return value !== null && value >= 0 ? Math.round(value) : null;
+    };
+    tokenParts = { input: part('input_tokens'), output: part('output_tokens'), cacheCreation: part('cache_creation_input_tokens'), cacheRead: part('cache_read_input_tokens') };
     const parts = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].map((k) => asNumber(usage[k]));
     const known = parts.filter((p): p is number => p !== null && p >= 0);
     if (known.length > 0) tokens = Math.round(known.reduce((a, b) => a + b, 0));
@@ -156,6 +164,7 @@ function parseResult(event: JsonObject): ResultInfo {
     numTurns: asNumber(event['num_turns']),
     totalCostUsd: asNumber(event['total_cost_usd']),
     tokens,
+    tokenParts,
     permissionDenials: denials,
   };
 }

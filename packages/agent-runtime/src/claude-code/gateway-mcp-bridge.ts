@@ -6,7 +6,11 @@ import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
-const CALL_TIMEOUT_MS = 10 * 60_000;
+// 호출 하나를 기다리는 상한. 권위 있는 도구 제한 시간은 호스트의 게이트웨이가 가진다(도구별 `timeoutMs`, 차례가 된 뒤부터 셈) — 여기는 호스트가 아예 답하지 않을 때의 안전망이다.
+// 그러므로 게이트웨이의 어떤 제한보다도 길어야 한다: 어댑터가 환경 변수로 run 의 시간 제한을 넘겨 주면 그 값을 쓴다(그 안에서 run 전체가 끝나므로 더 기다릴 이유가 없다). 없으면 10분.
+const DEFAULT_CALL_TIMEOUT_MS = 10 * 60_000;
+const configuredTimeout = Number(process.env['AOT_GATEWAY_CALL_TIMEOUT_MS']);
+const CALL_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout > 0 && configuredTimeout <= 2 ** 31 - 1 ? configuredTimeout : DEFAULT_CALL_TIMEOUT_MS;
 
 interface ToolEntry { name: string; description: string }
 type Pending = { resolve: (value: { ok: true; result: unknown } | { ok: false; error: string }) => void; timer: ReturnType<typeof setTimeout> };

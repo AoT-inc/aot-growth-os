@@ -6,6 +6,7 @@
 // 요청 (한 줄 JSON; 허용 키는 op 마다 다르다. 모르는 키는 거부):
 //   {cmd:'product', actor, op:'add', slug, name, repo_path, kind?, stage?}   후보 등록: product(candidate) + product_repo(access_scope=none)
 //   {cmd:'product', actor, op:'start', slug}                                  candidate → verifying: 검증 업무 1건을 만들고 읽기 접근(access_scope=read)을 승인한다 (한 트랜잭션)
+//   {cmd:'product', actor, op:'restart', slug, comment}                       재검증: 이전 검증 업무를 취소하고 새 검증 업무를 만든다 (verifying 또는 pending_approval; 실행 중이면 거부)
 //   {cmd:'product', actor, op:'status', slug?}                                상태·업무·평가·섀도 판정·증거 목록·review_hash (slug 생략하면 전체 요약)
 //   {cmd:'product', actor, op:'evidence', slug, evidence_id}                  저장된 증거 본문 (사람이 읽고 결정하는 용도)
 //   {cmd:'product', actor, op:'decide', slug, decision:'approve'|'reject', comment?, hash?}   등록·반려 (approve 는 status 가 보여 준 review_hash 필요, reject 는 사유 필수)
@@ -31,6 +32,7 @@ export const PRODUCT_COMMANDS = ['product'] as const;
 export const READ_ACCESS_EVENT_SOURCE = 'product-registration';
 export const READ_ACCESS_GRANTED = 'registration.read_access_granted';
 export const READ_ACCESS_REVOKED = 'registration.read_access_revoked';
+export const VERIFICATION_RESTARTED = 'registration.verification_restarted';
 
 /** 파일럿 종료 조건 (docs/plans/registration-dogfood.md Q22 f): 처음 5건 */
 export const PILOT_TARGET_COUNT = 5;
@@ -52,11 +54,12 @@ export function isProductCommand(request: unknown): boolean {
     && (PRODUCT_COMMANDS as readonly unknown[]).includes((request as Record<string, unknown>)['cmd']);
 }
 
-const OPS = ['add', 'start', 'status', 'evidence', 'decide', 'pilot'] as const;
+const OPS = ['add', 'start', 'restart', 'status', 'evidence', 'decide', 'pilot'] as const;
 type Op = (typeof OPS)[number];
 const KEYS: Readonly<Record<Op, readonly string[]>> = {
   add: ['cmd', 'actor', 'op', 'slug', 'name', 'repo_path', 'kind', 'stage'],
   start: ['cmd', 'actor', 'op', 'slug'],
+  restart: ['cmd', 'actor', 'op', 'slug', 'comment'],
   status: ['cmd', 'actor', 'op', 'slug'],
   evidence: ['cmd', 'actor', 'op', 'slug', 'evidence_id'],
   decide: ['cmd', 'actor', 'op', 'slug', 'decision', 'comment', 'hash'],
@@ -240,6 +243,68 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     };
   };
 
+  // ----- restart -----
+  const restart = (actorId: string, request: Record<string, unknown>): Record<string, unknown> => {
+    const slug = request['slug'];
+    const comment = request['comment'];
+    if (typeof slug !== 'string') return refused('invalid_request', 'slug is required');
+    if (typeof comment !== 'string' || comment.trim() === '' || comment.length > 1000) return refused('comment_required', 'a restart needs a reason (max 1000 characters): the previous verification task is cancelled with it');
+    const product = productBySlug(slug);
+    if (product === undefined) return refused('not_found', `no product '${slug}'`);
+    if (product.registration_status !== 'verifying' && product.registration_status !== 'pending_approval') {
+      return refused('wrong_state', `the product is '${product.registration_status}'; only a product under verification or waiting for approval can be re-verified`);
+    }
+    const repo = repoOf(product.id);
+    if (repo === undefined || repo.local_path === null) return refused('invalid_repo', 'the product has no repository path');
+    if (repo.access_scope !== 'read') return refused('wrong_state', `the repository access is '${repo.access_scope}', not read`);
+    const recheck = checkRepoRoot(repo.local_path);
+    if (typeof recheck !== 'string') return recheck;
+    const old = latestTask(slug);
+    if (old === undefined) return refused('wrong_state', 'the product has no verification task (use start)');
+    // 실행 중이거나 검증 중이면 거부한다: 검증 중 업무는 검증기 호출이 진행 중일 수 있고, 취소해도 그 호출은 끝까지 가서 토큰을 쓰고 취소된 업무에 판정을 남긴다
+    if (old.status === 'running' || old.status === 'validating') {
+      return refused('task_active', `the verification task is ${old.status}; wait until it stops (or, while the verifier is unavailable, until the cause such as a usage limit or login is resolved) before restarting`);
+    }
+    if (old.status === 'completed') return refused('wrong_state', 'the verification task already completed');
+    let taskId: string;
+    try {
+      taskId = withRefusalRecord(db, () => db.writeTx((tx) => {
+        const now = clock.nowIso();
+        // 이전 업무는 취소한다 (끝난 업무는 그대로). 실행 중이 아닌 업무만 여기까지 온다
+        const current = latestTask(slug, tx)!;
+        if (current.id !== old.id || current.status === 'running' || current.status === 'validating') throw new Error('the verification task changed while restarting');
+        if (!['completed', 'failed', 'cancelled'].includes(current.status)) {
+          assertTransition(TASK_MACHINE, { from: current.status as never, to: 'cancelled', by: 'human', reason: comment });
+          const cancelled = tx.run("UPDATE task SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = ?", [now, current.id, current.status]);
+          if (cancelled.changes !== 1) throw new Error('the verification task changed while restarting');
+          tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [
+            current.id, current.status, 'cancelled', `verification restarted by a human: ${comment}`.slice(0, 500), actorId, now,
+          ]);
+        }
+        if (product.registration_status === 'pending_approval') {
+          assertTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'pending_approval', to: 'verifying', by: 'task_creator' });
+          const back = tx.run("UPDATE product SET registration_status = 'verifying', updated_at = ? WHERE id = ? AND registration_status = 'pending_approval'", [now, product.id]);
+          if (back.changes !== 1) throw new Error('the product changed while restarting');
+        }
+        const created = createTaskInTx(tx, { clock, gate }, { spec: buildRegistrationTaskSpec(slug), taskSpecVersion: REGISTRATION_TASK_SPEC_VERSION });
+        if (created.status === 'unassigned') {
+          throw new TaskCreationError([{ path: 'role', code: 'unassigned', message: 'the registration-verifier role is not assignable (check the organization seed)' }]);
+        }
+        const eventId = `event-${randomUUID()}`;
+        tx.run(
+          `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+          [eventId, READ_ACCESS_EVENT_SOURCE, slug, VERIFICATION_RESTARTED, JSON.stringify({ slug, actor_id: actorId, previous_task_id: old.id, task_id: created.taskId, comment }), `${READ_ACCESS_EVENT_SOURCE}:${eventId}`, now, now],
+        );
+        return created.taskId;
+      }));
+    } catch (error) {
+      if (error instanceof TaskCreationError) return refused('task_refused', error.message.slice(0, 600));
+      if (error instanceof Error && /changed while restarting/.test(error.message)) return refused('conflict', error.message);
+      throw error;
+    }
+    return { ok: true, product: view(productBySlug(slug)!), task_id: taskId, previous_task_id: old.id };
+  };
+
   // ----- status -----
   const status = (request: Record<string, unknown>): Record<string, unknown> => {
     syncStatus();
@@ -375,6 +440,8 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
       const task = db.get<{ trigger_ref: string }>('SELECT trigger_ref FROM task WHERE id = ?', [String(payload['task_id'] ?? '')]);
       if (task === undefined || !task.trigger_ref.startsWith(REGISTRATION_TRIGGER_PREFIX)) continue;
       const slug = task.trigger_ref.slice(REGISTRATION_TRIGGER_PREFIX.length);
+      // 재검증하면 이전 업무의 판정은 낡은 것이다: 상품의 *현재* 업무에 대한 판정만 센다
+      if (latestTask(slug)?.id !== payload['task_id']) continue;
       latest.set(slug, { payload, slug });
     }
     interface PilotRow { slug: string; verifier: unknown; verdict: string | null; verdict_note: unknown; human: 'approved' | 'rejected' | 'pending'; human_comment: string | null; decided_at: string | null; verifier_tokens: number | null; run_tokens: number | null; token_ratio: number | null }
@@ -444,6 +511,7 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     switch (op as Op) {
       case 'add': return add(actorId, request);
       case 'start': return start(actorId, request);
+      case 'restart': return restart(actorId, request);
       case 'status': return status(request);
       case 'evidence': return evidence(request);
       case 'decide': return decide(actorId, request);

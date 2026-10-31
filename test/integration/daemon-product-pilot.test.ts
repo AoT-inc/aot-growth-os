@@ -227,6 +227,62 @@ test('approval needs a passed evaluation and host-stored verified evidence; a re
   assert.equal(stale['product'].evaluation, null);
 });
 
+test('restart: the previous verification task is cancelled, a new one is made from the current template, and only the new task\'s verdict counts', async (t) => {
+  const r = rig(t);
+  const first = await r.verified('example-product');
+  const oldTaskId = first['product'].task.id as string;
+  assert.equal(first['product'].registration_status, 'pending_approval');
+  assert.equal((await r.send({ op: 'restart', slug: 'example-product' }))['code'], 'comment_required');
+  assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: '  ' }))['code'], 'comment_required');
+
+  const restarted = await r.send({ op: 'restart', slug: 'example-product', comment: 'verify again with the fixed checks' });
+  assert.equal(restarted['ok'], true, JSON.stringify(restarted));
+  assert.equal(restarted['previous_task_id'], oldTaskId);
+  assert.notEqual(restarted['task_id'], oldTaskId);
+  assert.deepEqual([restarted['product'].registration_status, restarted['product'].access_scope, restarted['product'].task.id, restarted['product'].task.status], ['verifying', 'read', restarted['task_id'], 'queued']);
+  assert.equal(r.env.db.get('SELECT status FROM task WHERE id = ?', [oldTaskId])?.['status'], 'cancelled');
+  assert.match(String(r.env.db.get("SELECT reason FROM task_transition WHERE task_id = ? AND to_status = 'cancelled'", [oldTaskId])?.['reason']), /verify again with the fixed checks/);
+  assert.equal(r.env.db.get("SELECT count(*) AS n FROM event WHERE type = 'registration.verification_restarted'")?.['n'], 1);
+  // 이전 업무의 판정은 낡았다: 새 업무가 판정을 낼 때까지 파일럿에 없다
+  assert.equal((await r.send({ op: 'pilot' }))['rows'].length, 0);
+
+  await r.daemon.worker.tick();
+  await r.daemon.worker.tick();
+  const second = await r.send({ op: 'status', slug: 'example-product' });
+  assert.equal(second['product'].registration_status, 'pending_approval');
+  assert.equal(second['product'].task.id, restarted['task_id']);
+  assert.equal(second['product'].evidence.length, 7, 'the evidence of the new run only');
+  assert.notEqual(second['product'].review_hash, first['product'].review_hash);
+  assert.equal((await r.send({ op: 'decide', slug: 'example-product', decision: 'approve', hash: first['product'].review_hash }))['code'], 'hash_mismatch', 'an approval of the old evidence set does not carry over');
+  assert.equal((await r.send({ op: 'pilot' }))['rows'].length, 1);
+  assert.equal((await r.send({ op: 'decide', slug: 'example-product', decision: 'approve', hash: second['product'].review_hash }))['ok'], true);
+});
+
+test('restart also works while the product is still verifying (a task waiting for retry), and refuses a running task, a candidate, and decided products', async (t) => {
+  const r = rig(t);
+  await r.send({ op: 'add', slug: 'example-product', name: 'X', repo_path: r.repo() });
+  assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x' }))['code'], 'wrong_state', 'a candidate has nothing to restart');
+  const started = await r.send({ op: 'start', slug: 'example-product' });
+  const taskId = started['task_id'] as string;
+  for (const busy of ['running', 'validating']) {
+    r.env.db.writeTx((tx) => tx.run('UPDATE task SET status = ? WHERE id = ?', [busy, taskId]));
+    assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x' }))['code'], 'task_active', busy);
+  }
+  r.env.db.writeTx((tx) => tx.run("UPDATE task SET status = 'retry_wait' WHERE id = ?", [taskId]));
+  const restarted = await r.send({ op: 'restart', slug: 'example-product', comment: 'the first attempt hit a budget limit' });
+  assert.equal(restarted['ok'], true, JSON.stringify(restarted));
+  assert.deepEqual([restarted['product'].registration_status, r.env.db.get('SELECT status FROM task WHERE id = ?', [taskId])?.['status']], ['verifying', 'cancelled']);
+  await r.daemon.worker.tick();
+  await r.daemon.worker.tick();
+  const status = await r.send({ op: 'status', slug: 'example-product' });
+  assert.equal((await r.send({ op: 'decide', slug: 'example-product', decision: 'approve', hash: status['product'].review_hash }))['ok'], true);
+  assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x' }))['code'], 'wrong_state', 'a registered product is not re-verified here');
+  await r.verified('another-product');
+  assert.equal((await r.send({ op: 'decide', slug: 'another-product', decision: 'reject', comment: 'no' }))['ok'], true);
+  assert.equal((await r.send({ op: 'restart', slug: 'another-product', comment: 'x' }))['code'], 'wrong_state', 'a rejected product is not restarted');
+  assert.equal((await r.send({ op: 'restart', slug: 'example-product', comment: 'x', extra: 1 }))['code'], 'invalid_request');
+});
+
 test('a repository can be registered once, and start checks the path again', async (t) => {
   const r = rig(t);
   const path = r.repo();
@@ -287,7 +343,7 @@ test('the approval CLI reaches the product channel over the real socket: add, st
   const pilot = await cli(['pilot']);
   assert.equal((((pilot.json!['summary'] as Reply)['first_decided'] as Reply)['decided']), 1);
   // 사용법 오류는 소켓에 닿기 전에 종료 코드 2
-  for (const args of [['add', 'x'], ['decide', 'example-product', 'maybe'], ['decide', 'example-product', 'reject'], ['evidence', 'example-product'], ['nope'], ['status', '--typo', '1'], ['add', 'y', '--name', 'Y', '--repo', path, '--kinds', 'software']]) {
+  for (const args of [['restart', 'example-product'], ['add', 'x'], ['decide', 'example-product', 'maybe'], ['decide', 'example-product', 'reject'], ['evidence', 'example-product'], ['nope'], ['status', '--typo', '1'], ['add', 'y', '--name', 'Y', '--repo', path, '--kinds', 'software']]) {
     const failed = await cli(args);
     assert.equal(failed.code, 2, args.join(' '));
   }

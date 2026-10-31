@@ -48,7 +48,10 @@ export function scriptedAgent(calls: CallRecord[]): AgentAdapter {
         classification: { proposal: 'internal', rationale_evidence_ids: [id(license)] },
         uncertainties: [],
       };
-      return { status: 'submitted', result: report as unknown as JsonObject, evidence: [], run_log: [], cost: { tokens: 100 } };
+      // 실제 모델은 보고서에서 인용한 호스트 근거를 구조화 출력의 `evidence` 에도 다시 적는다(파일럿에서 관찰). 인용 항목이 증거 행이 되지 않아야 한다
+      const capturedAt = new Date().toISOString();
+      const citations = [tree, readme, meta, history, scanTree, scanHistory, license].map((result) => ({ kind: 'document' as const, ref: id(result), trust_origin: 'external_untrusted' as const, captured_at: capturedAt }));
+      return { status: 'submitted', result: report as unknown as JsonObject, evidence: citations, run_log: [], cost: { tokens: 100 } };
     },
   };
 }

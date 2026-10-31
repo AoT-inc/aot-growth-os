@@ -4,13 +4,13 @@ import { REGISTRATION_TOOLS } from './registration.ts';
 
 export const REGISTRATION_TRIGGER_PREFIX = 'product-registration:';
 /** 업무 명세 템플릿 버전: 템플릿을 개정하면 올린다 (첫 수행 결과로 개정, 템플릿 §8) */
-export const REGISTRATION_TASK_SPEC_VERSION = 1;
+export const REGISTRATION_TASK_SPEC_VERSION = 2;
 
 export const PRODUCT_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** 결과 형식을 정하는 완료 조건 (`registration-report@1`) */
 const REPORT_FORMAT_CRITERION =
-  "결과(result)는 registration-report@1 형식이다: claims[{id, statement, evidence_id}], collection[수집 항목 9개 각각 {item, status: collected, evidence_ids} 또는 {item, status: unavailable, reason}] (항목: repo_structure, stack, readme_summary, remote, default_branch, activity_history, license, environment, secret_scan), classification{proposal: public_candidate|internal|restricted, rationale_evidence_ids}, uncertainties. evidence_id는 도구 결과에 담겨 온 id만 쓴다";
+  "결과(result)는 registration-report@1 형식이다: claims[{id, statement, evidence_id}], collection[수집 항목 9개 각각 {item, status: collected, evidence_ids} 또는 {item, status: unavailable, reason}] (항목: repo_structure, stack, readme_summary, remote, default_branch, activity_history, license, environment, secret_scan), classification{proposal: public_candidate|internal|restricted, rationale_evidence_ids}, uncertainties. evidence_id는 도구 결과에 담겨 온 id만 쓴다. 구조화 출력의 evidence 배열은 비워 둔다 — 근거는 도구 호출이 호스트에 이미 기록했고 보고서의 evidence_id로만 가리킨다";
 
 const OPERATIONS: Readonly<Record<string, readonly string[]>> = {
   repo_read: ['list_tree', 'read_file', 'read_metadata', 'read_history'],
@@ -37,7 +37,7 @@ export function buildRegistrationTaskSpec(slug: string): Record<string, unknown>
     dependencies: [],
     allowed_tools: REGISTRATION_TOOLS.map((tool) => ({ tool, operations: [...OPERATIONS[tool]!], scope: 'internal', impact: 'read', target: `repo:${slug}` })),
     constraints: {
-      time_limit: '20m',
+      time_limit: '90m',
       network_allowlist: [],
       fs_scope: [`repo:${slug}:read-only`],
       publish_scope: 'internal',
@@ -58,6 +58,6 @@ export function buildRegistrationTaskSpec(slug: string): Record<string, unknown>
       llm: { check: 'summary_supported_by_evidence', isolated_context: true },
       human: true,
     },
-    cost_budget: { max_usd: 1.0, max_tokens: 200000 },
+    cost_budget: { max_usd: 1.0, max_tokens: 1000000 },
   };
 }

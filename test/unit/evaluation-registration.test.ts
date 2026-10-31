@@ -184,6 +184,25 @@ test('no_secret_in_outputs: a stored content that cannot be read is not silently
   assert.equal((await statuses(unread.context()))['no_secret_in_outputs'], 'fail');
 });
 
+test('no_secret_in_outputs: an agent-reported citation row has no stored content, so it is not an unread row; its reference text is still checked', async (t) => {
+  const cited = setup(t);
+  cited.db.writeTx((tx) => tx.run(
+    "INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES ('ev-citation', ?, ?, 'document', ?, NULL, 'external_untrusted', ?)",
+    [cited.run.taskId, cited.run.runId, IDS.readme, cited.clock.nowIso()],
+  ));
+  assert.equal((await statuses(cited.context()))['no_secret_in_outputs'], 'pass', 'the citation does not make the check unknown');
+  assert.match(await noteOf(cited.context(), 'no_secret_in_outputs'), /agent-reported citation rows have no stored content/);
+  // 그러나 인용 행의 참조 문자열에 비밀 모양이 있으면 잡는다
+  const leaky = setup(t);
+  const ref = ['https:', '//deploy:hunter2example@git.example.com/r.git'].join('');
+  leaky.db.writeTx((tx) => tx.run(
+    "INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at) VALUES ('ev-leaky', ?, ?, 'other', ?, NULL, 'external_untrusted', ?)",
+    [leaky.run.taskId, leaky.run.runId, ref, leaky.clock.nowIso()],
+  ));
+  assert.equal((await statuses(leaky.context()))['no_secret_in_outputs'], 'fail');
+  // 호스트가 저장한(blob:) 행을 읽지 못하면 여전히 unknown 이다 (위 시험)
+});
+
 function addDecision(db: ReturnType<typeof setup>['db'], runId: string, taskId: string, action: string, impact: string, decision: string): void {
   db.writeTx((tx) => tx.run(
     `INSERT INTO policy_decision (task_id, task_run_id, subject, action, resource, scope, impact, decision, reason, policy_version_id, at)

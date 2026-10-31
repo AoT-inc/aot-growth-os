@@ -59,8 +59,12 @@ export interface RegistrationTools {
 /** 에이전트가 부르는 이름: `<tool>_<operation>` (예: `repo_read_read_file`). 정책의 행위는 `<tool>.<operation>` 그대로다 */
 export const registrationToolName = (tool: string, operation: string): string => `${tool}_${operation}`;
 
+export const REGISTRATION_SERIAL_GROUP = 'registration-tools';
+
 const spec = (tool: string, operation: string, timeoutMs?: number): GatewayToolSpec => ({
-  tool, name: registrationToolName(tool, operation), operation, scope: 'internal', impact: 'read', sideEffect: false, resultOrigin: 'external_untrusted', ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  tool, name: registrationToolName(tool, operation), operation, scope: 'internal', impact: 'read', sideEffect: false, resultOrigin: 'external_untrusted',
+  // 등록 도구 호출은 run 안에서 한 번에 하나씩(게이트웨이가 직렬화하고 타임아웃은 차례가 된 뒤부터 센다: 오래 걸리는 스캔 둘을 동시에 불러도 둘째가 기다린 만큼 모자라지 않는다)
+  serialGroup: REGISTRATION_SERIAL_GROUP, ...(timeoutMs === undefined ? {} : { timeoutMs }),
 });
 
 export function registrationToolSpecs(scanTimeoutMs: number = DEFAULT_SCAN_TIMEOUT_MS): GatewayToolSpec[] {
@@ -93,7 +97,8 @@ export function createRegistrationTools(options: RegistrationToolsOptions): Regi
           },
         },
       };
-      // 호출 수를 세고 run 안에서는 한 번에 하나씩만 실행한다(병렬 호출로 호스트 자원을 몰아 쓰지 못하게)
+      // 호출 수를 세고 run 안에서는 한 번에 하나씩만 실행한다(병렬 호출로 호스트 자원을 몰아 쓰지 못하게). 게이트웨이가 같은 직렬화를 하므로(`serialGroup`)
+      // 여기 대기열은 실행기를 게이트웨이 밖에서 직접 쓰는 호출자를 위한 이중 방어다 — 게이트웨이를 거치면 호출이 겹치지 않아 기다릴 일이 없다
       const guard = (tool: string, executor: ToolExecutor): ToolExecutor => (request) => {
         calls += 1;
         if (calls > quota.maxCalls) return Promise.reject(new RepoToolError('quota_exceeded', `more than ${quota.maxCalls} registration tool calls in one run`));

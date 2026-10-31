@@ -213,7 +213,7 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
         if (tools.length > 0) {
           socket = await serveGatewaySocket({ dir: runDir, gateway: context.gateway, allowedTools: tools });
           await writeFile(toolsPath, JSON.stringify(buildBridgeTools(offered, options.toolDescriptions)), { mode: 0o600 });
-          await writeFile(mcpConfigPath, buildMcpConfig({ nodePath, bridgePath, socketPath: socket.path, toolsPath, token: socket.token }), { mode: 0o600 });
+          await writeFile(mcpConfigPath, buildMcpConfig({ nodePath, bridgePath, socketPath: socket.path, toolsPath, token: socket.token, ...(input.time_limit_ms === undefined ? {} : { callTimeoutMs: input.time_limit_ms }) }), { mode: 0o600 });
         } else {
           await writeFile(mcpConfigPath, buildMcpConfig(null), { mode: 0o600 });
         }
@@ -268,7 +268,11 @@ export function createClaudeCodeCliAdapter(options: ClaudeCodeCliOptions): Agent
         ...(options.limitPatterns === undefined ? {} : { limitPatterns: options.limitPatterns }),
         ...(options.serverLimitPatterns === undefined ? {} : { serverLimitPatterns: options.serverLimitPatterns }),
       });
-      if (classified.estimatedUsd !== null) note(`estimated cost (subscription estimate at list prices, not a bill): ${classified.estimatedUsd} USD, ${String(classified.tokens)} tokens`);
+      if (classified.estimatedUsd !== null) {
+        const parts = state.result?.tokenParts;
+        const breakdown = parts == null ? '' : ` (input ${String(parts.input)}, output ${String(parts.output)}, cache write ${String(parts.cacheCreation)}, cache read ${String(parts.cacheRead)})`;
+        note(`estimated cost (subscription estimate at list prices, not a bill): ${classified.estimatedUsd} USD, ${String(classified.tokens)} tokens${breakdown}`);
+      }
       gate.observe(state);
       const utilization = state.maxUtilization;
       // 사용률은 0~1 또는 0~100 으로 보고될 수 있다(미확인): 1 을 넘으면 퍼센트로 본다

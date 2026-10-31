@@ -152,7 +152,7 @@ queued ─► initiated ─► ringing ─► connected ─► completed
 
 ## 상품 등록 (`product.registration_status`)
 
-`candidate → verifying → pending_approval → registered`, 검증/승인 단계에서 `rejected`. `registered`로의 전이는 사람 승인(`approval`, `subject_kind='product'`, `product.registration_approval_id`가 가리킴)이 필수이며, 검증 업무의 읽기 전용 증거가 연결되어야 한다. `registered` 전 제품은 업무의 `product_id`가 될 수 없다 ([절차](../products/README.md)).
+`candidate → verifying → pending_approval → registered`, 검증/승인 단계에서 `rejected`. **재검증**: 승인 대기(`pending_approval`)에서 `verifying`으로 되돌릴 수 있다(주체 `task_creator`: 사람이 재검증을 요청해 이전 검증 업무를 취소하고 새 검증 업무 1건을 만든다. 2026-10-27, 파일럿에서 수정 전 코드로 낸 결과를 새 코드로 다시 검증해야 했다). `registered`로의 전이는 사람 승인(`approval`, `subject_kind='product'`, `product.registration_approval_id`가 가리킴)이 필수이며, 검증 업무의 읽기 전용 증거가 연결되어야 한다. `registered` 전 제품은 업무의 `product_id`가 될 수 없다 ([절차](../products/README.md)).
 
 구현: 사람용 `product` 명령(승인 소켓, `apps/daemon/src/product-channel.ts`)이 전이를 수행한다 — `start`: candidate → verifying(주체 `task_creator`, 검증 업무 생성과 `access_scope=read` 승인을 한 트랜잭션에서), 상태 조회(`status`/`decide`/`pilot`) 때: verifying → pending_approval(주체 `validator`, 검증 업무가 평가를 받고 `needs_review`에 닿았을 때), `decide`: pending_approval → registered(`approval` 필수) 또는 verifying|pending_approval → rejected(둘 다 사람). 사람 결정은 검증 업무의 `needs_review → completed|failed`(사람, `approval` 필수)와 같은 트랜잭션이다. 에이전트가 쓸 수 있는 길은 없다. [절차서](../operations/shadow-pilot.md).
 

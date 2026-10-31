@@ -12,7 +12,7 @@
 | `gitleaks_path` | gitleaks **8.30.1**(Q21)의 절대 경로 |
 | `gitleaks_config` | 스캐너 설정 파일의 절대 경로. 생략하면 저장소의 `config/gitleaks-registration.toml`(기본 규칙 전체). **후보 저장소 안의 `.gitleaks.toml`은 쓰지 않는다** — 허용 목록으로 스캔을 피할 수 없다. 인스턴스별 금지어·추가 규칙은 이 파일을 대체해 저장소 밖에 둔다 |
 | `evidence_dir` | 근거 본문 디렉터리(0700). 기본 `<instance_dir>/evidence` |
-| `scan_timeout_ms` | 스캐너 제한 시간(1000~3600000, 기본 10분) |
+| `scan_timeout_ms` | 스캐너 제한 시간(1000~3600000, 기본 10분). **큰 저장소**(파일럿에서 6 GB 저장소의 트리 스캔이 약 9분)는 이력 스캔이 더 오래 걸리므로 20~30분으로 올린다. **스캔 둘의 합(`2 × scan_timeout_ms` + 에이전트 턴)이 업무 `time_limit`(템플릿 90분) 안에 들어가야 한다** — 최대값(1시간)을 쓰면 `time_limit`도 올려야 한다. 도구 제한 시간은 이 값 + 30초이고 *실행을 시작한 뒤부터* 센다(아래). 업무의 `time_limit`(템플릿 90분)은 스캔 둘의 합 + 에이전트 턴을 담아야 한다 |
 
 - `claude_code_cli` 또는 `container_agent`가 있어야 한다(도구를 부를 에이전트). 실행 파일이 없거나 실행할 수 없으면 데몬이 **시작하지 않는다**.
 - 에이전트 역할을 `claude_code_cli.roles`에 `registration-verifier`로 매핑한다([claude-code-cli 운영](claude-code-cli.md) §2).
@@ -60,7 +60,7 @@
 | 에이전트가 근거를 위조 | 근거 행은 호스트 실행기만 만든다(`RunContext.recordEvidence`, lease 펜싱). **`blob:` 참조 이름 공간은 호스트 전용** — 에이전트가 낸 증거(`recordRunOutput`)는 이 참조를 못 쓰고, 호스트 증거는 반드시 이 참조를 쓴다 (리뷰 #6). 평가기는 저장된 본문의 sha256을 `content_hash`와 대조 | `task-lease`, `daemon-registration-tools`(본문을 바꾸면 fail) |
 | 근거 저장소 손상·노출 | 0700/0600, 내용 주소, `fsync` 후 이름 바꾸기, 크기가 틀린 파일은 다음 `put`이 바로잡음, 시작 때 임시 파일 정리, 읽을 때 일반 파일만 | `daemon-evidence-store` |
 | **도구가 취소·타임아웃을 무시하고 계속 돎** (리뷰 #8) | `request.signal`이 abort되면 git·gitleaks 자식을 `SIGKILL`하고 근거를 저장하지 않는다 | `registration-tools` |
-| **한 run의 무제한 호출·동시 실행** (리뷰 #8) | run당 호출 300·스캔 6·근거 64 MiB 상한, run 안에서는 한 번에 하나씩 실행 | `registration-tools` |
+| **한 run의 무제한 호출·동시 실행** (리뷰 #8) | run당 호출 300·스캔 6·근거 64 MiB 상한, run 안에서는 한 번에 하나씩 실행(게이트웨이 `serialGroup`: 기다린 시간은 도구 제한 시간에 들어가지 않는다 — 파일럿에서 동시에 부른 이력 스캔이 앞 스캔을 기다린 만큼 모자란 시간으로 시작해 `tool_timeout`이 났다) | `registration-tools` |
 | 아주 큰 디렉터리·결과로 이벤트 루프·프레임 한도 | 디렉터리는 `opendir`로 스트리밍하고 한 디렉터리 2만 항목에서 끊는다. 결과가 700 KB를 넘으면 직접 줄이고(`truncated:true`) `evidence_id`를 맨 앞에 둔다(게이트웨이는 큰 결과를 앞에서부터 자른다) | 〃 |
 | 저장소 경로가 데몬 인스턴스·근거 디렉터리를 품음 | 겹치면 `repo_not_bound` (리뷰 #10) | `daemon-registration` |
 | 쓰기 | 쓰기 연산이 도구에 없다. 호출 뒤 저장소 상태가 같다 | `registration-tools` |

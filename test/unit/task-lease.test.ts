@@ -262,3 +262,23 @@ test('the blob: reference namespace belongs to the host: agent output cannot use
   recordRunOutput(db, clock, lease, { evidence: [{ kind: 'source_url', ref: 'https://docs.example.com/a', capturedAt: clock.nowIso() }], runLogRef: null });
   assert.equal(db.get('SELECT COUNT(*) AS n FROM evidence WHERE task_id = ?', [taskId])?.['n'], 1, 'ordinary agent evidence is unaffected');
 });
+
+test('a run output item whose ref is an evidence id of the same task is a citation (no new row); other refs, including another task\'s evidence id, are recorded as before', (t) => {
+  const { db, clock, claim } = setup(t);
+  const taskId = queuedTask(db, clock);
+  const otherTask = queuedTask(db, clock, { trigger: { kind: 'manual', ref: 'another-task' } });
+  assert.notEqual(otherTask, taskId);
+  const lease = mustClaim(claim('w1', taskId));
+  const hash = 'd'.repeat(64);
+  const hostId = recordHostEvidence(db, clock, lease, { kind: 'document', ref: `blob:sha256:${hash}`, contentHash: hash, trustOrigin: 'external_untrusted', capturedAt: clock.nowIso() });
+  db.writeTx((tx) => tx.run("INSERT INTO evidence (id, task_id, kind, ref, trust_origin, captured_at) VALUES ('ev-of-another-task', ?, 'document', 'blob:sha256:' || ?, 'internal', ?)", [otherTask, 'e'.repeat(64), clock.nowIso()]));
+  recordRunOutput(db, clock, lease, {
+    evidence: [
+      { kind: 'document', ref: hostId, capturedAt: clock.nowIso() },
+      { kind: 'source_url', ref: 'https://docs.example.com/a', capturedAt: clock.nowIso() },
+      { kind: 'document', ref: 'ev-of-another-task', capturedAt: clock.nowIso() },
+    ],
+    runLogRef: null,
+  });
+  assert.deepEqual(db.all<{ ref: string }>('SELECT ref FROM evidence WHERE task_id = ? ORDER BY ref', [taskId]).map((row) => row.ref).sort(), [`blob:sha256:${hash}`, 'ev-of-another-task', 'https://docs.example.com/a'].sort());
+});

@@ -116,6 +116,7 @@ export const PRODUCT_REGISTRATION_MACHINE: StateMachine<ProductRegistrationStatu
   rules: [
     rule('candidate', 'verifying', ['task_creator', 'policy'], { preconditions: '검증 업무 1건 생성, 읽기 전용 접근(access_scope=read)을 정책 승인 경로로 요청' }),
     rule('verifying', 'pending_approval', ['validator'], { preconditions: '검증 업무가 needs_review 에 도달 (validation.human=true)' }),
+    rule('pending_approval', 'verifying', ['task_creator'], { preconditions: '사람이 재검증을 요청: 이전 검증 업무를 취소하고 새 검증 업무 1건을 만든다 (읽기 접근은 그대로)' }),
     rule('pending_approval', 'registered', ['human'], { requires: ['approval'], preconditions: '검증 업무의 읽기 전용 증거가 연결되어 있을 것' }),
     rule('verifying', 'rejected', ['validator', 'human']),
     rule('pending_approval', 'rejected', ['validator', 'human']),

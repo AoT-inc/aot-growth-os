@@ -150,6 +150,14 @@ describe('claude-code-cli MCP 설정', () => {
     assert.deepEqual(server?.env, { AOT_GATEWAY_TOKEN: 'run-token' });
   });
 
+  it('브리지의 호출 대기 상한은 run 의 시간 제한을 환경 변수로 받는다 (정수 ms 로 다듬고, 주지 않으면 변수 자체가 없다)', () => {
+    const env = (callTimeoutMs: number): Record<string, string> => (JSON.parse(buildMcpConfig({ ...config, callTimeoutMs })) as { mcpServers: { gateway: { env: Record<string, string> } } }).mcpServers.gateway.env;
+    assert.deepEqual(env(5_400_000), { AOT_GATEWAY_TOKEN: 'run-token', AOT_GATEWAY_CALL_TIMEOUT_MS: '5400000' });
+    assert.equal(env(1500.9)['AOT_GATEWAY_CALL_TIMEOUT_MS'], '1500');
+    assert.equal(env(2 ** 40)['AOT_GATEWAY_CALL_TIMEOUT_MS'], String(2 ** 31 - 1), 'a larger value would make the timer fire at once');
+    assert.equal(env(0)['AOT_GATEWAY_CALL_TIMEOUT_MS'], '1');
+  });
+
   it('도구가 없으면 서버가 없는 설정이다', () => {
     assert.deepEqual(JSON.parse(buildMcpConfig(null)), { mcpServers: {} });
   });

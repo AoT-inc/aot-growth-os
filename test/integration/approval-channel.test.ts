@@ -8,7 +8,9 @@ import { test, type TestContext } from 'node:test';
 
 import { prepareSocketDir, sendApprovalRequest, startApprovalServer } from '@aot/policy';
 
-import { AGENT, OWNER, policyEnv } from '../support/policy.ts';
+import { draftedTask } from '../support/draft-flow.ts';
+import { examplePayload } from '../support/message-tool.ts';
+import { AGENT, OWNER, policyEnv, taskRow } from '../support/policy.ts';
 import { runApproveCli } from '../support/approve-cli.ts';
 import { makeTempDir } from '../support/temp.ts';
 
@@ -117,4 +119,35 @@ test('a reply that cannot be serialized does not crash the daemon: the client ge
   assert.deepEqual([reply.ok, reply.error], [false, 'internal error in the approval engine']);
   assert.deepEqual(errors, ['TypeError']);
   assert.deepEqual(await sendApprovalRequest(socket, { big: false }), { ok: true }, 'the server keeps serving');
+});
+
+// ===== 초안 승인 명령 (ADR-0015) =====
+
+test('the CLI shows the proposed drafts with secret-like values masked (the stored payload stays exact), and request-changes takes a required comment', async (t) => {
+  const { env, socket } = await serve(t);
+  const secret = 'sk-abcdefghijklmnopqrstuvwxyz0123';
+  const { taskId } = await draftedTask(env, { requests: [examplePayload({ text: `key ${secret}`, subject: 'Hello' })] });
+  const shown = await runApproveCli(['show', 'task', taskId], { socket, actor: OWNER });
+  assert.equal(shown.code, 0, shown.stderr);
+  const drafts = shown.json?.['drafts'] as { payload: { subject: string; text: string; to: string[] } }[];
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0]!.payload.subject, 'Hello');
+  assert.deepEqual(drafts[0]!.payload.to, ['customer@example.com'], 'recipients are shown exactly in the CLI');
+  assert.doesNotMatch(shown.stdout, new RegExp(secret), 'the secret shape is masked in the display');
+  const stored = env.db.get<{ payload: string }>('SELECT payload FROM effect_draft WHERE task_id = ?', [taskId])!.payload;
+  assert.match(stored, new RegExp(secret), 'the stored payload is the exact bytes');
+
+  const usage = await runApproveCli(['request-changes', 'task', taskId], { socket, actor: OWNER });
+  assert.equal(usage.code, 2);
+  assert.match(usage.stderr, /needs --comment/);
+  const wrongKind = await runApproveCli(['request-changes', 'publication', 'x', '--comment', 'r'], { socket, actor: OWNER });
+  assert.equal(wrongKind.code, 2);
+  const agent = await runApproveCli(['request-changes', 'task', taskId, '--comment', 'r'], { socket, actor: AGENT });
+  assert.equal(agent.code, 1);
+  assert.match(String(agent.json?.['error']), /only human actors/);
+
+  const done = await runApproveCli(['request-changes', 'task', taskId, '--comment', 'remove the key'], { socket, actor: OWNER });
+  assert.equal(done.code, 0, done.stderr);
+  assert.equal(done.json?.['state'], 'queued');
+  assert.equal(taskRow(env.db, taskId).status, 'queued');
 });

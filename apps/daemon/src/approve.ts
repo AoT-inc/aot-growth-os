@@ -8,6 +8,8 @@
 //     release <task|publication|policy_version> <id> [--totp-stdin]   (TOTP 코드는 표준 입력 한 줄로 받는다)
 //     cancel  <task|publication|policy_version|strategy> <id> [--comment 글]   (cooldown 중 취소. strategy 는 활성화 전에만)
 //     reject  <task|publication|policy_version|strategy> <id> [--comment 글]
+//     request-changes task <id> --comment <사유>   (ADR-0015 초안 승인 업무: 제안된 초안을 버리고 에이전트가 다시 쓰게 한다. 사유 필수, 1~500자.
+//             `show task <id>` 는 제안된 초안의 받는 사람·본문·payload_hash 를 보여 준다(비밀 모양은 가린다). 같은 해시(`hash`)로 approve 하면 그 초안 묶음 그대로 나간다)
 //     totp-enroll [--totp-dir DIR]   (이 기기에서 실행. 비밀을 instance/totp/<actor> 에 0600 으로 만들고 등록 URI 를 한 번 보여 준다)
 //     promote strategy <id> --comment 사유     (A6-U16. 결과가 pass 로 기록된 실험을 experiment → active 로 올린다. 사람만, 이전 active 는 retired. 사유 필수)
 //     reject  strategy <id> --comment 사유     (proposed 는 승인 엔진이, experiment 는 결과 채널이 처리한다: experiment → rejected. experiment 는 사유 필수)
@@ -38,6 +40,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { maskSecrets, type JsonValue } from '@aot/agent-runtime';
 import { otpauthUri, sendApprovalRequest, TotpSecretStore } from '@aot/policy';
 
 const KINDS = ['task', 'publication', 'policy_version', 'strategy_version', 'org_proposal'] as const;
@@ -83,6 +86,17 @@ function parseNumber(text: string | undefined, what: string, integer: boolean): 
   const pattern = integer ? /^\d+$/ : /^\d+(\.\d+)?$/;
   if (text === undefined || !pattern.test(text)) fail(`${what} must be ${integer ? 'a whole number' : 'a number'} >= 0`);
   return Number(text);
+}
+
+/** `show task` 응답의 초안 payload 에서 비밀 모양을 가린다 (저장된 payload 는 그대로이고 표시만 가린다, ADR-0015). 화면 문구 자르기 전에 가린다 */
+function maskDraftPayloads<T extends { ok: boolean }>(response: T): T {
+  const drafts = (response as { drafts?: unknown }).drafts;
+  if (!Array.isArray(drafts)) return response;
+  return {
+    ...response,
+    drafts: drafts.map((draft: unknown) => (typeof draft === 'object' && draft !== null && 'payload' in draft
+      ? { ...draft, payload: maskSecrets((draft as { payload: JsonValue }).payload) } : draft)),
+  };
 }
 
 async function readStdinLine(): Promise<string> {
@@ -285,15 +299,19 @@ async function main(): Promise<void> {
       needKind();
       request = { cmd, actor, kind, id, ...(comment ? { comment } : {}) };
       break;
+    case 'request-changes':
+      if (kind !== 'task' || !id) fail('usage: request-changes task <id> --comment <reason>');
+      request = { cmd: 'request_changes', actor, kind, id, comment: comment ?? fail('request-changes needs --comment <reason>') };
+      break;
     case 'promote':
       needKind();
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|request-changes|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
   }
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
-  process.stdout.write(`${JSON.stringify(response)}\n`);
+  process.stdout.write(`${JSON.stringify(cmd === 'show' ? maskDraftPayloads(response) : response)}\n`);
   process.exitCode = response.ok ? 0 : 1;
 }
 

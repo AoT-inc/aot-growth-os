@@ -10,12 +10,14 @@
 //    + 승인 시점 정책 버전. 승인과 같은 트랜잭션에서 `proposed → experiment`(domain 허용표). 진행 중인 실험이 있으면 거부(한 번에 하나).
 //    루틴 활성화는 승인 트랜잭션 밖(주간 사이클)이 하며, 활성화 전이면 cancel 로 승인을 무효로 할 수 있다(활성화가 verifyStrategyApproval 로 다시 확인).
 //    마케팅 업무의 외부 부작용은 이 승인이 대신하지 않는다 — 그 업무가 기존 업무 승인(위험 변경 절차)을 따로 탄다.
+//  - 초안 승인 업무(ADR-0015): 업무 승인 대상 해시가 제안된 초안(`effect_draft` proposed)을 묶는다. `show` 가 초안 본문과 해시를 보여 주고, 승인·해제는 만료된 초안이 있으면 거부한다.
+//    `reject` 는 초안을 `rejected` 로, 새 명령 `request_changes` 는 승인 행(`changes_requested`)을 남기고 초안을 `superseded` 로 만든 뒤 업무를 다시 큐에 넣는다(초안을 다시 쓰게 한다).
 // TOTP 코드·비밀은 응답·로그·DB 어디에도 남기지 않는다.
 import { randomUUID } from 'node:crypto';
 
 import {
   activeOrgVersion, checkTransition, contentHash, experimentsInProgress, findExperimentActivation, getOrgProposal, listStrategyReviews, OrgRuleError, StrategyRuleError, TASK_MACHINE,
-  transitionOrgProposal, transitionStrategyVersion,
+  proposedDraftsOf, transitionDrafts, transitionOrgProposal, transitionStrategyVersion,
   type Clock, type Db, type OrgProposalRow, type PublicationRow, type StrategyVersionRow, type TaskRow, type TaskSpec,
 } from '@aot/domain';
 
@@ -38,7 +40,9 @@ export type ApprovalCommand =
   | { cmd: 'approve'; actor: string; kind: 'policy_version'; policy_text: string; comment?: string }
   | { cmd: 'release'; actor: string; kind: ApprovalSubject; id: string; totp?: string }
   | { cmd: 'cancel'; actor: string; kind: ApprovalSubject; id: string; comment?: string }
-  | { cmd: 'reject'; actor: string; kind: ApprovalSubject; id: string; comment?: string };
+  | { cmd: 'reject'; actor: string; kind: ApprovalSubject; id: string; comment?: string }
+  /** 초안 승인 업무의 변경 요청 (ADR-0015): 초안을 버리고 다시 쓰게 한다. 사유(comment)는 필수(1~500자) */
+  | { cmd: 'request_changes'; actor: string; kind: 'task'; id: string; comment: string };
 
 /** 성공이면 ok: true 와 명령별 값, 거부면 ok: false 와 error */
 export interface ApprovalResponse {
@@ -136,6 +140,8 @@ export class ApprovalEngine {
         return this.#cancel(c.actor, c.kind, c.id, c.comment);
       case 'reject':
         return this.#reject(c.actor, c.kind, c.id, c.comment);
+      case 'request_changes':
+        return this.#requestChanges(c.actor, c.id, c.comment);
     }
   }
 
@@ -149,7 +155,7 @@ export class ApprovalEngine {
     return active.policy;
   }
 
-  #insertApproval(tx: Db, kind: ApprovalSubject, id: string, decision: 'approved' | 'rejected', hash: string | null, actor: string, comment: string | null): string {
+  #insertApproval(tx: Db, kind: ApprovalSubject, id: string, decision: 'approved' | 'rejected' | 'changes_requested', hash: string | null, actor: string, comment: string | null): string {
     const approvalId = this.#o.newId?.() ?? `approval-${randomUUID()}`;
     tx.run('INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
       approvalId, kind, id, decision, hash, actor, comment === null ? null : comment.slice(0, 500), this.#now(),
@@ -201,8 +207,9 @@ export class ApprovalEngine {
     const policy = this.#policy(tx);
     const requests = requestsFromSpec(spec);
     const verdicts = requests.map((request) => ({ request, verdict: evaluateRequest(policy.document, request) }));
-    const subject = taskSubject(task, spec, policy.versionId);
-    return { task, spec, policy, verdicts, subject, hash: taskSubjectHash(subject), requester: taskRequester(tx, task), params: taskApprovalParams(policy.document, requests) };
+    const drafts = proposedDraftsOf(tx, id);
+    const subject = taskSubject(task, spec, policy.versionId, drafts);
+    return { task, spec, policy, verdicts, drafts, subject, hash: taskSubjectHash(subject), requester: taskRequester(tx, task), params: taskApprovalParams(policy.document, requests) };
   }
 
   #approveTask(actor: string, id: string, hash: string, comment?: string): Record<string, unknown> {
@@ -211,6 +218,7 @@ export class ApprovalEngine {
       if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; approvals apply to tasks in needs_review`);
       const denied = ctx.verdicts.filter((v) => v.verdict.decision === 'deny');
       if (denied.length > 0) refuse(`the current policy denies this task (${denied.map((v) => v.verdict.reason).join('; ')}); an approval cannot override deny`);
+      this.#refuseExpiredDrafts(ctx.drafts, 'approved');
       if (hash !== ctx.hash) refuse('the task changed since it was shown (subject hash mismatch); show it again before approving');
       const params = ctx.params;
       if (!params.self_approval && ctx.requester === actor) refuse(`the requester cannot approve their own task (${SELF_APPROVAL_RULE})`);
@@ -236,6 +244,13 @@ export class ApprovalEngine {
     });
   }
 
+  /** 기한이 지난 초안이 있으면 승인·해제를 거부한다 (ADR-0015): 변경 요청으로 다시 쓰게 한다 */
+  #refuseExpiredDrafts(drafts: readonly { id: string; expires_at: string }[], what: 'approved' | 'released'): void {
+    const now = this.#now();
+    const expired = drafts.filter((draft) => now >= draft.expires_at);
+    if (expired.length > 0) refuse(`draft expired (${expired.length} of ${drafts.length} past expires_at): the content cannot be ${what}; ask for changes (request-changes) so the agent rewrites it`);
+  }
+
   #queue(tx: Db, task: TaskRow, actor: string, approvalId: string, set: Record<string, string>, reason: string): void {
     assertAllowed('needs_review', 'queued', approvalId);
     const changed = tx.run(
@@ -252,6 +267,7 @@ export class ApprovalEngine {
     const ctx = this.#taskContext(tx, id);
     if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; only an approved task in needs_review can be released`);
     if (ctx.task.approved_hash === null) refuse(`task '${id}' has no approval to release`);
+    this.#refuseExpiredDrafts(ctx.drafts, 'released');
     if (ctx.task.approved_hash !== ctx.hash) refuse('the task or the policy changed since approval (approved_hash mismatch); re-approval required');
     const params = ctx.params;
     const status = approvalStatus(tx, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params, now: this.#now(), checkReauth: false });
@@ -509,7 +525,33 @@ export class ApprovalEngine {
       tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [
         id, 'needs_review', 'failed', `rejected by a human (approval ${approvalId})`, actor, this.#now(),
       ]);
+      // 같은 트랜잭션에서 제안된 초안도 거절한다 (ADR-0015)
+      transitionDrafts(tx, { taskId: id, from: ['proposed'], to: 'rejected', by: 'human', now: this.#now() });
       return { state: 'failed', approval_id: approvalId };
+    });
+  }
+
+  /**
+   * 변경 요청 (ADR-0015): 승인 행(`changes_requested`, 지금 대상 해시)을 남기고, 제안된 초안을 `superseded` 로 버리고, 승인 컬럼을 비운 뒤 `needs_review → queued`.
+   * 다음 `beforeRun` 은 제안된 초안이 없으니 초안 단계(draft)로 보낸다. 사유는 필수이며 승인 행의 comment 에 남는다(다음 초안 run 에 넘기는 것은 W13).
+   * 앞선 승인은 비승인 행이 뒤따르므로 무효가 된다.
+   */
+  #requestChanges(actor: string, id: string, comment: string): Record<string, unknown> {
+    return this.#o.db.writeTx((tx) => {
+      const ctx = this.#taskContext(tx, id);
+      if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; changes can only be requested for a task in needs_review`);
+      const approvalId = this.#insertApproval(tx, 'task', id, 'changes_requested', ctx.hash, actor, comment);
+      assertAllowed('needs_review', 'queued', approvalId);
+      const now = this.#now();
+      const superseded = transitionDrafts(tx, { taskId: id, from: ['proposed'], to: 'superseded', by: 'human', now });
+      const changed = tx.run(
+        "UPDATE task SET status = 'queued', approval_id = NULL, approved_snapshot = NULL, approved_hash = NULL, updated_at = ? WHERE id = ? AND status = 'needs_review'", [now, id],
+      );
+      if (changed.changes !== 1) refuse(`task '${id}' is no longer in needs_review`);
+      tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [
+        id, 'needs_review', 'queued', `changes requested by a human; the drafts are discarded and rewritten (approval ${approvalId})`, actor, now,
+      ]);
+      return { state: 'queued', approval_id: approvalId, drafts_superseded: superseded };
     });
   }
 
@@ -520,6 +562,12 @@ export class ApprovalEngine {
       const status = approvalStatus(db, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now: this.#now() });
       return {
         kind, id, status: ctx.task.status, hash: ctx.hash, subject: ctx.subject, policy_version: ctx.policy.versionId,
+        // 제안된 초안 (ADR-0015). payload 는 저장된 JSON 원문이다 — 비밀 가리기는 표시하는 쪽(CLI, 검토 화면)이 한다
+        drafts: ctx.drafts.map((draft) => ({
+          id: draft.id, seq: draft.seq, tool: draft.tool, action: draft.action, target: draft.target, payload_hash: draft.payload_hash,
+          expires_at: draft.expires_at, expired: this.#now() >= draft.expires_at, influenced_by_external_input: draft.influenced_by_external_input === 1,
+          payload: JSON.parse(draft.payload) as unknown,
+        })),
         decisions: ctx.verdicts.map((v) => ({ action: v.request.action, resource: v.request.resource, scope: v.request.scope, impact: v.request.impact, decision: v.verdict.decision, reason: v.verdict.reason })),
         approval: { state: status.state, reason: status.reason, approvers: status.approvers, cooldown_ends_at: status.cooldownEndsAt },
       };
@@ -562,8 +610,9 @@ export class ApprovalEngine {
 
   #list(): Record<string, unknown> {
     const { db } = this.#o;
-    const tasks = db.all<{ id: string; objective: string; reason: string | null }>(
-      `SELECT t.id, t.objective, (SELECT reason FROM task_transition x WHERE x.task_id = t.id ORDER BY x.id DESC LIMIT 1) AS reason
+    const tasks = db.all<{ id: string; objective: string; reason: string | null; drafts: number }>(
+      `SELECT t.id, t.objective, (SELECT reason FROM task_transition x WHERE x.task_id = t.id ORDER BY x.id DESC LIMIT 1) AS reason,
+         (SELECT count(*) FROM effect_draft d WHERE d.task_id = t.id AND d.state = 'proposed') AS drafts
        FROM task t WHERE t.status = 'needs_review' ORDER BY t.updated_at, t.id`,
     );
     const publications = db.all<{ id: string; audience: string; status: string }>(
@@ -608,7 +657,10 @@ function assertAllowed(from: 'needs_review' | 'queued', to: 'queued' | 'needs_re
 }
 
 const SUBJECTS: readonly string[] = ['task', 'publication', 'policy_version', 'strategy_version', 'org_proposal'];
-const CMDS: readonly string[] = ['whoami', 'list', 'show', 'approve', 'release', 'cancel', 'reject'];
+const CMDS: readonly string[] = ['whoami', 'list', 'show', 'approve', 'release', 'cancel', 'reject', 'request_changes'];
+
+/** 변경 요청 사유의 길이 (앞뒤 공백을 자른 뒤) */
+export const MAX_CHANGE_REQUEST_CHARS = 500;
 
 function parseCommand(raw: unknown): ApprovalCommand {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) refuse('a request must be a JSON object');
@@ -629,6 +681,12 @@ function parseCommand(raw: unknown): ApprovalCommand {
   if (cmd === 'approve') {
     if (typeof c['hash'] !== 'string') refuse('hash is required (from `show`)');
     return { cmd, actor: c['actor'] as string, kind: kind as 'task' | 'publication' | 'strategy_version' | 'org_proposal', id, hash: c['hash'] as string, ...optional('comment') };
+  }
+  if (cmd === 'request_changes') {
+    if (kind !== 'task') refuse('request_changes applies to a task (kind task)');
+    const reason = typeof c['comment'] === 'string' ? c['comment'].trim() : '';
+    if (reason === '' || reason.length > MAX_CHANGE_REQUEST_CHARS) refuse(`a comment of 1 to ${MAX_CHANGE_REQUEST_CHARS} characters is required (why the draft must change)`);
+    return { cmd, actor: c['actor'] as string, kind: 'task', id, comment: reason };
   }
   if (cmd === 'release') return { cmd, actor: c['actor'] as string, kind, id, ...optional('totp') };
   if (cmd === 'show') return { cmd, actor: c['actor'] as string, kind, id };

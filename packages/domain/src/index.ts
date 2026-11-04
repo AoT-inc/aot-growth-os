@@ -27,7 +27,7 @@ export {
   type TaskSpecVersions, type TaskTrigger, type TaskValidation, type ToolRequest,
 } from './spec/task-spec.ts';
 export { MAX_TIME_LIMIT_MS, parseTimeLimit } from './spec/time-limit.ts';
-export { checkTaskSpecReferences } from './spec/spec-references.ts';
+export { checkTaskSpecReferences, trialTaskTypes } from './spec/spec-references.ts';
 export {
   isMeasurementSignalId, MAX_MEASUREMENT_DESCRIPTION_CHARS, MAX_MEASUREMENT_INPUTS, MAX_MEASUREMENT_SIGNAL_ID_CHARS, MEASUREMENT_INPUT_KIND, MEASUREMENT_PERIODS,
   MEASUREMENT_REF_PREFIX, measurementRef, parseMeasurementRef, validateMeasurementSignal, type MeasurementPeriod, type MeasurementSignal,

@@ -27,7 +27,7 @@ const LOCAL: FetchUrlHooks = { exemptAddresses: ['127.0.0.1'] };
 const guard = (): AbortSignal => AbortSignal.timeout(8000);
 
 function request(args: JsonObject, networkAllowlist: string[], signal: AbortSignal = guard()): ToolExecutionRequest {
-  return { runId: 'run-1', tool: FETCH_URL_TOOL, operation: 'fetch', args, signal, constraints: { max_usd: 1, network_allowlist: networkAllowlist } };
+  return { runId: 'run-1', tool: FETCH_URL_TOOL, operation: 'fetch', args, signal, constraints: { max_usd: 1, network_allowlist: networkAllowlist }, influencedByExternalInput: false };
 }
 
 const sha = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');

@@ -154,8 +154,8 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
 
     // -20일: 시험 시작 두 건 (하나는 통과 뒤 사람 확인 대기, 하나는 관측 부족)
     clock.set(nowMs - 20 * DAY);
-    const orgPass = propose('example-researcher', 'weekly-market-research', '주간 시장 조사를 전담한다', plan({}));
-    const orgInconclusive = propose('example-analyst', 'quarterly-review', '분기 검토 자료를 전담한다', plan({ min_observations: 3 }));
+    const orgPass = propose('example-researcher', 'weekly-market-research', '주간 시장 조사 담당', plan({}));
+    const orgInconclusive = propose('example-analyst', 'quarterly-review', '분기 검토 자료 담당', plan({ min_observations: 3 }));
     approve(orgPass);
     approve(orgInconclusive);
     advanceOrganization(db, clock);
@@ -169,7 +169,7 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
 
     // -3일: 지금 시험 중인 제안 (관측 3/6)
     clock.set(nowMs - 3 * DAY);
-    const orgTrial = propose('example-reporter', 'monthly-metrics-report', '월간 지표 보고서를 전담한다', plan({ min_observations: 6, min_pass_rate: 0.8 }));
+    const orgTrial = propose('example-reporter', 'monthly-metrics-report', '월간 지표 보고서 담당', plan({ min_observations: 6, min_pass_rate: 0.8 }));
     approve(orgTrial);
     advanceOrganization(db, clock);
     clock.advance(DAY);
@@ -189,7 +189,7 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
     })).proposalId;
     const orgRisky = db.writeTx((tx) => createOrgProposal(tx, clock, {
       proposedBy: agent,
-      diff: { ops: [{ op: 'add_role', role: { slug: 'example-crm-updater', description: '고객 후속 연락 기록을 갱신한다', allowed_tools: [{ tool: 'crm_write', operations: ['update'] }], unit: { slug: 'sales-ops', name: '영업 운영', responsibility: '고객 후속 연락과 기록 관리' } } }] },
+      diff: { ops: [{ op: 'add_role', role: { slug: 'example-crm-updater', description: '고객 후속 연락 기록 담당', allowed_tools: [{ tool: 'crm_write', operations: ['update'] }], unit: { slug: 'sales-ops', name: '영업 운영', responsibility: '고객 후속 연락과 기록 관리' } } }] },
       rationale: "'customer-followup' 유형 업무가 3건 쌓였고 기록을 갱신할 권한이 있는 역할이 없다.", evidenceRefs: ['signals:unassigned:customer-followup'],
       expectedEffect: '후속 연락 기록이 같은 날 갱신된다.',
       riskAssessment: { risks: ['고객 기록을 잘못 바꿀 수 있다'], mitigations: ['시험 기간에는 이 업무 유형만 받는다', '쓰기 작업마다 정책 판정과 승인을 거친다'] },
@@ -282,6 +282,8 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
     writeFileSync(join(evidenceDir, 'diagram.svg'), svg);
     writeFileSync(join(outsideDir, 'outside.png'), png);
+    const note = store.put('제목: 가을 신제품 안내\n이번 달 말부터 새 제품을 판매합니다.\n자세한 내용은 아래 안내를 확인하세요.');
+    db.writeTx((tx) => tx.run("UPDATE publication SET content_ref = ? WHERE id = 'publication-demo-1'", [note.ref]));
     const slug = 'example-product';
     db.writeTx((tx) => {
       const now = clock.nowIso();

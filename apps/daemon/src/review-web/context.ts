@@ -9,6 +9,8 @@ export interface ReviewContext {
   db: Db;
   clock: Clock;
   engine: ApprovalEngine;
+  /** 정책 보관소 (읽기만: 정책안 내용 비교용) */
+  store: PolicyStore;
   /** 승인 엔진 조회에 쓰는 사람 행위자(DB 의 첫 human). 없으면 null — 승인 대기 화면은 안내만 한다 */
   actor: string | null;
   evidenceDir: string;
@@ -31,5 +33,5 @@ export function createReviewContext(options: ReviewContextOptions): ReviewContex
   // TOTP 보관소는 `list`·`show` 에서 열지 않는다(경로만 쥔다). 존재하지 않는 경로로 둔다.
   const engine = new ApprovalEngine({ db, clock, store, totp: new TotpSecretStore(`${options.policyStoreDir}/.review-web-unused`) });
   const actor = db.get<{ id: string }>("SELECT id FROM actor WHERE kind = 'human' ORDER BY created_at, id LIMIT 1")?.id ?? null;
-  return { db, clock, engine, actor, evidenceDir: options.evidenceDir, roots: [options.evidenceDir, ...(options.evidenceRoots ?? [])] };
+  return { db, clock, engine, store, actor, evidenceDir: options.evidenceDir, roots: [options.evidenceDir, ...(options.evidenceRoots ?? [])] };
 }

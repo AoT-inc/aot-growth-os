@@ -4,7 +4,7 @@ import { getOrgProposal } from '@aot/domain';
 import type { ReviewContext } from './context.ts';
 import {
   batchDecision, buildInbox, effectsDecision, evidenceKindLabel, experimentDecisions, orgDecision, policyDecision, productDecision, publicationDecision, signalDecisions,
-  strategyDecision, taskDecision, taskGroups as taskGroupsOf, trialPage, watchLines, type Decision,
+  strategyDecision, taskDecision, taskGroups as taskGroupsOf, trialPage, watchLines, type Category, type Decision,
 } from './decisions.ts';
 import { MAX_TEXT_CHARS, readEvidence } from './evidence-file.ts';
 import { ago, clip } from './format.ts';
@@ -16,7 +16,17 @@ export interface Rendered {
   status: number;
 }
 
-const card = (d: Decision): Raw => h`<section class="card"><h3>${d.question}</h3>${d.badge === undefined ? '' : h`<p>${badge(d.badge.label, d.badge.tone)}</p>`}${facts(d.facts)}<a class="go" href="${d.href}">열기 →</a></section>`;
+/** 카드 전체가 링크다 (제목이 접근 가능한 이름) */
+const card = (d: Decision): Raw => h`<a class="card" href="${d.href}"><h3>${d.question}</h3>${d.badge === undefined ? '' : h`<p>${badge(d.badge.label, d.badge.tone)}</p>`}${facts(d.facts)}</a>`;
+
+const CATEGORY_LABEL: Readonly<Record<Category, string>> = { outside: '바깥에 나가는 일', org: '조직 변경', experiment: '실험', product: '상품 등록', other: '기타' };
+
+/** "바깥에 나가는 일 5건 · 조직 변경 4건 · 실험 3건" (0건은 쓰지 않는다) */
+function summaryLine(decisions: readonly Decision[]): string {
+  const counts = new Map<Category, number>();
+  for (const d of decisions) counts.set(d.category, (counts.get(d.category) ?? 0) + 1);
+  return (Object.keys(CATEGORY_LABEL) as Category[]).filter((c) => (counts.get(c) ?? 0) > 0).map((c) => `${CATEGORY_LABEL[c]} ${counts.get(c)}건`).join(' · ');
+}
 
 function watchSection(ctx: ReviewContext, cap: number | null): Raw {
   const lines = watchLines(ctx);
@@ -27,9 +37,13 @@ function watchSection(ctx: ReviewContext, cap: number | null): Raw {
 
 export function homePage(ctx: ReviewContext): Rendered {
   const { decisions, problem } = buildInbox(ctx);
+  const first = decisions.filter((d) => d.first);
+  const week = decisions.filter((d) => !d.first);
   return {
     title: decisions.length === 0 ? '지금 결정할 일이 없습니다' : `결정할 일 ${decisions.length}건`, status: 200,
-    body: h`${problem === null ? '' : h`<p class="card">${problem}</p>`}${decisions.map(card)}${watchSection(ctx, 5)}`,
+    body: h`${problem === null ? '' : h`<p class="card">${problem}</p>`}${decisions.length === 0 ? '' : h`<p class="summary">${summaryLine(decisions)}</p>`}
+      ${first.length === 0 ? '' : h`<h2 class="grp">먼저</h2><p class="mute">바깥에 나가거나, 업무를 막고 있거나, 곧 만료되는 일</p>${first.map(card)}`}
+      ${week.length === 0 ? '' : h`<h2 class="grp">이번 주 안에</h2>${week.map(card)}`}${watchSection(ctx, 5)}`,
   };
 }
 

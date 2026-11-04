@@ -37,3 +37,23 @@ export function clip(value: unknown, max = 40): string {
 }
 
 export const percent = (rate: number | null): string => (rate === null ? '-' : `${Math.round(rate * 100)}%`);
+
+/** 받침에 따라 을/를을 붙인다 ("발송" → "발송을", "메일" → "메일을", "보고서" → "보고서를") */
+export function eulReul(word: string): string {
+  const code = word.charCodeAt(word.length - 1);
+  const mark = code >= 0xac00 && code <= 0xd7a3 && (code - 0xac00) % 28 === 0 ? '를' : '을';
+  return `${word}${mark}`;
+}
+
+/** 여러 문장의 앞부분·뒷부분 공통 글자 (단어 경계로 자른다). 업무 제목 묶음 이름용 */
+export function commonAffixes(items: readonly string[]): { prefix: string; suffix: string } {
+  if (items.length < 2) return { prefix: '', suffix: '' };
+  let prefix = items[0]!;
+  for (const item of items) while (!item.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  let suffix = items[0]!;
+  for (const item of items) while (!item.endsWith(suffix)) suffix = suffix.slice(1);
+  prefix = prefix.replace(/[\s#0-9]+$/, '').trim();
+  suffix = suffix.replace(/^[\s#0-9]+/, '').trim();
+  const cleaned = prefix.length >= 3 ? prefix : '';
+  return { prefix: cleaned, suffix: cleaned === '' ? '' : suffix.length >= 2 ? suffix : '' };
+}

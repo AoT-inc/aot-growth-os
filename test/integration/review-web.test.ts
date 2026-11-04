@@ -34,21 +34,27 @@ test('home is a decision inbox: one question per card, three short facts, no ids
   const text = textOf(home.text);
   assert.match(text, /결정할 일 \d+건/);
   for (const question of [
-    "새 역할 'example-support-triager' 시험 투입을 승인할까요?", "새 역할 'example-crm-updater' 시험 투입을 승인할까요?", '고객에게 나가는 작업 3건을 승인할까요?',
-    "'주간 요약 보고서를 내부 문서함에 정리' — 진행해도 될까요?", '게시물을 public-web 에 누구나 볼 수 있게 공개할까요?', "상품 '예시 상품'을 등록할까요?",
-    "보냈는지 확인 안 된 'notify-tool' 작업 1건 — 실제로 나갔나요?", '정책 변경을 배포할까요?', '실험을 시작할까요?', '정식 전략으로 올릴까요?', '실험 결과를 판정하지 못했습니다',
-    "'example-analyst' 시험은 관측이 부족했습니다. 한 번 더 시험할까요?", "'example-researcher' 시험이 통과했습니다. 정식 확정할까요?", "'invoice-check' 업무 3건이 담당자 없이 멈췄습니다 — 새 역할 제안서를 만들까요?",
+    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 초안 3건 발송을 승인할까요?',
+    "'주간 요약 보고서를 내부 문서함에 정리' — 진행해도 될까요?", "'가을 신제품 안내' 게시물을 누구나 볼 수 있게 공개할까요?", "상품 '예시 상품'을 등록할까요?",
+    "'고객 안내 메일 초안 #4 발송' 전송 여부 1건 — 실제로 나갔나요?", '정책 변경을 배포할까요?', '실험을 시작할까요?', '정식 전략으로 올릴까요?', '실험 결과를 판정하지 못했습니다',
+    "'분기 검토 자료 담당' 시험은 관측이 부족했습니다. 한 번 더 시험할까요?", "'주간 시장 조사 담당' 시험이 통과했습니다. 정식 확정할까요?", "'invoice-check' 업무 3건이 맡을 역할이 없어 멈췄습니다 — 새 역할 제안서를 만들까요?",
   ]) assert.ok(text.includes(question), question);
-  assert.ok(!text.includes("'support-triage' 업무 4건이 담당자 없이"), 'a signal that already has a proposal is not suggested again');
+  assert.ok(!text.includes("'support-triage' 업무 4건"), 'a signal that already has a proposal is not suggested again');
   // 같은 사유의 고객 메일 3건은 한 장으로 묶인다
-  assert.equal(text.split('고객에게 나가는 작업').length - 1, 1, 'batched into one card');
-  assert.ok(!text.includes('고객 안내 메일 초안 #'), 'the batched tasks are listed only on the detail page');
-  assert.ok(text.includes('13일 뒤 만료') && text.includes('검증 통과') && text.includes('판정 보류') && text.includes('어제부터 멈춰 있음'));
-  assert.ok(text.includes('지켜보는 중') && text.includes("'example-reporter' 시험 중 — 3/6건 관측, 지금까지 통과 100%"), 'running trial as one line');
+  assert.equal(home.text.split('<a class="card"').filter((c) => c.includes('고객 안내 메일 초안 3건')).length, 1, 'batched into one card, named from the common part of the objectives');
+  assert.ok(!text.includes('초안 #1') && !text.includes('초안 #2'), 'the batched tasks are listed only on the detail page');
+  assert.ok(text.includes('13일 뒤 만료') && text.includes('검증 통과') && text.includes('판정 보류') && text.includes('어제부터 대기'));
+  assert.ok(text.includes('지켜보는 중') && text.includes("'월간 지표 보고서 담당' 시험 중 — 3/6건 관측, 지금까지 통과 100%"), 'running trial as one line');
+  // 삼분류: 먼저 / 이번 주 안에, 그리고 분류별 개수 한 줄
+  assert.ok(text.includes('바깥에 나가는 일 3건 · 조직 변경 5건 · 실험 3건 · 상품 등록 1건 · 기타 2건'));
+  const firstGroup = home.text.slice(home.text.indexOf('<h2 class="grp">먼저'), home.text.indexOf('<h2 class="grp">이번 주 안에'));
+  assert.ok(firstGroup.includes('고객 안내 메일 초안 3건') && firstGroup.includes('게시물') && firstGroup.includes('전송 여부') && !firstGroup.includes('시험 투입'), 'outside-reaching items come first');
+  assert.ok(home.text.includes('<a class="card" href='), 'the whole card is the link');
+  assert.ok(!home.text.includes('열기 →') && !/slug|retired|public-web|unassigned|OTP 해제|notify-tool/.test(firstLevel(home.text)), 'no slugs or jargon on the first level');
   // 첫 화면에는 id·해시·ISO 시각·엔진 상태 문구·JSON 이 없다
   assert.deepEqual(idsIn(firstLevel(home.text)), []);
   // 카드 하나는 질문 + 3줄 이하
-  for (const card of home.text.split('<section class="card">').slice(1)) assert.ok((card.split('</section>')[0]!.match(/<li>/g) ?? []).length <= 3, 'at most three facts');
+  for (const card of home.text.split('<a class="card"').slice(1)) assert.ok((card.split('</a>')[0]!.match(/<li>/g) ?? []).length <= 3, 'at most three facts');
   // 0건 구역은 만들지 않는다
   assert.deepEqual(text.match(/\(0\)|(?<![0-9/])0건/g), null, 'no zero-count sections');
   for (const target of ['/watch', '/evidence']) assert.ok(home.text.includes(`href="${target}"`));
@@ -72,12 +78,13 @@ test('org proposal detail: question, one-sentence summary and facts first, then 
   assert.equal(page.status, 200);
   const html = page.text;
   const at = (needle: string): number => html.indexOf(needle);
-  assert.ok(html.includes("<h1>새 역할 &#39;example-support-triager&#39; 시험 투입을 승인할까요?</h1>"), 'the h1 is the question');
-  assert.ok(at('<h1>') < at('class="lead"') && at('class="lead"') < at('class="facts"') && at('class="facts"') < at('<h3>승인</h3>') && at('<h3>승인</h3>') < at('<h3>거절</h3>') && at('<h3>거절</h3>') < at('<details>'), 'order: question, summary, facts, approve, reject, details');
+  assert.ok(html.includes("<h1>&#39;support-triage 업무 담당&#39; 역할을 시험 투입할까요?</h1>"), 'the h1 is the question');
+  assert.ok(at('<h1>') < at('class="lead"') && at('class="lead"') < at('class="facts"') && at('class="facts"') < at('결정하기') && at('결정하기') < at('>승인</span>') && at('>승인</span>') < at('>거절</span>') && at('>거절</span>') < at('<details>'), 'order: question, summary, facts, approve, reject, details');
   const lead = textOf(html.slice(at('class="lead"'), at('class="facts"')));
-  for (const part of ["'support-triage' 업무를 맡을 역할 하나를 추가합니다", '최소 14일 동안 이 업무만 맡기고', '통과율 80% 미만이거나 안전 문제 1건이면 자동으로 되돌립니다']) assert.ok(lead.includes(part), part);
+  for (const part of ['이 업무를 맡을 역할 하나를 추가합니다', '최소 14일 동안 이 업무만 맡기고', '통과율 80% 미만이거나 안전 문제 1건이면 자동으로 되돌립니다']) assert.ok(lead.includes(part), part);
   const first = firstLevel(html);
-  assert.ok(first.includes('왜 지금') && first.includes('위험') && first.includes('기한') && first.includes('13일 뒤 만료'));
+  assert.ok(first.includes('무엇') && first.includes('확인할 것') && first.includes('위험·기한') && first.includes('13일 뒤 만료'));
+  assert.equal((first.match(/support-triage/g) ?? []).length, 3, 'only the page title, the h1 and the rationale name the task type; the summary sentence says "이 업무"');
   assert.deepEqual(idsIn(first), []);
   const detailsHtml = html.slice(at('<details>'));
   for (const label of ['위험과 완화책', '평가 계획', '롤백 계획', '기대 효과', '성공 기준', '최소 관측']) assert.ok(detailsHtml.includes(label), `자세히 has ${label}`);
@@ -103,23 +110,26 @@ test('every kind of decision opens on a question with its commands: risky org, t
   const rig = await startRig(t);
   const risky = await rig.get(`/approvals/org_proposal/${rig.demo.ids.orgRisky}`);
   const riskyText = firstLevel(risky.text);
-  assert.ok(riskyText.includes('위험 변경 — 승인 후 OTP 해제 필요') && riskyText.includes("새 부서 'sales-ops'도 만듭니다"));
-  assert.ok(risky.text.includes('release 가 한 번 더 필요합니다'));
+  assert.ok(riskyText.includes('위험 변경 — 승인 후 OTP 코드로 한 번 더 확인해야 함') && riskyText.includes("새 부서 '영업 운영'도 만듭니다"));
+  assert.ok(risky.text.includes('OTP 코드로 한 번 더 확인해야 합니다 (release)'));
   const task = await rig.get(`/approvals/task/${rig.demo.ids.plainTask}`);
   assert.ok(task.text.includes("<h1>&#39;주간 요약 보고서를 내부 문서함에 정리&#39; — 진행해도 될까요?</h1>") && task.text.includes(`${CLI} approve task ${rig.demo.ids.plainTask} --hash `));
   const home = (await rig.get('/')).text;
   const batchPath = linkTo(home, '/batch/');
   const batch = await rig.get(batchPath);
   assert.equal(batch.status, 200);
-  assert.equal((batch.text.match(/ approve task /g) ?? []).length, 3, 'one approve command per batched task');
-  assert.ok(batch.text.includes('고객 안내 메일 초안 #1 발송') && batch.text.includes('<h1>고객에게 나가는 작업 3건을 승인할까요?</h1>'));
+  assert.equal((batch.text.slice(0, batch.text.indexOf('<details>')).match(/ approve task /g) ?? []).length, 3, 'one joined command above the fold');
+  assert.ok(batch.text.slice(0, batch.text.indexOf('<details>')).includes('3건 모두 승인') && batch.text.includes('&amp;&amp; node apps/daemon/src/approve.ts approve task') || batch.text.includes('&& node apps/daemon/src/approve.ts approve task'), 'joined with &&');
+  assert.ok((batch.text.slice(batch.text.indexOf('<details>')).match(/ approve task /g) ?? []).length >= 3, 'per-item commands inside the details');
+  assert.ok(batch.text.includes('고객 안내 메일 초안 #1 발송') && batch.text.includes('<h1>고객 안내 메일 초안 3건 발송을 승인할까요?</h1>'));
   const publication = await rig.get(`/approvals/publication/${rig.demo.ids.publication}`);
-  assert.ok(publication.text.includes(`${CLI} approve publication ${rig.demo.ids.publication} --hash `) && textOf(publication.text).includes('누구나 볼 수 있게 공개할까요?'));
+  assert.ok(publication.text.includes(`${CLI} approve publication ${rig.demo.ids.publication} --hash `) && textOf(publication.text).includes('가을 신제품 안내') && textOf(publication.text).includes('누구나 볼 수 있게 공개할까요?') && textOf(publication.text).includes('이번 달 말부터 새 제품을 판매합니다'));
   const strategy = await rig.get(`/approvals/strategy_version/${rig.demo.ids.strategy}`);
   assert.ok(strategy.text.includes(`${CLI} approve strategy ${rig.demo.ids.strategy} --hash `) && textOf(strategy.text).includes('주간 뉴스레터 제목에 질문형 문장 쓰기'));
   const policy = await rig.get(`/approvals/policy_version/${rig.demo.ids.policy}`);
   assert.equal(policy.status, 200);
   assert.ok(policy.text.includes(`release policy ${rig.demo.ids.policy} --totp-stdin`) || policy.text.includes(`cancel policy ${rig.demo.ids.policy}`));
+  assert.ok(textOf(policy.text).includes('업무 하나당 비용 한도(USD): 5 → 8'), 'the changed rule is said in words');
   assert.equal((await rig.get('/approvals/org_proposal/nope')).status, 404);
   assert.equal((await rig.get('/approvals/bogus/x')).status, 404);
   assert.equal((await rig.get('/batch/000000000000')).status, 404);
@@ -140,7 +150,7 @@ test('trial: one verdict line first, one small chart, the commands; the rest is 
   assert.ok(!running.text.includes(' org confirm '), 'nothing to decide yet');
   assert.ok(!/NaN|undefined|Infinity/.test(running.text));
   const watch = textOf((await rig.get('/watch')).text);
-  assert.ok(watch.includes("'example-reporter' 시험 중") && watch.includes('결과를 기다리는 중') && watch.includes('반복됩니다'));
+  assert.ok(watch.includes("'월간 지표 보고서 담당' 시험 중") && watch.includes('결과를 기다리는 중') && watch.includes('반복됩니다'));
   assert.equal((await rig.get('/trials/nope')).status, 404);
 });
 
@@ -153,11 +163,11 @@ test('products, effects, experiments and signals each open on one question with 
   assert.ok(/product decide example-product approve --hash [0-9a-f]{64}/.test(product.text) && product.text.includes('product decide example-product reject --comment'));
   assert.ok(product.text.slice(product.text.indexOf('<details>')).includes('독립 평가 (원문)'), 'evidence list and raw verdicts are folded');
   const effects = await rig.get('/effects');
-  assert.ok(textOf(effects.text).includes("보냈는지 확인 안 된 'notify-tool' 작업 1건 — 실제로 나갔나요?"));
+  assert.ok(textOf(effects.text).includes("'고객 안내 메일 초안 #4 발송' 전송 여부 1건 — 실제로 나갔나요?") && !textOf(effects.text.slice(0, effects.text.indexOf('<details>'))).includes('notify-tool'));
   assert.ok(effects.text.includes(`resolve-effect ${rig.demo.ids.effect} --outcome confirmed --note`) && effects.text.includes('--outcome failed --note &quot;확인한 내용&quot; --totp-stdin'));
   assert.ok(!effects.text.includes(sha(Buffer.from('demo-request'))) && !effects.text.includes('effect-key-demo-1'), 'no request hash or effect key');
   const promote = await rig.get(`/experiments/${rig.demo.ids.experiments.promote}`);
-  assert.ok(promote.text.includes('promote strategy strategy-demo-promote --comment') && textOf(promote.text).includes('정식 전략으로 올릴까요?'));
+  assert.ok(promote.text.includes('promote strategy strategy-demo-promote --comment') && textOf(promote.text).includes('정식 전략으로 올릴까요?') && textOf(promote.text).includes('보관 처리'));
   const needs = await rig.get(`/experiments/${rig.demo.ids.experiments.needs}`);
   assert.ok(needs.text.includes('reject strategy strategy-demo-needs --comment') && textOf(needs.text).includes('판정 보류'));
   const signal = await rig.get('/signals/invoice-check');

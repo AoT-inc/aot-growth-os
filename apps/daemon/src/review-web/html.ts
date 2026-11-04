@@ -91,11 +91,14 @@ h1{font-size:24px;line-height:1.4;margin:12px 0 10px;color:var(--accent)}h2{font
 .lead{font-size:17px;margin:0 0 14px}.mute{color:var(--mute)}.empty{color:var(--mute)}
 .facts{list-style:none;margin:10px 0 14px;padding:0}.facts li{padding:5px 0 5px 4px;border-bottom:1px solid var(--line)}.facts b{display:inline-block;min-width:4.5em;color:var(--mute);font-weight:600}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
-.card h3{font-size:18px;margin:0 0 6px;color:var(--accent);line-height:1.45}.card .go{display:inline-block;margin-top:6px;font-weight:600;color:var(--accent)}
+.card h3{font-size:18px;margin:0 0 6px;color:var(--accent);line-height:1.45}a.card{display:block;color:inherit;text-decoration:none}a.card:hover,a.card:focus-visible{border-color:var(--accent)}
 a{color:var(--accent)}
 .badge{display:inline-block;border-radius:999px;padding:1px 11px;font-size:14px;border:1px solid var(--line);white-space:nowrap}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.warn{color:var(--warn);border-color:var(--warn)}.badge.bad{color:var(--bad);border-color:var(--bad)}.badge.info{color:var(--accent);border-color:var(--accent)}
-.choice{border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:12px 0;background:var(--card)}.choice h3{margin:0 0 6px;font-size:16px}.choice.no h3{color:var(--bad)}.choice.yes h3{color:var(--ok)}.choice.na h3{color:var(--mute)}
-.cmd{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;overflow-x:auto}.cmd code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}.cmd .note{display:block;color:var(--mute);font-size:13px;margin-top:2px}
+.decide{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 16px 12px;margin:18px 0}.decide h2{font-size:15px;margin:4px 0 8px;color:var(--mute)}.row{display:flex;gap:10px;align-items:center;margin:6px 0}.row>span:not(.btn){font-size:14px}.rnote{color:var(--mute);font-size:12px;margin:-2px 0 6px 2px}
+.btn{flex:none;min-width:5.2em;text-align:center;border-radius:8px;padding:3px 10px;font-weight:600;font-size:14px;border:1px solid var(--line)}.btn.yes{background:var(--ok);color:#fff;border-color:var(--ok)}.btn.no{color:var(--bad);border-color:var(--bad)}.btn.na{color:var(--mute)}
+.decide code{display:block;flex:1;min-width:0;white-space:nowrap;overflow-x:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:4px 10px;user-select:all}
+h2.grp{font-size:17px;margin:28px 0 4px}.summary{color:var(--mute);margin:0 0 6px}
+.cmd{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;overflow-x:auto}.cmd code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}.cmd .note{display:block;color:var(--mute);font-size:13px;margin-top:2px}
 details{margin:26px 0;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;font-weight:600;color:var(--mute)}details h2{font-size:16px;margin:20px 0 6px}
 .scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--mute);font-weight:600;white-space:nowrap}
 dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:6px 0;font-size:14px}dt{color:var(--mute)}dd{margin:0;word-break:break-word}
@@ -133,16 +136,15 @@ export interface Choices {
   extra?: Raw | undefined;
 }
 
-/** 승인·거절 두 선택. 명령은 복사하기 쉬운 상자 안에만 둔다 */
+/** 결정하기 상자: 승인/거절 두 줄. 각 줄은 이름표 + 한 줄짜리 명령(옆으로 스크롤). 못 하면 이유 */
 export function choices(c: Choices): Raw {
   const one = (kind: 'yes' | 'no', fallback: string, entry: Choices['approve']): Raw => {
     if (entry === undefined) return h``;
-    if ('blocked' in entry) return h`<div class="choice na"><h3>${fallback}할 수 없습니다</h3><p>${entry.blocked}</p></div>`;
-    return h`<div class="choice ${kind}"><h3>${entry.label ?? fallback}</h3>${command(entry.command, entry.note)}</div>`;
+    if ('blocked' in entry) return h`<div class="row"><span class="btn na">${fallback} 불가</span><span>${entry.blocked}</span></div>`;
+    return h`<div class="row"><span class="btn ${kind}">${entry.label ?? fallback}</span><code>${entry.command}</code></div>${entry.note === undefined ? '' : h`<div class="rnote">${entry.note}</div>`}`;
   };
-  return h`${one('yes', '승인', c.approve)}${one('no', '거절', c.reject)}${c.extra ?? ''}`;
+  return h`<div class="decide"><h2>결정하기</h2>${one('yes', '승인', c.approve)}${one('no', '거절', c.reject)}${c.extra ?? ''}</div>`;
 }
-
 
 /** 내부 이동 링크. 경로 조각은 인코딩하고 값은 이스케이프한다 */
 export const link = (path: readonly string[], label: unknown, query = ''): Raw => h`<a href="/${path.map(encodeURIComponent).join('/')}${query}">${label}</a>`;

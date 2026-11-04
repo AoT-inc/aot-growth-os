@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 import { parseReviewWebArgs, UsageError, type ConfigDeps } from '../../apps/daemon/src/review-web/config.ts';
 import { sniffImage } from '../../apps/daemon/src/review-web/evidence-file.ts';
-import { ago, clip, monthDay, percent, until } from '../../apps/daemon/src/review-web/format.ts';
+import { ago, clip, commonAffixes, eulReul, monthDay, percent, until } from '../../apps/daemon/src/review-web/format.ts';
 import { choices, command, full, h, prettyJson, raw, shellArg, table, text } from '../../apps/daemon/src/review-web/html.ts';
 import { hostAllowed } from '../../apps/daemon/src/review-web/server.ts';
 import { barChart, lineChart } from '../../apps/daemon/src/review-web/svg.ts';
@@ -129,6 +129,14 @@ test('choices: approve and reject boxes, or the reason when approval is not poss
   const both = choices({ approve: { command: 'cmd-a' }, reject: { command: 'cmd-r' } }).html;
   assert.ok(both.indexOf('승인') < both.indexOf('cmd-a') && both.indexOf('cmd-a') < both.indexOf('거절') && both.indexOf('거절') < both.indexOf('cmd-r'));
   const blocked = choices({ approve: { blocked: '<b>만료됨</b>' }, reject: { command: 'cmd-r' } }).html;
-  assert.ok(blocked.includes('승인할 수 없습니다') && blocked.includes('&lt;b&gt;만료됨') && !blocked.includes('<code>cmd-a'));
+  assert.ok(blocked.includes('승인 불가') && blocked.includes('&lt;b&gt;만료됨') && !blocked.includes('<code>cmd-a'));
   assert.ok(!choices({ reject: { command: 'x' } }).html.includes('승인'));
+});
+
+test('eulReul picks 을/를 by the final consonant; commonAffixes names a batch from its objectives', () => {
+  assert.equal(eulReul('발송'), '발송을');
+  assert.equal(eulReul('보고서'), '보고서를');
+  assert.deepEqual(commonAffixes(['고객 안내 메일 초안 #1 발송', '고객 안내 메일 초안 #2 발송', '고객 안내 메일 초안 #3 발송']), { prefix: '고객 안내 메일 초안', suffix: '발송' });
+  assert.deepEqual(commonAffixes(['가나다 작업', '전혀 다른 일']), { prefix: '', suffix: '' });
+  assert.deepEqual(commonAffixes(['하나뿐']), { prefix: '', suffix: '' });
 });

@@ -14,20 +14,27 @@ import { orgSignals } from '../org-channel.ts';
 import { productReader, registrationApproveBlocker } from '../product-channel.ts';
 import { REGISTRATION_TRIGGER_PREFIX } from '../registration-task.ts';
 import type { ReviewContext } from './context.ts';
-import { ago, clip, monthDay, percent, until } from './format.ts';
+import { readEvidence } from './evidence-file.ts';
+import { ago, clip, commonAffixes, eulReul, monthDay, percent, until } from './format.ts';
 import { APPROVE_CLI, choices, command, h, kv, link, list, num, prettyJson, shellArg, table, type Raw } from './html.ts';
 import { arr, json, metricsCharts, metricsOf, orgProposalSummary, rec, str, type Metrics } from './org-summary.ts';
 import { barChart } from './svg.ts';
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'mute';
 
+export type Category = 'outside' | 'org' | 'experiment' | 'product' | 'other';
+
 export interface Decision {
   key: string;
+  /** 요약 한 줄에 쓰는 분류 */
+  category: Category;
+  /** "먼저" 묶음: 바깥에 나가거나, 하루 이상 업무를 막거나, 3일 안에 만료 */
+  first: boolean;
   href: string;
   question: string;
   /** 질문 바로 아래 한 문장 ("바뀌는 것") */
   lead?: string;
-  /** 최대 3줄: 왜 지금 · 위험 · 기한 */
+  /** 최대 3줄: 무엇 · 확인할 것 · 위험·기한 */
   facts: [string, string][];
   badge?: { label: string; tone: Tone };
   /** 작을수록 급하다 (기한 시각 또는 우선순위) */
@@ -75,27 +82,39 @@ export function pendingLists(ctx: ReviewContext): { lists: PendingLists; problem
 }
 
 // ----- 조직 변경 제안 -----
+const OTP_AGAIN = 'OTP 코드로 한 번 더 확인';
+
+/** 역할을 사람 말로: 설명(끝의 괄호 제거)이 있으면 그것, 없으면 slug */
+export function roleLabel(role: Record<string, unknown>): string {
+  const desc = str(role['description']).replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return clip(desc === '' ? str(role['slug']) : desc, 28);
+}
+
+const rolesOf = (row: Pick<OrgProposalRow, 'diff'>): Record<string, unknown>[] => arr(obj(json(row.diff))['ops']).map((op) => rec(rec(op)['role']));
+
 export function orgDecision(ctx: ReviewContext, row: OrgProposalRow): Decision {
   const now = ctx.clock.nowMs();
   const shown = shownOf(ctx, 'org_proposal', row.id);
   const state = stateOf(shown);
-  const diff = arr(obj(json(row.diff))['ops']).map(rec);
-  const roles = diff.map((op) => rec(op['role']));
-  const slugs = roles.map((r) => `'${str(r['slug'])}'`).join(', ');
+  const roles = rolesOf(row);
+  const labels = roles.map(roleLabel);
   const types = arr(obj(json(row.trial_scope))['task_types']).map(str);
   const plan = rec(json(row.evaluation_plan));
-  const newUnits = roles.map((r) => rec(r['unit'])).filter((u) => typeof u['slug'] === 'string').map((u) => `'${str(u['slug'])}'`);
+  const newUnits = roles.map((r) => rec(r['unit'])).filter((u) => typeof u['slug'] === 'string').map((u) => `'${str(u['name'] ?? u['slug'])}'`);
   const risky = row.change_class === 'risky';
   const staleness = orgProposalStaleness(ctx.db, row, ctx.clock.nowIso());
   const staleText = staleness === null ? null : staleness.to === 'expired' ? '만료됨' : '기준 조직이 바뀜';
-  const lead = `${types.length === 0 ? '일부' : types.map((t) => `'${t}'`).join(', ')} 업무를 맡을 역할 ${roles.length === 1 ? '하나' : `${roles.length}개`}를 추가합니다`
-    + `${roles.length === 1 && str(roles[0]?.['description']) !== '' ? ` — ${clip(str(roles[0]?.['description']).replace(/\s*\([^)]*\)\s*$/, ''), 40)}` : ''}. `
-    + `최소 ${row.trial_min_days}일 동안 이 업무만 맡기고, 통과율 ${percent(typeof plan['min_pass_rate'] === 'number' ? plan['min_pass_rate'] : null)} 미만이거나 안전 문제 1건이면 자동으로 되돌립니다.`
+  // 질문에 이미 업무 유형이 보이면 문장에서는 "이 업무"라고만 한다 (같은 말을 두 번 쓰지 않는다)
+  const typeInTitle = types.length > 0 && labels.some((l) => types.some((t) => l.includes(t)));
+  const workText = types.length === 0 ? '일부 업무' : typeInTitle ? '이 업무' : `'${types.join(', ')}' 업무`;
+  const days = row.trial_min_days;
+  const rate = percent(typeof plan['min_pass_rate'] === 'number' ? plan['min_pass_rate'] : null);
+  const lead = `${eulReul(workText)} 맡을 역할 ${roles.length === 1 ? '하나' : `${roles.length}개`}를 추가합니다. 최소 ${days}일 동안 이 업무만 맡기고, 통과율 ${rate} 미만이거나 안전 문제 1건이면 자동으로 되돌립니다.`
     + `${newUnits.length > 0 ? ` 새 부서 ${newUnits.join(', ')}도 만듭니다.` : ''}`;
   let badgeOut: Decision['badge'];
   if (staleText !== null) badgeOut = { label: `승인 불가 — ${staleText}`, tone: 'bad' };
   else if (state === 'cooldown') badgeOut = { label: '승인됨 — 대기 시간 중', tone: 'info' };
-  else if (state === 'reauth_required') badgeOut = { label: 'OTP 해제 필요', tone: 'warn' };
+  else if (state === 'reauth_required') badgeOut = { label: `${OTP_AGAIN} 필요`, tone: 'warn' };
   const alias = 'org';
   let actions: Raw;
   if (staleText !== null) {
@@ -103,21 +122,22 @@ export function orgDecision(ctx: ReviewContext, row: OrgProposalRow): Decision {
   } else if (state === 'cooldown') {
     actions = choices({ approve: { blocked: '이미 승인했고 대기 시간 중입니다.' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(row.id)} --comment "사유"`, note: '대기 중에는 취소할 수 있습니다' } });
   } else if (state === 'reauth_required') {
-    actions = choices({ approve: { label: '해제 (OTP)', command: `${APPROVE_CLI} release ${alias} ${shellArg(row.id)} --totp-stdin`, note: 'OTP 코드 한 줄을 표준 입력으로 넣습니다' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(row.id)} --comment "사유"` } });
+    actions = choices({ approve: { label: 'OTP 확인', command: `${APPROVE_CLI} release ${alias} ${shellArg(row.id)} --totp-stdin`, note: 'OTP 코드 한 줄을 표준 입력으로 넣습니다' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(row.id)} --comment "사유"` } });
   } else {
-    actions = choices({ approve: { command: approveCmd(alias, row.id, shown), ...(risky ? { note: '승인 뒤 대기 시간이 지나면 release 가 한 번 더 필요합니다' } : {}) }, reject: { command: rejectCmd(alias, row.id) } });
+    actions = choices({ approve: { command: approveCmd(alias, row.id, shown), ...(risky ? { note: `승인 뒤 대기 시간이 지나면 ${OTP_AGAIN}해야 합니다 (release)` } : {}) }, reject: { command: rejectCmd(alias, row.id) } });
   }
   const original = obj(shown?.['approval']);
+  const expiry = Date.parse(row.expires_at);
   return {
-    key: `org:${row.id}`, href: `/approvals/org_proposal/${encodeURIComponent(row.id)}`,
-    question: `새 역할 ${slugs} 시험 투입을 승인할까요?`, lead,
+    key: `org:${row.id}`, category: 'org', first: expiry - now <= 3 * DAY, href: `/approvals/org_proposal/${encodeURIComponent(row.id)}`,
+    question: `'${labels.join(', ')}' 역할을 시험 투입할까요?`, lead,
     facts: [
-      ['왜 지금', clip(row.rationale, 80)],
-      ['위험', risky ? '위험 변경 — 승인 후 OTP 해제 필요' : '일반 변경 — 시험 중에만 적용되고 문제가 생기면 자동으로 되돌립니다'],
-      ['기한', until(row.expires_at, now)],
+      ['무엇', `새 역할을 ${days}일 시험 투입합니다 (${types.length === 0 ? '일부 업무' : typeInTitle ? '이 업무만' : `${types.join(', ')} 업무만`})`],
+      ['확인할 것', `이 업무를 새 역할에 맡겨도 되는지 — ${clip(row.rationale, 60)}`],
+      ['위험·기한', `${risky ? `위험 변경 — 승인 후 ${OTP_AGAIN}해야 함` : '일반 변경 — 문제가 생기면 자동으로 되돌림'} · ${until(row.expires_at, now)}`],
     ],
     ...(badgeOut === undefined ? {} : { badge: badgeOut }),
-    urgency: Date.parse(row.expires_at), actions,
+    urgency: expiry, actions,
     details: h`${orgProposalSummary(ctx, row)}<h2>엔진 원문</h2>${kv([['승인 단계', str(original['state'])], ['설명', str(original['reason'])], ['제안 id', row.id]])}`,
   };
 }
@@ -125,13 +145,16 @@ export function orgDecision(ctx: ReviewContext, row: OrgProposalRow): Decision {
 // ----- 업무 (사람 확인 필요) -----
 interface TaskInfo {
   id: string; objective: string; reason: string; kind: 'customer' | 'external' | 'plain'; sig: string; waitingSince: string | null; denied: boolean; shown: Shown | null;
+  /** 바깥으로 나가는 도구의 대상 (예: 받는 곳) */
+  targets: string[]; spec: unknown;
 }
 
 function taskInfo(ctx: ReviewContext, id: string): TaskInfo | null {
   const row = ctx.db.get<{ objective: string; spec: string; trigger_ref: string }>('SELECT objective, spec, trigger_ref FROM task WHERE id = ?', [id]);
   if (row === undefined || row.trigger_ref.startsWith(REGISTRATION_TRIGGER_PREFIX)) return null;
   if (ctx.db.get('SELECT 1 AS one FROM external_effect WHERE task_id = ? AND state = ?', [id, 'unknown']) !== undefined) return null; // 효과 확인 카드가 맡는다
-  const tools = arr(rec(json(row.spec))['allowed_tools']).map(rec);
+  const spec = json(row.spec);
+  const tools = arr(rec(spec)['allowed_tools']).map(rec);
   const customer = tools.some((t) => t['impact'] === 'external_effect' && t['scope'] === 'customer');
   const external = tools.some((t) => t['impact'] === 'external_effect');
   const reason = ctx.db.get<{ reason: string; at: string }>('SELECT reason, at FROM task_transition WHERE task_id = ? ORDER BY id DESC LIMIT 1', [id]);
@@ -139,13 +162,14 @@ function taskInfo(ctx: ReviewContext, id: string): TaskInfo | null {
   const denied = arr(shown?.['decisions']).some((d) => rec(d)['decision'] === 'deny');
   return {
     id, objective: row.objective, reason: reason?.reason ?? '', kind: customer ? 'customer' : external ? 'external' : 'plain',
-    sig: tools.map((t) => `${str(t['tool'])}:${str(t['impact'])}:${str(t['scope'])}`).sort().join(','), waitingSince: reason?.at ?? null, denied, shown,
+    sig: tools.map((t) => `${str(t['tool'])}:${str(t['impact'])}:${str(t['scope'])}`).sort().join(','), waitingSince: reason?.at ?? null, denied, shown, spec,
+    targets: [...new Set(tools.filter((t) => t['impact'] === 'external_effect').map((t) => str(t['target'])).filter((t) => t !== ''))],
   };
 }
 
-const TASK_LABEL = { customer: '고객에게 나가는 작업', external: '외부로 나가는 작업', plain: '사람 확인이 필요한 업무' } as const;
-const TASK_WHY = { customer: '고객 대상 외부 효과라 정책상 사람 승인이 필요합니다', external: '외부 효과라 정책상 사람 승인이 필요합니다', plain: '정책이 사람 확인을 요구했습니다' } as const;
+const TASK_CHECK = { customer: '받는 사람과 문구가 맞는지', external: '보내는 대상과 내용이 맞는지', plain: '업무 목표가 맞는지' } as const;
 const TASK_RISK = { customer: '고객에게 실제로 전달되며 되돌릴 수 없습니다', external: '외부로 나가며 되돌리기 어렵습니다', plain: '내부 작업이라 되돌릴 수 있습니다' } as const;
+const OUTSIDE = (kind: TaskInfo['kind']): boolean => kind !== 'plain';
 
 const groupId = (info: TaskInfo): string => createHash('sha256').update(`${info.reason}|${info.kind}|${info.sig}`).digest('hex').slice(0, 12);
 
@@ -160,57 +184,125 @@ export function taskGroups(ctx: ReviewContext): TaskInfo[][] {
   return [...groups.values()];
 }
 
-function waitingText(items: readonly TaskInfo[], now: number): string {
+function waitDays(items: readonly TaskInfo[], now: number): number {
   const oldest = items.map((i) => i.waitingSince).filter((v): v is string => v !== null).sort()[0];
-  return oldest === undefined ? '대기 중' : `${ago(oldest, now)}부터 멈춰 있음`;
+  return oldest === undefined ? 0 : Math.floor((now - Date.parse(oldest)) / DAY);
 }
+const waitingText = (items: readonly TaskInfo[], now: number): string => {
+  const oldest = items.map((i) => i.waitingSince).filter((v): v is string => v !== null).sort()[0];
+  return oldest === undefined ? '대기 중' : `${ago(oldest, now)}부터 대기`;
+};
+const specDetails = (items: readonly TaskInfo[]): Raw => h`${items.map((i) => h`<h2>${clip(i.objective, 50)} (원문)</h2><pre>${prettyJson(i.spec)}</pre>`)}`;
 
 export function taskDecision(ctx: ReviewContext, info: TaskInfo): Decision {
   const now = ctx.clock.nowMs();
   const actions = info.denied
     ? choices({ approve: { blocked: '현재 정책이 거부하는 작업이라 승인해도 실행되지 않습니다.' }, reject: { command: rejectCmd('task', info.id) } })
     : choices({ approve: { command: approveCmd('task', info.id, info.shown) }, reject: { command: rejectCmd('task', info.id) } });
+  const where = info.targets.length === 0 ? '' : ` → ${info.targets.join(', ')}`;
   return {
-    key: `task:${info.id}`, href: `/approvals/task/${encodeURIComponent(info.id)}`,
-    question: `'${clip(info.objective)}' — ${info.kind === 'plain' ? '진행해도 될까요?' : '실행해도 될까요?'}`,
-    facts: [['왜 지금', TASK_WHY[info.kind]], ['위험', TASK_RISK[info.kind]], ['대기', waitingText([info], now)]],
+    key: `task:${info.id}`, category: OUTSIDE(info.kind) ? 'outside' : 'other', first: OUTSIDE(info.kind) || waitDays([info], now) >= 1,
+    href: `/approvals/task/${encodeURIComponent(info.id)}`,
+    question: `'${clip(info.objective, 30)}' — ${OUTSIDE(info.kind) ? '실행해도 될까요?' : '진행해도 될까요?'}`,
+    facts: [
+      ['무엇', OUTSIDE(info.kind) ? `'${clip(info.objective, 40)}'${where}${info.kind === 'customer' ? ' (고객에게 전달)' : ''}` : `'${clip(info.objective, 40)}' 업무를 실행합니다`],
+      ['확인할 것', `${TASK_CHECK[info.kind]} — 내용 미리보기 없음, 자세히에서 원문 확인`],
+      ['위험·기한', `${TASK_RISK[info.kind]} · ${waitingText([info], now)}`],
+    ],
     ...(info.denied ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
     urgency: now, actions,
-    details: h`${kv([['목표', info.objective], ['엔진 원문(전이 사유)', info.reason], ['업무 id', info.id]])}
+    details: h`${kv([['목표', info.objective], ['엔진 원문(전이 사유)', info.reason], ['업무 id', info.id]])}${specDetails([info])}
       <h2>정책 판정 (원문)</h2>${table(['작업', '자원', '범위', '영향', '판정', '이유'], arr(info.shown?.['decisions']).map(rec).map((d) => [d['action'], d['resource'], d['scope'], d['impact'], d['decision'], d['reason']]))}`,
   };
 }
+
+/** 묶음 이름: 업무 목표의 공통 앞·뒤("고객 안내 메일 초안 3건 발송"), 없으면 첫 목표 + "외 N건" */
+function batchName(items: readonly TaskInfo[]): string {
+  const { prefix, suffix } = commonAffixes(items.map((i) => i.objective));
+  if (prefix === '') return `'${clip(items[0]!.objective, 24)}' 외 ${items.length - 1}건`;
+  return `${clip(prefix, 24)} ${items.length}건${suffix === '' ? '' : ` ${clip(suffix, 10)}`}`;
+}
+const batchTitle = (items: readonly TaskInfo[]): string => `${eulReul(batchName(items))} 승인할까요?`;
 
 export function batchDecision(ctx: ReviewContext, items: TaskInfo[]): Decision {
   const now = ctx.clock.nowMs();
   const first = items[0]!;
   const gid = groupId(first);
+  const allowed = items.filter((i) => !i.denied);
+  const joined = (parts: string[]): string => parts.join(' && ');
+  const targets = [...new Set(items.flatMap((i) => i.targets))];
   return {
-    key: `batch:${gid}`, href: `/batch/${gid}`,
-    question: `${TASK_LABEL[first.kind]} ${items.length}건을 승인할까요?`,
-    lead: '같은 사유로 멈춘 업무입니다. 건별로 승인·거절합니다.',
-    facts: [['왜 지금', TASK_WHY[first.kind]], ['위험', TASK_RISK[first.kind]], ['대기', waitingText(items, now)]],
+    key: `batch:${gid}`, category: OUTSIDE(first.kind) ? 'outside' : 'other', first: OUTSIDE(first.kind) || waitDays(items, now) >= 1, href: `/batch/${gid}`,
+    question: batchTitle(items),
+    lead: `같은 사유로 멈춘 업무 ${items.length}건입니다. 한 번에 처리하거나 자세히에서 건별로 처리합니다.`,
+    facts: [
+      ['무엇', `${batchName(items)}${targets.length === 0 ? '' : ` → ${targets.join(', ')}`}${first.kind === 'customer' ? ' (고객에게 전달)' : ''}`],
+      ['확인할 것', `${TASK_CHECK[first.kind]} — 내용 미리보기 없음, 자세히에서 원문 확인`],
+      ['위험·기한', `${TASK_RISK[first.kind]} · ${waitingText(items, now)}`],
+    ],
     urgency: now,
-    actions: h`${items.map((info) => h`<div class="card"><h3>${clip(info.objective, 50)}</h3>${choices({
-      approve: info.denied ? { blocked: '현재 정책이 거부합니다.' } : { command: approveCmd('task', info.id, info.shown) }, reject: { command: rejectCmd('task', info.id) },
-    })}</div>`)}`,
-    details: h`${kv([['엔진 원문(전이 사유)', first.reason]])}${list(items.map((i) => `${i.objective} (${i.id})`))}`,
+    actions: choices({
+      approve: allowed.length === 0 ? { blocked: '현재 정책이 모두 거부합니다.' } : { label: `${allowed.length}건 모두 승인`, command: joined(allowed.map((i) => approveCmd('task', i.id, i.shown))) },
+      reject: { label: `${items.length}건 모두 거절`, command: joined(items.map((i) => rejectCmd('task', i.id))) },
+    }),
+    details: h`${kv([['엔진 원문(전이 사유)', first.reason]])}<h2>건별 명령</h2>${items.map((i) => h`<h3>${clip(i.objective, 50)}</h3>${i.denied ? h`<p class="mute">정책이 거부해 승인할 수 없습니다.</p>` : command(approveCmd('task', i.id, i.shown), '승인')}${command(rejectCmd('task', i.id), '거절')}`)}${specDetails(items)}`,
   };
 }
 
 // ----- 게시 · 정책 · 전략 -----
+const AUDIENCE = { public: '누구나 볼 수 있게', customer: '고객에게', internal: '내부에서만' } as const;
+
 export function publicationDecision(ctx: ReviewContext, id: string): Decision | null {
   const row = ctx.db.get<{ channel: string; audience: string; content_ref: string }>('SELECT channel, audience, content_ref FROM publication WHERE id = ?', [id]);
   if (row === undefined) return null;
   const shown = shownOf(ctx, 'publication', id);
-  const who = row.audience === 'public' ? '누구나 볼 수 있게 공개' : row.audience === 'customer' ? '고객에게 공개' : '내부에 공개';
+  const who = AUDIENCE[row.audience as keyof typeof AUDIENCE] ?? '바깥에';
+  // 내용 미리보기: 호스트 근거 저장소의 본문이면 앞 두 줄, 아니면 참조 글자 그대로
+  const view = row.content_ref.startsWith('blob:') ? readEvidence({ ref: row.content_ref, content_hash: null }, { evidenceDir: ctx.evidenceDir, roots: ctx.roots }) : null;
+  const lines = view?.kind === 'text' ? view.text.split('\n').map((l) => l.trim()).filter((l) => l !== '') : [];
+  const title = lines[0]?.replace(/^제목\s*[:：]\s*/, '') ?? '';
+  const preview = lines.slice(1, 3).join(' / ');
+  const outside = row.audience !== 'internal';
   return {
-    key: `publication:${id}`, href: `/approvals/publication/${encodeURIComponent(id)}`,
-    question: `게시물을 ${row.channel} 에 ${who}할까요?`,
-    facts: [['왜 지금', '작성이 끝나 게시 승인을 기다립니다'], ['위험', row.audience === 'internal' ? '내부용이라 영향이 작습니다' : '게시하면 바깥 사람이 보게 됩니다']],
+    key: `publication:${id}`, category: 'outside', first: outside, href: `/approvals/publication/${encodeURIComponent(id)}`,
+    question: title === '' ? `게시물을 ${who} 공개할까요?` : `'${clip(title, 24)}' 게시물을 ${who} 공개할까요?`,
+    facts: [
+      ['무엇', title === '' ? '내용 미리보기 없음 — 자세히에서 원문 확인' : `${clip(title, 40)}${preview === '' ? '' : ` — ${clip(preview, 70)}`}`],
+      ['확인할 것', outside ? '공개해도 되는 내용인지' : '게시할 내용이 맞는지'],
+      ['위험·기한', outside ? `${who} 공개되면 되돌리기 어렵습니다` : '내부용이라 영향이 작습니다'],
+    ],
     urgency: ctx.clock.nowMs(), actions: choices({ approve: { command: approveCmd('publication', id, shown) }, reject: { command: rejectCmd('publication', id) } }),
-    details: kv([['채널', row.channel], ['대상', row.audience], ['내용 위치', row.content_ref], ['게시 id', id]]),
+    details: h`${view?.kind === 'text' ? h`<h2>본문 (원문)</h2><pre>${view.text}</pre>` : ''}${kv([['채널', row.channel], ['대상', row.audience], ['내용 위치', row.content_ref], ['게시 id', id]])}`,
   };
+}
+
+const DECISION_LABEL: Readonly<Record<string, string>> = { allow: '허용', deny: '거부', require_approval: '사람 승인 필요' };
+const LIMIT_LABEL: Readonly<Record<string, string>> = { max_usd_per_task: '업무 하나당 비용 한도(USD)', max_tokens_per_task: '업무 하나당 토큰 한도' };
+
+/** 현재 정책과 제안된 정책의 차이를 사람 말로 (최대 몇 줄이든 반환, 첫 화면은 3줄까지) */
+function policyChanges(ctx: ReviewContext, id: string): string[] | null {
+  const hash = ctx.db.get<{ subject_hash: string | null }>("SELECT subject_hash FROM approval WHERE subject_kind = 'policy_version' AND subject_id = ? AND decision = 'approved' ORDER BY at DESC, rowid DESC LIMIT 1", [id])?.subject_hash;
+  const next = hash === undefined || hash === null ? null : ctx.store.byHash(hash);
+  const current = ctx.store.active(ctx.db)?.policy ?? null;
+  if (next === null || current === null) return null;
+  const out: string[] = [];
+  const a = current.document;
+  const b = next.document;
+  for (const key of new Set([...Object.keys(a.limits), ...Object.keys(b.limits)])) {
+    const before = (a.limits as unknown as Record<string, unknown>)[key];
+    const after = (b.limits as unknown as Record<string, unknown>)[key];
+    if (before !== after) out.push(`${LIMIT_LABEL[key] ?? key}: ${before === undefined ? '없음' : num(before)} → ${after === undefined ? '없음' : num(after)}`);
+  }
+  const rulesA = new Map(a.rules.map((r) => [r.id, r]));
+  const rulesB = new Map(b.rules.map((r) => [r.id, r]));
+  for (const [ruleId, rule] of rulesB) {
+    const old = rulesA.get(ruleId);
+    if (old === undefined) out.push(`새 규칙 '${ruleId}': ${DECISION_LABEL[rule.decision] ?? rule.decision}`);
+    else if (JSON.stringify(old) !== JSON.stringify(rule)) out.push(`규칙 '${ruleId}' 변경: ${DECISION_LABEL[old.decision] ?? old.decision} → ${DECISION_LABEL[rule.decision] ?? rule.decision}`);
+  }
+  for (const ruleId of rulesA.keys()) if (!rulesB.has(ruleId)) out.push(`규칙 '${ruleId}' 삭제`);
+  if (JSON.stringify(a.risky_change) !== JSON.stringify(b.risky_change)) out.push('위험 변경 승인 절차(승인 인원·대기 시간)가 바뀝니다');
+  return out;
 }
 
 export function policyDecision(ctx: ReviewContext, id: string): Decision | null {
@@ -219,15 +311,17 @@ export function policyDecision(ctx: ReviewContext, id: string): Decision | null 
   const risky = shown['change_class'] === 'risky';
   const state = stateOf(shown);
   const alias = 'policy';
+  const changes = policyChanges(ctx, id);
   const actions = state === 'cooldown'
     ? choices({ approve: { blocked: '이미 승인했고 대기 시간 중입니다.' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(id)} --comment "사유"` } })
-    : choices({ approve: { label: '해제 (OTP)', command: `${APPROVE_CLI} release ${alias} ${shellArg(id)} --totp-stdin`, note: '대기가 끝난 위험 변경만 해제됩니다' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(id)} --comment "사유"` } });
+    : choices({ approve: { label: 'OTP 확인', command: `${APPROVE_CLI} release ${alias} ${shellArg(id)} --totp-stdin`, note: `대기가 끝난 위험 변경만 ${OTP_AGAIN}하면 배포됩니다` }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(id)} --comment "사유"` } });
+  const summary = changes === null ? '바뀌는 내용을 읽을 수 없음 — 자세히에서 원문 확인' : changes.length === 0 ? '현재 정책과 같은 내용' : changes.slice(0, 3).join(' · ');
   return {
-    key: `policy:${id}`, href: `/approvals/policy_version/${encodeURIComponent(id)}`,
-    question: '정책 변경을 배포할까요?',
-    facts: [['왜 지금', '새 정책안이 승인을 거쳐 배포를 기다립니다'], ['위험', risky ? '위험 변경 — 대기 시간 뒤 OTP 해제 필요' : '일반 변경']],
+    key: `policy:${id}`, category: 'other', first: false, href: `/approvals/policy_version/${encodeURIComponent(id)}`,
+    question: '정책 변경을 배포할까요?', ...(changes === null || changes.length === 0 ? {} : { lead: `정책이 이렇게 바뀝니다: ${changes.slice(0, 2).join(', ')}${changes.length > 2 ? ` 외 ${changes.length - 2}건` : ''}.` }),
+    facts: [['무엇', summary], ['확인할 것', '바뀌는 규칙이 의도한 것인지'], ['위험·기한', risky ? `위험 변경 — 대기 시간 뒤 ${OTP_AGAIN}해야 합니다` : '일반 변경']],
     urgency: ctx.clock.nowMs() + 20 * DAY, actions,
-    details: h`${kv([['변경 등급(원문)', str(shown['change_class'])], ['사유(원문)', arr(shown['reasons']).map(str).join(' / ')], ['승인 단계(원문)', str(obj(shown['approval'])['reason'])], ['제안 id', id]])}`,
+    details: h`${changes === null ? '' : h`<h2>바뀌는 내용</h2>${list(changes)}`}${kv([['변경 등급(원문)', str(shown['change_class'])], ['사유(원문)', arr(shown['reasons']).map(str).join(' / ')], ['승인 단계(원문)', str(obj(shown['approval'])['reason'])], ['제안 id', id]])}`,
   };
 }
 
@@ -238,9 +332,13 @@ export function strategyDecision(ctx: ReviewContext, id: string): Decision | nul
   const running = arr(shown?.['experiments_in_progress']).map(str);
   const scope = row.experiment_scope === null ? null : json(row.experiment_scope);
   return {
-    key: `strategy:${id}`, href: `/approvals/strategy_version/${encodeURIComponent(id)}`,
-    question: `'${clip(row.title)}' 실험을 시작할까요?`, lead: clip(row.body, 120),
-    facts: [['왜 지금', '기획 결과에서 추천된 실험안입니다'], ['위험', '승인하면 실험 범위 안에서 주간 루틴이 켜집니다']],
+    key: `strategy:${id}`, category: 'experiment', first: false, href: `/approvals/strategy_version/${encodeURIComponent(id)}`,
+    question: `'${clip(row.title, 30)}' 실험을 시작할까요?`, lead: clip(row.body, 120),
+    facts: [
+      ['무엇', `'${clip(row.title, 40)}' 실험을 시작하고 실험 범위 안에서 주간 루틴을 켭니다`],
+      ['확인할 것', '가설과 실험 범위가 맞는지'],
+      ['위험·기한', '실험 범위를 벗어나는 일은 하지 않습니다. 한 번에 하나만 진행됩니다'],
+    ],
     ...(running.length > 0 ? { badge: { label: '승인 불가 — 진행 중인 실험 있음', tone: 'bad' as const } } : {}),
     urgency: ctx.clock.nowMs() + 20 * DAY,
     actions: choices({ approve: running.length > 0 ? { blocked: '이미 진행 중인 실험이 있어 한 번에 하나만 승인할 수 있습니다.' } : { command: approveCmd('strategy', id, shown) }, reject: { command: rejectCmd('strategy', id) } }),
@@ -277,12 +375,12 @@ export function productDecision(ctx: ReviewContext, slug: string): Decision | nu
   const external = view.evidence.filter((e) => e.trust_origin === 'external_untrusted').length;
   const BLOCK: Readonly<Record<string, string>> = { evaluation_not_passed: '검증이 통과하지 못했습니다', no_evidence: '확인된 증거가 없습니다', wrong_state: '지금은 결정할 단계가 아닙니다' };
   return {
-    key: `product:${slug}`, href: `/products/${encodeURIComponent(slug)}`,
-    question: `상품 '${product.name}'을 등록할까요?`,
+    key: `product:${slug}`, category: 'product', first: false, href: `/products/${encodeURIComponent(slug)}`,
+    question: `상품 '${clip(product.name, 24)}'을 등록할까요?`,
     facts: [
-      ['왜 지금', '코드 검증이 끝나 사람의 결정을 기다립니다'],
-      ['검증', SHADOW_LABEL[verdict] ?? (evaluation === null ? '독립 평가가 아직 없습니다' : passed ? '독립 평가 통과' : '독립 평가 미통과')],
-      ['증거', `${view.evidence.length}건 중 ${confirmed}건 확인됨${external > 0 ? `, 외부 입력 ${external}건 포함` : ''}`],
+      ['무엇', `'${clip(product.name, 30)}'을 정식 상품으로 등록합니다`],
+      ['확인할 것', `${SHADOW_LABEL[verdict] ?? (evaluation === null ? '독립 평가가 아직 없습니다' : passed ? '독립 평가 통과' : '독립 평가 미통과')} · 증거 ${view.evidence.length}건 중 ${confirmed}건 확인됨${external > 0 ? `, 외부 입력 ${external}건 포함` : ''}`],
+      ['위험·기한', '등록하면 이 상품을 대상으로 한 업무를 만들 수 있습니다'],
     ],
     badge: blocked !== null || !passed ? { label: '검증 실패 — 승인 불가', tone: 'bad' } : { label: '검증 통과', tone: 'ok' },
     urgency: ctx.clock.nowMs(),
@@ -305,18 +403,28 @@ export function effectsDecision(ctx: ReviewContext): Decision | null {
   const effects = listUnresolvedEffects(ctx.db, ctx.clock.nowIso());
   if (effects.length === 0) return null;
   const oldest = effects.map((e) => e.plannedAt).sort()[0]!;
-  const tools = [...new Set(effects.map((e) => e.tool))].map((t) => `'${t}'`).join(', ');
+  const objectiveOf = (taskId: string): string => ctx.db.get<{ objective: string }>('SELECT objective FROM task WHERE id = ?', [taskId])?.objective ?? '작업';
+  const objectives = [...new Set(effects.map((e) => objectiveOf(e.taskId)))];
+  const name = objectives.length === 1 ? `'${clip(objectives[0]!, 28)}'` : `'${clip(objectives[0]!, 22)}' 외 ${objectives.length - 1}개 작업`;
+  const targets = [...new Set(effects.map((e) => e.target))];
+  const usable = effects.filter((e) => !e.runActive && !e.resolvedBefore);
+  const confirmCmd = (id: string): string => `${APPROVE_CLI} resolve-effect ${shellArg(id)} --outcome confirmed --note "확인한 내용"`;
+  const failCmd = (id: string): string => `${APPROVE_CLI} resolve-effect ${shellArg(id)} --outcome failed --note "확인한 내용" --totp-stdin`;
   return {
-    key: 'effects', href: '/effects',
-    question: `보냈는지 확인 안 된 ${tools} 작업 ${effects.length}건 — 실제로 나갔나요?`,
-    facts: [['왜 지금', '응답을 받지 못해 실제로 나갔는지 시스템이 모릅니다'], ['위험', '잘못 답하면 같은 내용이 두 번 나가거나 아예 안 나갑니다'], ['대기', `${ago(oldest, now)}부터 멈춰 있음`]],
+    key: 'effects', category: 'outside', first: true, href: '/effects',
+    question: `${name} 전송 여부 ${effects.length}건 — 실제로 나갔나요?`,
+    facts: [
+      ['무엇', `${name} 작업의 ${effects.length}건이 ${targets.join(', ')} 에 도착했는지 시스템이 모릅니다`],
+      ['확인할 것', '받는 쪽(수신함 등)에서 실제로 도착했는지'],
+      ['위험·기한', `잘못 답하면 같은 내용이 두 번 나가거나 아예 안 나갑니다 · ${ago(oldest, now)}부터 대기`],
+    ],
     urgency: now,
-    actions: h`${effects.map((e) => h`<div class="card"><h3>${e.tool} · ${e.action} → ${clip(e.target, 50)}</h3>${choices({
-      approve: e.runActive ? { blocked: '실행 중인 작업이 있어 지금은 확인할 수 없습니다.' } : e.resolvedBefore ? { blocked: '이미 한 번 확인된 건이라 다시 확인할 수 없습니다.' }
-        : { label: '나갔다고 확인', command: `${APPROVE_CLI} resolve-effect ${shellArg(e.effectId)} --outcome confirmed --note "확인한 내용"`, note: '받는 쪽(수신함 등)을 직접 확인한 뒤' },
-      reject: e.runActive || e.resolvedBefore ? undefined : { label: '나가지 않았다고 확인', command: `${APPROVE_CLI} resolve-effect ${shellArg(e.effectId)} --outcome failed --note "확인한 내용" --totp-stdin`, note: 'OTP 코드 한 줄을 입력합니다. 이후 재전송은 정책 판정을 거칩니다' },
-    })}</div>`)}`,
-    details: table(['효과', '도구', '대상', '업무 상태', '재전송 허가'], effects.map((e) => [e.effectId, `${e.tool} ${e.action}`, e.target, e.taskStatus, e.supportsIdempotency ? (e.resendWindowOpen ? '가능' : '불가(보존 기간 지남)') : '지원 안 함'])),
+    actions: usable.length === 0 ? choices({ approve: { blocked: '지금은 확인할 수 없습니다 (실행 중이거나 이미 한 번 확인됨).' } }) : choices({
+      approve: { label: usable.length > 1 ? `${usable.length}건 모두 나갔다고 확인` : '나갔다고 확인', command: usable.map((e) => confirmCmd(e.effectId)).join(' && '), note: '받는 쪽을 직접 확인한 뒤' },
+      reject: usable.length > 1 ? { blocked: '"나가지 않았다"는 OTP 코드가 필요해 건별로 자세히에서 처리합니다.' } : { label: '나가지 않았다고 확인', command: failCmd(usable[0]!.effectId), note: 'OTP 코드 한 줄을 입력합니다. 이후 재전송은 정책 판정을 거칩니다' },
+    }),
+    details: h`<h2>건별 명령</h2>${effects.map((e) => h`<h3>${e.tool} · ${e.action} → ${clip(e.target, 50)}</h3>${e.runActive || e.resolvedBefore ? h`<p class="mute">${e.runActive ? '실행 중인 작업이 있어 지금은 확인할 수 없습니다.' : '이미 한 번 확인된 건이라 다시 확인할 수 없습니다.'}</p>` : h`${command(confirmCmd(e.effectId), '나갔다고 확인')}${command(failCmd(e.effectId), '나가지 않았다고 확인 (OTP 코드 입력)')}`}`)}
+      <h2>효과 목록 (원문)</h2>${table(['효과', '도구', '대상', '업무 상태', '재전송 허가'], effects.map((e) => [e.effectId, `${e.tool} ${e.action}`, e.target, e.taskStatus, e.supportsIdempotency ? (e.resendWindowOpen ? '가능' : '불가(보존 기간 지남)') : '지원 안 함']))}`,
   };
 }
 
@@ -327,9 +435,9 @@ export function experimentDecisions(ctx: ReviewContext): Decision[] {
   const out: Decision[] = [];
   for (const e of reviews.awaitingPromotion) {
     out.push({
-      key: `promote:${e.strategyVersionId}`, href: `/experiments/${encodeURIComponent(e.strategyVersionId)}`,
+      key: `promote:${e.strategyVersionId}`, category: 'experiment', first: false, href: `/experiments/${encodeURIComponent(e.strategyVersionId)}`,
       question: `'${clip(title(e.strategyVersionId))}' 실험이 목표를 넘겼습니다. 정식 전략으로 올릴까요?`,
-      facts: [['왜 지금', '결과 평가가 통과해 사람의 승격 결정을 기다립니다'], ['위험', '이전 활성 전략은 보관(retired) 처리됩니다']],
+      facts: [['무엇', '이 실험을 정식 전략으로 올립니다 (이전 정식 전략은 보관 처리)'], ['확인할 것', '실험 결과가 목표를 넘겼는지'], ['위험·기한', `실험 비용 $${num(e.totalCostUsd)} · 승격 뒤에도 되돌릴 수 있습니다`]],
       badge: { label: '검증 통과', tone: 'ok' }, urgency: ctx.clock.nowMs(),
       actions: choices({ approve: { label: '정식 전략으로 올리기', command: `${APPROVE_CLI} promote strategy ${shellArg(e.strategyVersionId)} --comment "사유"` }, reject: { command: rejectCmd('strategy', e.strategyVersionId) } }),
       details: kv([['실험 비용(USD)', num(e.totalCostUsd)], ['평가 id', e.evaluationId], ['전략 id', e.strategyVersionId]]),
@@ -337,9 +445,9 @@ export function experimentDecisions(ctx: ReviewContext): Decision[] {
   }
   for (const e of reviews.needsHuman) {
     out.push({
-      key: `needs:${e.strategyVersionId}`, href: `/experiments/${encodeURIComponent(e.strategyVersionId)}`,
+      key: `needs:${e.strategyVersionId}`, category: 'experiment', first: false, href: `/experiments/${encodeURIComponent(e.strategyVersionId)}`,
       question: `'${clip(title(e.strategyVersionId))}' 실험 결과를 판정하지 못했습니다. 이 실험을 끝낼까요?`,
-      facts: [['왜 지금', '결과를 가릴 증거가 부족합니다'], ['위험', '끝내도 기억(결과 기록)은 만들어지지 않습니다']],
+      facts: [['무엇', '이 실험을 끝냅니다 (결과 기록은 남기지 않음)'], ['확인할 것', '증거가 부족해 결과를 가릴 수 없다는 판단에 동의하는지'], ['위험·기한', '끝내면 같은 실험을 다시 승인받아야 합니다']],
       badge: { label: '판정 보류', tone: 'warn' }, urgency: ctx.clock.nowMs() + DAY,
       actions: choices({ reject: { label: '실험 끝내기', command: rejectCmd('strategy', e.strategyVersionId), note: '사유가 필수입니다. 그대로 두면 계속 대기합니다' } }),
       details: kv([['엔진 원문', e.reason], ['검토 업무', e.reviewTaskId], ['전략 id', e.strategyVersionId]]),
@@ -371,7 +479,7 @@ export function trialState(ctx: ReviewContext, row: OrgProposalRow): TrialState 
   }
   const evalDays = Number(rec(json(row.evaluation_plan))['evaluation_days']);
   return {
-    row, roleSlugs: arr(obj(json(row.diff))['ops']).map((op) => str(rec(rec(op)['role'])['slug'])), verdict, reason, metrics,
+    row, roleSlugs: rolesOf(row).map(roleLabel), verdict, reason, metrics,
     endsAt: startedAt !== null && Number.isFinite(evalDays) ? new Date(Date.parse(startedAt) + evalDays * DAY).toISOString() : null,
     minDays: row.trial_min_days, results: results.map((r) => ({ outcome: r.outcome, observations: r.observations, at: r.at })), latest: results.at(-1)?.outcome ?? null,
   };
@@ -392,12 +500,12 @@ function trialLine(t: TrialState): string {
 export function trialDecision(ctx: ReviewContext, row: OrgProposalRow): Decision | null {
   const t = trialState(ctx, row);
   const slugs = t.roleSlugs.map((s) => `'${s}'`).join(', ');
-  const common = { urgency: ctx.clock.nowMs() + 2 * DAY, href: `/trials/${encodeURIComponent(row.id)}` };
+  const common = { category: 'org' as const, first: false, urgency: ctx.clock.nowMs() + 2 * DAY, href: `/trials/${encodeURIComponent(row.id)}` };
   const detail = trialDetails(ctx, t);
   if (row.status === 'trial' && t.latest === 'pass') {
     return {
       ...common, key: `confirm:${row.id}`, question: `${slugs} 시험이 통과했습니다. 정식 확정할까요?`, lead: trialLine(t),
-      facts: [['왜 지금', '평가 기간이 끝나 통과 판정이 났습니다'], ['위험', '확정하면 시험 범위가 아니라 정식 조직이 됩니다 (이후 되돌리기 가능)']],
+      facts: [['무엇', '시험 중인 역할을 정식 조직으로 확정합니다'], ['확인할 것', '시험 결과(통과율·관측 수)가 충분한지'], ['위험·기한', '확정하면 시험 범위 제한이 풀립니다 (이후 되돌리기 가능)']],
       badge: { label: '검증 통과', tone: 'ok' },
       actions: choices({ approve: { label: '정식 확정', command: `${APPROVE_CLI} org confirm ${shellArg(row.id)} --comment "사유"` }, extra: h`<p class="mute">확정하지 않으면 시험 상태로 남습니다.</p>` }), details: detail,
     };
@@ -405,7 +513,7 @@ export function trialDecision(ctx: ReviewContext, row: OrgProposalRow): Decision
   if (row.status === 'inconclusive') {
     return {
       ...common, key: `retrial:${row.id}`, question: `${slugs} 시험은 관측이 부족했습니다. 한 번 더 시험할까요?`, lead: trialLine(t),
-      facts: [['왜 지금', '평가 기간이 끝났지만 판단할 만큼 업무가 쌓이지 않았습니다'], ['위험', `재시험은 제안당 1회까지입니다 (지금까지 ${row.trial_extensions}회)`]],
+      facts: [['무엇', '새 평가 계획으로 시험을 한 번 더 진행합니다'], ['확인할 것', '업무가 더 쌓일 때까지 기다릴 만한지'], ['위험·기한', `재시험은 제안당 1회까지입니다 (지금까지 ${row.trial_extensions}회)`]],
       badge: { label: '판정 보류', tone: 'warn' },
       actions: choices({ approve: { label: '재시험', command: `${APPROVE_CLI} org retrial ${shellArg(row.id)} --file evaluation-plan.json --comment "사유"`, note: '새 평가 계획 JSON 파일이 필요합니다' }, extra: h`<p class="mute">재시험하지 않으면 판정 불충분 상태로 남습니다.</p>` }), details: detail,
     };
@@ -443,11 +551,12 @@ export function signalDecisions(ctx: ReviewContext): Decision[] {
     .flatMap((r) => arr(rec(json(r.trial_scope))['task_types']).map(str)));
   return signals.unassigned.filter((s) => s.candidate && !covered.has(s.task_type)).map((s) => ({
     key: `signal:${s.task_type}`, href: `/signals/${encodeURIComponent(s.task_type)}`,
-    question: `'${s.task_type}' 업무 ${s.count}건이 담당자 없이 멈췄습니다 — 새 역할 제안서를 만들까요?`,
-    facts: [['왜 지금', `최근 ${signals.window_days}일 동안 ${s.count}건이 맡을 역할이 없어 멈췄습니다`], ['위험', '제안서만 만들어집니다. 아무것도 바뀌지 않고 승인은 따로 합니다']],
+    category: 'org' as const, first: false,
+    question: `'${s.task_type}' 업무 ${s.count}건이 맡을 역할이 없어 멈췄습니다 — 새 역할 제안서를 만들까요?`,
+    facts: [['무엇', `이 업무를 맡을 새 역할의 제안서 초안을 만듭니다 (최근 ${signals.window_days}일 ${s.count}건)`], ['확인할 것', '이 업무를 새 역할에 맡길 필요가 있는지'], ['위험·기한', '제안서만 만들어지고 아무것도 바뀌지 않습니다. 승인은 따로 합니다']],
     urgency: ctx.clock.nowMs() + 25 * DAY,
     actions: choices({ approve: { label: '제안서 만들기', command: `${APPROVE_CLI} org propose --type ${shellArg(s.task_type)} --role <새-역할-slug> [--unit <부서-slug>]`, note: '역할 slug 는 직접 정합니다' }, extra: h`<p class="mute">그대로 두면 이 업무는 계속 멈춰 있습니다.</p>` }),
-    details: h`<p>맡을 역할이 없는 업무 유형 '${s.task_type}' (최근 ${signals.window_days}일 ${s.count}건). 기준은 3건 이상입니다.</p>`,
+    details: h`<p>맡을 역할이 없어 멈춘 업무 유형 '${s.task_type}' (최근 ${signals.window_days}일 ${s.count}건). 기준은 3건 이상입니다.</p>`,
   }));
 }
 
@@ -492,7 +601,7 @@ export function watchLines(ctx: ReviewContext): { text: string; href?: string }[
   const lines: { text: string; href?: string }[] = [];
   for (const row of ctx.db.all<OrgProposalRow>("SELECT * FROM org_proposal WHERE status IN ('trial', 'approved') ORDER BY created_at, id")) {
     if (row.status === 'approved') {
-      lines.push({ text: `${arr(obj(json(row.diff))['ops']).map((op) => `'${str(rec(rec(op)['role'])['slug'])}'`).join(', ')} 승인됨 — 시험 시작 대기` });
+      lines.push({ text: `${rolesOf(row).map((r) => `'${roleLabel(r)}'`).join(', ')} 승인됨 — 시험 시작 대기` });
       continue;
     }
     if (trialDecision(ctx, row) !== null) continue; // 결정할 일에 올라와 있다
@@ -510,6 +619,9 @@ export function watchLines(ctx: ReviewContext): { text: string; href?: string }[
   const reviews = pendingLists(ctx).lists.strategy_reviews;
   if (reviews.length > 0) lines.push({ text: `추천 없이 끝난 실험 비교 ${reviews.length}건 — 읽어 보고 다음 기획에 반영합니다` });
   const problems = (orgSignals(ctx.db, ctx.clock) as { role_problems: { role: string; needs_review: number; failed: number; candidate: boolean }[] }).role_problems.filter((r) => r.candidate);
-  for (const r of problems) lines.push({ text: `역할 '${r.role}' — 최근 사람 확인 필요 ${r.needs_review}건·실패 ${r.failed}건이 반복됩니다` });
+  for (const r of problems) {
+    const desc = ctx.db.get<{ description: string }>('SELECT description FROM role WHERE slug = ?', [r.role])?.description ?? r.role;
+    lines.push({ text: `'${clip(desc, 24)}'${desc.endsWith('역할') ? '' : ' 역할'} — 최근 사람 확인 필요 ${r.needs_review}건·실패 ${r.failed}건이 반복됩니다` });
+  }
   return lines;
 }

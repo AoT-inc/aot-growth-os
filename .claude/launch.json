@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "review-web-check",
+      "runtimeExecutable": "/opt/homebrew/opt/node@24/bin/node",
+      "runtimeArgs": ["apps/daemon/src/review-web.ts", "--db", "instance/demo-check/review.db", "--port", "8790"],
+      "port": 8790
+    }
+  ]
+}

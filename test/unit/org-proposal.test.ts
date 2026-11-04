@@ -12,6 +12,7 @@ import {
 
 import { addAgent, seededDb } from '../support/seeded-db.ts';
 
+const DAY_MS = 86_400_000;
 const TOOLS = [{ tool: 'web_search', operations: ['search'] }];
 const EVALUATION = { min_pass_rate: 0.8, min_observations: 3, max_cost_usd: 5, baseline_window_days: 30, evaluation_days: 14 };
 const ROLLBACK = { org_version: 'restore_parent', routines: 'disable', queued_tasks: { reroute_to: 'generalist' }, running_tasks: 'finish', external_effects: 'human' };
@@ -233,4 +234,18 @@ test('inconclusive: roles stop receiving work; one human-approved retry with a n
   result(proposalId, 'inconclusive');
   db.writeTx((tx) => transitionOrgProposal(tx, clock, { proposalId, to: 'inconclusive', by: 'evaluator' }));
   assert.equal(code(() => move(proposalId, 'trial', { approvalId: approval(proposalId, SEED_IDS.owner), evaluationPlan: plan })), 'extension_limit');
+});
+
+test('a confirmation must come after the passing result: the earlier proposal approval cannot be reused to confirm a trial', (t) => {
+  const { db, clock, propose, approval, move, result } = setup(t);
+  const { proposalId } = propose();
+  const early = approval(proposalId, SEED_IDS.owner);
+  move(proposalId, 'approved', { approvalId: early });
+  db.writeTx((tx) => transitionOrgProposal(tx, clock, { proposalId, to: 'trial', by: 'system' }));
+  clock.advance(DAY_MS);
+  result(proposalId, 'pass');
+  assert.equal(code(() => move(proposalId, 'active', { by: 'system', approvalId: early })), 'approval_missing');
+  assert.equal(statusOf(db, proposalId), 'trial');
+  move(proposalId, 'active', { by: 'system', approvalId: approval(proposalId, SEED_IDS.owner) });
+  assert.equal(statusOf(db, proposalId), 'active');
 });

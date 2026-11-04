@@ -394,15 +394,19 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
   assertTransition(ORG_PROPOSAL_MACHINE, { from, to: request.to, by: request.by, reason: request.reason ?? null, approvalId: request.approvalId ?? null });
   const now = clock.nowIso();
   const result: OrgTransitionResult = { from, to: request.to, orgVersionId: row.org_version_id, reroutedTaskIds: [], disabledRoutineIds: [] };
-  const humanOnly = (what: string): void => {
+  /** 사람의 `approved` 기록이 필요하다. `notBefore` 가 있으면 그 시각 *뒤*의 기록이어야 한다(예전 승인 기록을 확인·재시험에 재사용하지 못하게) */
+  const humanOnly = (what: string, notBefore?: string): void => {
     if (!isNonBlankString(request.approvalId)) throw new OrgRuleError('approval_missing', `${what} needs a human approval record`);
-    const approval = tx.get<{ decision: string; kind: string | null }>(
-      `SELECT a.decision, actor.kind FROM approval a LEFT JOIN actor ON actor.id = a.decided_by
+    const approval = tx.get<{ decision: string; kind: string | null; at: string }>(
+      `SELECT a.decision, actor.kind, a.at FROM approval a LEFT JOIN actor ON actor.id = a.decided_by
        WHERE a.id = ? AND a.subject_kind = 'org_proposal' AND a.subject_id = ?`,
       [request.approvalId, row.id],
     );
     if (!approval || approval.decision !== 'approved' || approval.kind !== 'human') {
       throw new OrgRuleError('approval_missing', `approval '${request.approvalId}' is not a human approval of org_proposal '${row.id}'`);
+    }
+    if (notBefore !== undefined && approval.at < notBefore) {
+      throw new OrgRuleError('approval_missing', `approval '${request.approvalId}' predates the trial result it should confirm; a person must decide after seeing the result`);
     }
   };
 
@@ -426,7 +430,7 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
     case 'trial>active': {
       const latest = latestTrialResult(tx, row.id);
       if (latest?.outcome !== 'pass') throw new OrgRuleError('result_missing', `org_proposal '${row.id}' has no passing trial result`);
-      humanOnly('confirming a trial');
+      humanOnly('confirming a trial', latest.at);
       result.orgVersionId = activateVersion(tx, row);
       break;
     }
@@ -450,7 +454,7 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
       if (row.trial_extensions >= ORG_MAX_TRIAL_EXTENSIONS) throw new OrgRuleError('extension_limit', `org_proposal '${row.id}' already used its ${ORG_MAX_TRIAL_EXTENSIONS} trial extension`);
       if (request.evaluationPlan === undefined) throw new OrgRuleError('invalid_field', 'a new evaluation plan is required to retry a trial');
       const plan = parseEvaluationPlan(request.evaluationPlan, row.trial_min_days);
-      humanOnly('retrying a trial');
+      humanOnly('retrying a trial', latestTrialResult(tx, row.id)?.at);
       reviveAddedRoles(tx, row);
       tx.run('UPDATE org_proposal SET evaluation_plan = ?, trial_extensions = trial_extensions + 1 WHERE id = ?', [canonicalJson(plan), row.id]);
       break;

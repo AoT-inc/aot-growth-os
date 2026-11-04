@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 import { parseReviewWebArgs, UsageError, type ConfigDeps } from '../../apps/daemon/src/review-web/config.ts';
 import { sniffImage } from '../../apps/daemon/src/review-web/evidence-file.ts';
-import { ago, clip, commonAffixes, eulReul, monthDay, percent, until } from '../../apps/daemon/src/review-web/format.ts';
+import { addressDomain, ago, clip, commonAffixes, draftExpiry, eulReul, maskAddress, monthDay, percent, until } from '../../apps/daemon/src/review-web/format.ts';
 import { choices, command, full, h, prettyJson, raw, shellArg, table, text } from '../../apps/daemon/src/review-web/html.ts';
 import { hostAllowed } from '../../apps/daemon/src/review-web/server.ts';
 import { barChart, lineChart } from '../../apps/daemon/src/review-web/svg.ts';
@@ -139,4 +139,19 @@ test('eulReul picks 을/를 by the final consonant; commonAffixes names a batch 
   assert.deepEqual(commonAffixes(['고객 안내 메일 초안 #1 발송', '고객 안내 메일 초안 #2 발송', '고객 안내 메일 초안 #3 발송']), { prefix: '고객 안내 메일 초안', suffix: '발송' });
   assert.deepEqual(commonAffixes(['가나다 작업', '전혀 다른 일']), { prefix: '', suffix: '' });
   assert.deepEqual(commonAffixes(['하나뿐']), { prefix: '', suffix: '' });
+});
+
+test('maskAddress keeps only the first letter and the domain; draftExpiry reads in hours', () => {
+  assert.equal(maskAddress('kim@example.com'), 'k***@example.com');
+  assert.equal(maskAddress(' kim.minji+tag@example.com '), 'k***@example.com');
+  assert.equal(maskAddress('no-at-sign'), 'n***');
+  assert.equal(maskAddress('@example.com'), '@***');
+  assert.equal(addressDomain('Kim@Example.COM'), 'example.com');
+  assert.equal(addressDomain('broken@'), '(도메인 없음)');
+  const now = Date.parse('2026-11-05T00:00:00.000Z');
+  assert.equal(draftExpiry('2026-11-05T05:00:01.000Z', now), '초안 6시간 뒤 만료');
+  assert.equal(draftExpiry('2026-11-05T00:40:00.000Z', now), '초안 40분 뒤 만료');
+  assert.equal(draftExpiry('2026-11-08T00:00:00.000Z', now), '초안 3일 뒤 만료');
+  assert.equal(draftExpiry('2026-11-04T23:59:59.000Z', now), '초안 기한 지남');
+  assert.equal(draftExpiry('not a date', now), '초안 기한 확인 불가');
 });

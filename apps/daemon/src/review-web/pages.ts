@@ -4,11 +4,11 @@ import { getOrgProposal } from '@aot/domain';
 import type { ReviewContext } from './context.ts';
 import {
   batchDecision, buildInbox, effectsDecision, evidenceKindLabel, experimentDecisions, orgDecision, policyDecision, productDecision, publicationDecision, signalDecisions,
-  strategyDecision, taskDecision, taskGroups as taskGroupsOf, trialPage, watchLines, type Category, type Decision,
+  strategyDecision, taskDecision, taskGroups as taskGroupsOf, trialPage, watchLines, type Category, type Decision, type Tone,
 } from './decisions.ts';
 import { MAX_TEXT_CHARS, readEvidence } from './evidence-file.ts';
 import { ago, clip } from './format.ts';
-import { back, badge, details, facts, full, h, kv, link, type Raw } from './html.ts';
+import { back, badge, badgeRow, details, facts, full, h, kv, link, type Raw } from './html.ts';
 
 export interface Rendered {
   title: string;
@@ -16,8 +16,10 @@ export interface Rendered {
   status: number;
 }
 
+const badgesOf = (d: Decision): { label: string; tone: Tone }[] => [...(d.badge === undefined ? [] : [d.badge]), ...(d.badges ?? [])];
+
 /** 카드 전체가 링크다 (제목이 접근 가능한 이름) */
-const card = (d: Decision): Raw => h`<a class="card" href="${d.href}"><h3>${d.question}</h3>${d.badge === undefined ? '' : h`<p>${badge(d.badge.label, d.badge.tone)}</p>`}${facts(d.facts)}</a>`;
+const card = (d: Decision): Raw => h`<a class="card" href="${d.href}"><h3>${d.question}</h3>${badgeRow(badgesOf(d))}${facts(d.facts)}</a>`;
 
 const CATEGORY_LABEL: Readonly<Record<Category, string>> = { outside: '바깥에 나가는 일', org: '조직 변경', experiment: '실험', product: '상품 등록', other: '기타' };
 
@@ -56,7 +58,7 @@ export function watchPage(ctx: ReviewContext): Rendered {
 export function decisionPage(d: Decision): Rendered {
   return {
     title: d.question, status: 200,
-    body: h`${back('/', '결정할 일')}${d.lead === undefined ? '' : h`<p class="lead">${d.lead}</p>`}${d.badge === undefined ? '' : h`<p>${badge(d.badge.label, d.badge.tone)}</p>`}${facts(d.facts)}${d.actions}${details(d.details)}`,
+    body: h`${back('/', '결정할 일')}${d.lead === undefined ? '' : h`<p class="lead">${d.lead}</p>`}${badgeRow(badgesOf(d))}${facts(d.facts)}${d.body ?? ''}${d.actions}${details(d.details)}`,
   };
 }
 

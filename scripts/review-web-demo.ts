@@ -9,11 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 import {
-  applyMigrations, createOrgProposal, EXPERIMENT_RESULT_EVENT, experimentEventId, experimentResultKey, FakeClock, openDb, recordExperimentReview, seedPhaseA, SEED_IDS, transitionOrgProposal,
+  applyMigrations, canonicalJson, createOrgProposal, EXPERIMENT_RESULT_EVENT, experimentEventId, experimentResultKey, FakeClock, openDb, recordExperimentReview, seedPhaseA, SEED_IDS, sha256Hex, transitionOrgProposal,
   type TaskPolicyGate,
 } from '@aot/domain';
 import { PolicyStore } from '@aot/policy';
-import { createTask } from '@aot/task-engine';
+import { createTask, effectKeyOf } from '@aot/task-engine';
 
 import { draftProposalFromSignal } from '../apps/daemon/src/org-channel.ts';
 import { advanceOrganization } from '../apps/daemon/src/org-cycle.ts';
@@ -213,6 +213,30 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
       });
       return id;
     });
+    // 고객 메일 업무 3건에 사람이 볼 초안(proposed)을 둔다 (가상 주소·본문). 하나는 외부 입력 영향 하에 작성됨, 하나는 기한이 지났다.
+    // 초안 행은 원장 입구(recordDraft)가 만드는 것과 같은 모양이다: payload = canonicalJson, payload_hash = sha256, effect_key = effectKeyOf.
+    const HOUR = 3_600_000;
+    const addDraft = (taskIdOf: string, runId: string, seq: number, request: object, o: { influenced?: boolean; expiresInMs: number }): void => {
+      const payload = canonicalJson(request) as string;
+      const stepId = `step-${runId}-${seq}`;
+      db.writeTx((tx) => {
+        if (seq === 1) {
+          tx.run(
+            `INSERT INTO task_run (id, task_id, attempt, actor_id, adapter, started_at, ended_at, lease_owner, lease_expires_at, heartbeat_at, outcome)
+             VALUES (?, ?, 1, ?, 'fake-adapter', ?, ?, 'worker-demo', ?, ?, 'submitted')`, [runId, taskIdOf, agent, clock.nowIso(), clock.nowIso(), clock.nowIso(), clock.nowIso()],
+          );
+        }
+        tx.run(
+          `INSERT INTO effect_draft (id, task_id, task_run_id, seq, tool, action, target, step_id, payload, payload_hash, effect_key, influenced_by_external_input, state, created_at, expires_at, at)
+           VALUES (?, ?, ?, ?, 'notify-tool', 'send', 'mailbox:example', ?, ?, ?, ?, ?, 'proposed', ?, ?, ?)`,
+          [`draft-demo-${runId}-${seq}`, taskIdOf, runId, seq, stepId, payload, sha256Hex(payload), effectKeyOf(taskIdOf, stepId, JSON.parse(payload)), o.influenced === true ? 1 : 0, clock.nowIso(), new Date(nowMs + o.expiresInMs).toISOString(), clock.nowIso()],
+        );
+      });
+    };
+    addDraft(reviewTasks[0]!, 'run-demo-draft-0', 1, { to: ['kim.minji@example.com', 'lee.joon@example.com', 'park.seo@example.org'], subject: '가을 신제품 판매 시작 안내', text: '안녕하세요, 예시 상점입니다.\n\n이번 달 말부터 새 제품을 판매합니다. 자세한 내용은 예시 안내 페이지를 확인해 주세요.\n\n감사합니다.' }, { expiresInMs: 47 * HOUR });
+    addDraft(reviewTasks[0]!, 'run-demo-draft-0', 2, { to: ['choi.yuna@example.com'], subject: '예약하신 제품 안내', text: '예약해 주셔서 감사합니다. 다음 주 월요일부터 순서대로 보내 드립니다.' }, { expiresInMs: 47 * HOUR });
+    addDraft(reviewTasks[1]!, 'run-demo-draft-1', 1, { to: ['han.dowon@example.com', 'jung.haru@example.com'], cc: ['support@example.com'], subject: '문의하신 환불 절차 안내', text: '문의해 주신 환불은 아래 순서로 진행됩니다.\n1. 접수 확인\n2. 3영업일 안에 환불 처리\n\n(고객 문의 메일에서 가져온 문구를 바탕으로 작성했습니다.)' }, { influenced: true, expiresInMs: 23 * HOUR });
+    addDraft(reviewTasks[2]!, 'run-demo-draft-2', 1, { to: ['oh.sora@example.com'], subject: '정기 점검 일정 안내', text: '다음 주 화요일 새벽에 정기 점검이 있습니다. 그 시간에는 서비스를 잠시 쓸 수 없습니다.' }, { expiresInMs: -HOUR });
     const taskId = reviewTasks[0]!;
     const effectTask = reviewTasks[3]!;
     const effect = 'effect-demo-1';

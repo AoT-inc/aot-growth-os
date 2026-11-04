@@ -65,6 +65,9 @@ export const command = (line: string, note?: string): Raw => h`<div class="cmd">
 
 export const badge = (label: string, tone: 'ok' | 'warn' | 'bad' | 'info' | 'mute' = 'mute'): Raw => h`<span class="badge ${tone}">${label}</span>`;
 
+/** 배지 한 줄 (여러 개면 나란히). 없으면 빈 마크업 */
+export const badgeRow = (items: readonly { label: string; tone: 'ok' | 'warn' | 'bad' | 'info' | 'mute' }[]): Raw => (items.length === 0 ? h`` : h`<p>${items.map((b) => h`${badge(b.label, b.tone)} `)}</p>`);
+
 export function table(headers: readonly string[], rows: readonly (readonly unknown[])[], empty = '없음'): Raw {
   if (rows.length === 0) return h`<p class="empty">${empty}</p>`;
   return h`<div class="scroll"><table><thead><tr>${headers.map((header) => h`<th>${header}</th>`)}</tr></thead><tbody>${rows.map((row) => h`<tr>${row.map((cell) => h`<td>${cell}</td>`)}</tr>`)}</tbody></table></div>`;
@@ -95,7 +98,7 @@ h1{font-size:24px;line-height:1.4;margin:12px 0 10px;color:var(--accent)}h2{font
 a{color:var(--accent)}
 .badge{display:inline-block;border-radius:999px;padding:1px 11px;font-size:14px;border:1px solid var(--line);white-space:nowrap}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.warn{color:var(--warn);border-color:var(--warn)}.badge.bad{color:var(--bad);border-color:var(--bad)}.badge.info{color:var(--accent);border-color:var(--accent)}
 .decide{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 16px 12px;margin:18px 0}.decide h2{font-size:15px;margin:4px 0 8px;color:var(--mute)}.row{display:flex;gap:10px;align-items:center;margin:6px 0}.row>span:not(.btn){font-size:14px}.rnote{color:var(--mute);font-size:12px;margin:-2px 0 6px 2px}
-.btn{flex:none;min-width:5.2em;text-align:center;border-radius:8px;padding:3px 10px;font-weight:600;font-size:14px;border:1px solid var(--line)}.btn.yes{background:var(--ok);color:#fff;border-color:var(--ok)}.btn.no{color:var(--bad);border-color:var(--bad)}.btn.na{color:var(--mute)}
+.btn{flex:none;min-width:5.2em;text-align:center;border-radius:8px;padding:3px 10px;font-weight:600;font-size:14px;border:1px solid var(--line)}.btn.yes{background:var(--ok);color:#fff;border-color:var(--ok)}.btn.no{color:var(--bad);border-color:var(--bad)}.btn.na{color:var(--mute)}.btn.ch{color:var(--warn);border-color:var(--warn)}
 .decide code{display:block;flex:1;min-width:0;white-space:nowrap;overflow-x:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:4px 10px;user-select:all}
 h2.grp{font-size:17px;margin:28px 0 4px}.summary{color:var(--mute);margin:0 0 6px}
 .cmd{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;overflow-x:auto}.cmd code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}.cmd .note{display:block;color:var(--mute);font-size:13px;margin-top:2px}
@@ -132,18 +135,20 @@ export interface Choices {
   /** 승인 선택. 명령이 없으면 못 하는 이유(`blocked`)를 보인다 */
   approve?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
   reject?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
+  /** 변경 요청 (초안 승인 업무: 제안된 초안을 버리고 다시 쓰게 한다) */
+  changes?: { label?: string; command: string; note?: string } | undefined;
   /** 그 밖의 안내 (예: 대기 중 취소) */
   extra?: Raw | undefined;
 }
 
 /** 결정하기 상자: 승인/거절 두 줄. 각 줄은 이름표 + 한 줄짜리 명령(옆으로 스크롤). 못 하면 이유 */
 export function choices(c: Choices): Raw {
-  const one = (kind: 'yes' | 'no', fallback: string, entry: Choices['approve']): Raw => {
+  const one = (kind: 'yes' | 'no' | 'ch', fallback: string, entry: Choices['approve']): Raw => {
     if (entry === undefined) return h``;
     if ('blocked' in entry) return h`<div class="row"><span class="btn na">${fallback} 불가</span><span>${entry.blocked}</span></div>`;
     return h`<div class="row"><span class="btn ${kind}">${entry.label ?? fallback}</span><code>${entry.command}</code></div>${entry.note === undefined ? '' : h`<div class="rnote">${entry.note}</div>`}`;
   };
-  return h`<div class="decide"><h2>결정하기</h2>${one('yes', '승인', c.approve)}${one('no', '거절', c.reject)}${c.extra ?? ''}</div>`;
+  return h`<div class="decide"><h2>결정하기</h2>${one('yes', '승인', c.approve)}${one('no', '거절', c.reject)}${one('ch', '변경 요청', c.changes)}${c.extra ?? ''}</div>`;
 }
 
 /** 내부 이동 링크. 경로 조각은 인코딩하고 값은 이스케이프한다 */

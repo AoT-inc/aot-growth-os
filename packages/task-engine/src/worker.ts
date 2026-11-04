@@ -7,9 +7,10 @@
 // lease 를 잃은 뒤에는 결과도 부작용도 기록하지 않는다 (펜싱이 거부한다).
 import {
   DENY_ALL_TASK_POLICY_GATE,
-  type Clock, type Db, type ExternalEffectRow, type TaskPolicyGate, type TaskSpec, type TaskValidator,
+  type Clock, type Db, type ExternalEffectRow, type RunPhase, type TaskPolicyGate, type TaskSpec, type TaskValidator,
 } from '@aot/domain';
 
+import { DEFAULT_DRAFT_TTL_MS, effectApprovalOf, recordDraft } from './drafts.ts';
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
 import { EffectDeclarationError, EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
 import { validateEffectToolDeclaration, type DeclarationError } from './idempotency.ts';
@@ -37,6 +38,8 @@ export interface RunContext {
   readonly upstream: readonly UpstreamResult[];
   /** 직전 run 의 checkpoint (없으면 null) */
   readonly checkpoint: unknown;
+  /** 이 run 의 단계 (ADR-0015). `draft` 에서는 `performEffect` 가 보내지 않고 초안으로 남긴다 */
+  readonly phase: RunPhase;
   /** lease 를 잃으면 abort 된다 */
   readonly signal: AbortSignal;
   saveCheckpoint(value: unknown): void;
@@ -45,8 +48,11 @@ export interface RunContext {
   recordOutput(record: RunOutputRecord): void;
   /** 호스트 코드(도구 실행기)가 저장한 본문의 근거 행을 즉시 남기고 행 id 를 돌려준다 (lease 펜싱). 에이전트 어댑터에는 노출되지 않는다 */
   recordEvidence(item: HostEvidence): string;
-  /** 등록된 도구로 외부 부작용 수행 (recovery §3 규칙) */
-  performEffect(toolName: string, step: EffectStep): Promise<EffectOutcome>;
+  /**
+   * 등록된 도구로 외부 부작용 수행 (recovery §3 규칙). `draft` 단계에서는 아무것도 보내지 않고 초안을 남긴다 (결과 `drafted`).
+   * `meta.influenced`: 외부 입력이 영향을 준 호출인가 (초안 행에 표시가 남는다)
+   */
+  performEffect(toolName: string, step: EffectStep, meta?: { influenced?: boolean }): Promise<EffectOutcome>;
 }
 
 export interface TaskExecutor {
@@ -97,6 +103,8 @@ export interface WorkerOptions {
   routines?: RoutineScheduleOptions;
   /** lease 만료 인수가 시도 횟수를 소모하는가. 기본 false */
   leaseExpiryConsumesAttempt?: boolean;
+  /** 초안 기한(밀리초, ADR-0015 D8). 기본 72시간 */
+  draftTtlMs?: number;
   timers?: Timers;
 }
 
@@ -226,6 +234,7 @@ export class TaskWorker {
     const claim = claimNextTask(db, {
       clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs,
       ...(this.#options.adapterFor === undefined ? {} : { adapterFor: this.#options.adapterFor }),
+      effectApprovalOf: (spec) => effectApprovalOf(spec, this.#options.tools),
     });
     if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed: null };
     const executed = await this.#execute(claim.claimed);
@@ -233,7 +242,7 @@ export class TaskWorker {
   }
 
   async #execute(claimed: ClaimedTask): Promise<ExecutionReport> {
-    const { lease, spec, checkpoint, adapter, upstream } = claimed;
+    const { lease, spec, checkpoint, adapter, upstream, phase } = claimed;
     const { db, clock, executor, tools } = this.#options;
     const abort = new AbortController();
     // 부작용 직전 재검증이 거부하면 run 은 이미 닫혔다(killed, needs_review). 이후 쓰기는 펜싱이 막는다.
@@ -260,6 +269,11 @@ export class TaskWorker {
       }
     };
 
+    if (phase === 'dispatch') {
+      // 전송 단계는 호스트 전송기가 맡는다 (W7). 에이전트 실행기를 부르지 않는다 (ADR-0015 I2)
+      throw new Error('dispatch phase is not runnable by the agent executor');
+    }
+
     const timer = this.#timers.setInterval(() => {
       if (abort.signal.aborted) return;
       try {
@@ -278,6 +292,7 @@ export class TaskWorker {
       adapter,
       upstream,
       checkpoint,
+      phase,
       signal: abort.signal,
       saveCheckpoint: (value) => guard(() => saveCheckpoint(db, clock, lease, value)),
       heartbeat: () => {
@@ -285,11 +300,14 @@ export class TaskWorker {
       },
       recordOutput: (record) => guard(() => recordRunOutput(db, clock, lease, record)),
       recordEvidence: (item) => guard(() => recordHostEvidence(db, clock, lease, item)),
-      performEffect: async (toolName, step) => {
+      performEffect: async (toolName, step, meta) => {
         const tool = tools?.[toolName];
         if (!tool) throw new Error(`external effect tool '${toolName}' is not registered`);
         if (abort.signal.aborted) throw new LeaseLostError(lease.runId, 'external effect after lease loss');
         try {
+          if (phase === 'draft') {
+            return recordDraft(db, clock, lease, tool, step, { ttlMs: this.#options.draftTtlMs ?? DEFAULT_DRAFT_TTL_MS, influenced: meta?.influenced === true });
+          }
           return await performEffect(db, clock, lease, tool, step, this.#gate);
         } catch (error) {
           lost(error);

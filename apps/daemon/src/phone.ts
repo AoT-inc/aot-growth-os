@@ -53,7 +53,12 @@ export function createPhoneRuntime(deps: { db: Db; clock: Clock; store: PolicySt
     port, policy, effectTools, toolSpecs: phoneToolSpecs(),
     executorsFor: (context) => createPhoneToolExecutors({
       // 전화 도구의 실행기는 원장에 묶인다(bindToEffectLedger): 게이트웨이가 호출별 정책의 require_approval 을 원장에 넘기고, 원장이 전송 직전에 사람의 업무 승인을 확인한다
-      ledger: (tool, step) => context.performEffect(tool, step),
+      ledger: async (tool, step) => {
+        const outcome = await context.performEffect(tool, step);
+        // 전화는 approval 'scope' 라 초안이 될 수 없다 (ADR-0015). 초안 단계 run 에서 닿으면 recordDraft 가 먼저 던진다
+        if (outcome.state === 'drafted') throw new Error('phone effects cannot be drafted (approval scope)');
+        return outcome;
+      },
       capabilityFor: (perform) => createPhoneCapability({
         db, clock, policy,
         run: { taskId: context.taskId, runId: context.lease.runId, subject: subjectOf(context.spec), allowedTargets: declaredTargets(context.spec) },

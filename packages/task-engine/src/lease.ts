@@ -7,7 +7,8 @@
 //  - 만료 인수 (규칙 3·4): 옛 run 을 lease_expired 로 닫고, 남은 부작용을 §3 절차로 먼저 처리한 뒤 업무를 되돌린다.
 import { randomUUID } from 'node:crypto';
 
-import type { Clock, Db, EvidenceRow, ExternalEffectRow, RunPhase, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
+import { HOST_DISPATCH_ADAPTER, transitionDrafts } from '@aot/domain';
+import type { Clock, Db, EvidenceRow, ExternalEffectRow, EffectApprovalMode, RunPhase, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
 
 import { LeaseLostError, type RunKillReason } from './errors.ts';
 import { resendAllowed } from './idempotency.ts';
@@ -81,6 +82,11 @@ export interface ClaimOptions {
   adapter: string;
   /** 업무마다 어댑터를 고른다. 생략하면 모든 업무가 `adapter` */
   adapterFor?: AdapterSelector;
+  /**
+   * 명세 → 승인 방식 (ADR-0015, `effectApprovalOf(spec, tools)`). `beforeRun` 이 초안 단계를 정하는 입력이다. 생략하면 모든 업무가 `scope`(지금 동작).
+   * 던지면 그 업무는 `scope` 로 본다(초안 승인으로 올리지 않는다).
+   */
+  effectApprovalOf?: (spec: TaskSpec) => EffectApprovalMode;
   leaseMs: number;
   /** 특정 업무만 (시험·진단용) */
   taskId?: string;
@@ -97,6 +103,8 @@ export interface ClaimedTask {
   upstream: UpstreamResult[];
   /** 직전 run 의 checkpoint (인수한 run 은 여기서 이어 간다, 규칙 4) */
   checkpoint: unknown;
+  /** 이 run 의 단계 (ADR-0015): execute = 지금 방식, draft = 보내지 않고 초안만, dispatch = 호스트가 승인된 초안을 그대로 전송 */
+  phase: RunPhase;
 }
 
 export interface ClaimResult {
@@ -165,16 +173,24 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
         'SELECT attempt, checkpoint FROM task_run WHERE task_id = ? ORDER BY attempt DESC LIMIT 1', [task.id],
       );
       const attempt = Number(previous?.attempt ?? 0) + 1;
-      const verdict = options.gate.beforeRun(tx, { task, spec, attempt, now });
+      let effectApproval: EffectApprovalMode = 'scope';
+      if (options.effectApprovalOf !== undefined) {
+        try {
+          effectApproval = options.effectApprovalOf(spec);
+        } catch {
+          effectApproval = 'scope';
+        }
+      }
+      const verdict = options.gate.beforeRun(tx, { task, spec, attempt, now, effectApproval });
       if (verdict.decision !== 'allow') {
         transitionTask(tx, { taskId: task.id, from: 'queued', to: 'needs_review', by: 'policy', reason: verdict.reason, now });
         sentToReview.push(task.id);
         continue;
       }
-      if (verdict.phase !== 'execute') {
-        toReview(`run_phase_unsupported: the policy gate asked for the '${verdict.phase}' phase, which this scheduler cannot run`);
-        continue;
-      }
+      const phase = verdict.phase;
+      // 새 초안 run 은 이 업무의 남은 초안(pending·proposed)을 모두 버린다 (같은 트랜잭션)
+      if (phase === 'draft') transitionDrafts(tx, { taskId: task.id, from: ['pending', 'proposed'], to: 'superseded', by: 'scheduler', now });
+      if (phase === 'dispatch') adapter = HOST_DISPATCH_ADAPTER;
       if (measurementInputsOf(spec).length > 0) attachRecordedMeasurements(tx, task.id, spec, now);
       const runId = options.newRunId?.() ?? `run-${randomUUID()}`;
       transitionTask(tx, {
@@ -189,12 +205,13 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
       );
       return {
         claimed: {
-          lease: { runId, taskId: task.id, owner: options.workerId, attempt, leaseMs: options.leaseMs },
+          lease: { runId, taskId: task.id, owner: options.workerId, attempt, leaseMs: options.leaseMs, phase },
           task: { ...task, status: 'running' },
           spec,
           adapter,
           upstream,
           checkpoint: previous?.checkpoint == null ? null : JSON.parse(previous.checkpoint),
+          phase,
         },
         sentToReview,
       };
@@ -249,6 +266,11 @@ function settleRunEffects(tx: Db, runId: string, now: string): boolean {
 }
 
 function closeRun(tx: Db, runId: string, outcome: TaskRunOutcome, now: string, result?: unknown): void {
+  // 제출하지 못하고 끝난 초안 run 의 pending 초안은 버린다 (제출한 run 의 초안은 검증기가 proposed 또는 superseded 로 정한다)
+  if (outcome !== 'submitted') {
+    const run = tx.get<{ task_id: string }>('SELECT task_id FROM task_run WHERE id = ?', [runId]);
+    if (run) transitionDrafts(tx, { taskId: run.task_id, from: ['pending'], to: 'superseded', by: 'scheduler', now, runId });
+  }
   tx.run('UPDATE task_run SET outcome = ?, ended_at = ?, result = coalesce(?, result) WHERE id = ? AND outcome IS NULL', [
     outcome, now, result === undefined ? null : JSON.stringify(result), runId,
   ]);

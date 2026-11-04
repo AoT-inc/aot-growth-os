@@ -52,6 +52,8 @@ interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   retry_delay_ms?: number;
   /** 어댑터가 미룬(사람 우선 게이트) run 의 retry_wait 대기 시간. 시도를 소모하지 않는다. 기본 15분 */
   defer_delay_ms?: number;
+  /** 외부 부작용 초안의 기한(ms, ADR-0015). 이 시간이 지나면 승인·해제·전송이 거부된다. 기본 72시간 */
+  draft_ttl_ms?: number;
   /** 기본: AOT_INSTANCE_DIR 또는 instance */
   instance_dir?: string;
   policy_store_dir?: string;
@@ -64,6 +66,9 @@ const MIGRATIONS = fileURLToPath(new URL('../../../migrations', import.meta.url)
 function loadConfig(): DaemonConfig {
   const path = process.argv[2] ?? process.env['AOT_DAEMON_CONFIG'] ?? join(process.env['AOT_INSTANCE_DIR'] ?? 'instance', 'daemon.config.json');
   const config = JSON.parse(readFileSync(path, 'utf8')) as DaemonConfig;
+  if (config.draft_ttl_ms !== undefined && (!Number.isSafeInteger(config.draft_ttl_ms) || config.draft_ttl_ms <= 0)) {
+    throw new Error(`${path}: draft_ttl_ms must be a positive integer (milliseconds)`);
+  }
   if (typeof config.db_path !== 'string' || typeof config.worker_id !== 'string') {
     throw new Error(`${path}: db_path and worker_id are required`);
   }
@@ -104,6 +109,7 @@ async function main(): Promise<void> {
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
     ...(config.defer_delay_ms === undefined ? {} : { deferDelayMs: config.defer_delay_ms }),
+    ...(config.draft_ttl_ms === undefined ? {} : { draftTtlMs: config.draft_ttl_ms }),
   });
   if (daemon.pack !== null && daemon.packSync !== null) {
     const { manifest, templates, signals } = daemon.pack;

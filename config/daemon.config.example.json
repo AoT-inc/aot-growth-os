@@ -9,6 +9,7 @@
   "poll_ms": 5000,
   "retry_delay_ms": 60000,
   "defer_delay_ms": 900000,
+  "draft_ttl_ms": 259200000,
   "instance_dir": "instance",
   "policy_store_dir": "instance/policies",
   "totp_dir": "instance/totp",

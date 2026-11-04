@@ -2,7 +2,9 @@
 // 인증 경계는 승인 CLI 와 같다 — 소켓 파일 권한 + 요청 actor 의 `actor.kind='human'` 확인(에이전트는 소켓이 보이지 않고, 여기서 한 번 더 확인한다).
 // 제안의 *승인*(proposed → approved)·거절·취소·위험 변경 해제는 승인 엔진의 `approve|reject|cancel|release org_proposal` 이 한다(해시 확인·대기·TOTP).
 // 이 채널이 하는 일:
-//   {cmd:'org', actor, op:'propose', proposal:{...}}           제안 등록 (사람이 낸 초안. 조직 관리팀 대화 에이전트는 MVP 밖, phase-b.md Q12)
+//   {cmd:'org', actor, op:'propose', draft:{task_type, role_slug, unit?}}  신호에서 제안서를 자동으로 만들어 등록 (JSON 을 쓸 필요 없음: 도구는 generalist 와 같게 =
+//                                                              권한 확대 없음, 평가·롤백 계획은 기본값, 근거는 unassigned 업무 건수). 사람은 `show` 로 보고 승인만 한다
+//   {cmd:'org', actor, op:'propose', proposal:{...}}           제안서를 직접 쓴 경우의 등록 (권한이 다른 역할 등 기본값으로 안 되는 경우)
 //   {cmd:'org', actor, op:'signals'}                           재편 신호 집계 (모델 호출 없음)
 //   {cmd:'org', actor, op:'status', id?}                       제안 목록/상세 + 시험 판정 기록
 //   {cmd:'org', actor, op:'confirm', id, comment}              시험 평가 pass 뒤 사람 확인 → trial → active
@@ -23,7 +25,8 @@ export interface OrgChannelOptions {
 }
 
 const OPS = ['propose', 'signals', 'status', 'confirm', 'retrial', 'rollback', 'retire'] as const;
-const KEYS = ['cmd', 'actor', 'op', 'proposal', 'id', 'comment', 'evaluation_plan'];
+const KEYS = ['cmd', 'actor', 'op', 'proposal', 'draft', 'id', 'comment', 'evaluation_plan'];
+const DRAFT_KEYS = ['task_type', 'role_slug', 'unit'];
 const PROPOSAL_KEYS = [
   'diff', 'rationale', 'evidence_refs', 'expected_effect', 'risk_assessment', 'evaluation_plan', 'rollback_plan', 'trial_scope', 'trial_min_days', 'ttl_days',
 ];
@@ -67,6 +70,32 @@ export function orgSignals(db: Db, clock: Clock): Record<string, unknown> {
   return { window_days: ORG_SIGNAL_THRESHOLDS.window_days, thresholds: ORG_SIGNAL_THRESHOLDS, unassigned, role_problems: roleProblems };
 }
 
+/**
+ * 재편 신호에서 제안서를 만든다 (사람이 JSON 을 쓰지 않게). 맞는 역할이 없어 unassigned 인 업무가 이 유형으로 있어야 한다(근거).
+ * 새 역할의 도구는 지금 `generalist` 와 같다 → 권한 확대가 아니라 일반 변경이다. 평가·롤백 기본값은 phase-b.md 와 같다.
+ * 새 부서가 필요하면 `unit` 에 새 slug 를, 기존 부서에 넣으려면 기존 slug 를 준다(기본은 `core`).
+ */
+export function draftProposalFromSignal(db: Db, clock: Clock, draft: { taskType: string; roleSlug: string; unit?: string }): Record<string, unknown> {
+  const since = new Date(clock.nowMs() - ORG_SIGNAL_THRESHOLDS.window_days * DAY_MS).toISOString();
+  const count = db.all<{ trigger_kind: string; trigger_ref: string }>("SELECT trigger_kind, trigger_ref FROM task WHERE status = 'unassigned' AND created_at >= ?", [since])
+    .filter((task) => taskTypeOf({ kind: task.trigger_kind, ref: task.trigger_ref }) === draft.taskType).length;
+  if (count === 0) refuse(`there is no unassigned task of type '${draft.taskType}' in the last ${ORG_SIGNAL_THRESHOLDS.window_days} days (see \`org signals\`)`);
+  const base = db.get<{ allowed_tools: string }>("SELECT allowed_tools FROM role WHERE slug = 'generalist' AND lifecycle = 'active'") ?? refuse("the default tool set comes from the active 'generalist' role, which does not exist");
+  const unitSlug = draft.unit ?? 'core';
+  const unit = db.get('SELECT 1 AS one FROM org_unit WHERE slug = ? AND lifecycle = \'active\'', [unitSlug])
+    ? unitSlug : { slug: unitSlug, name: unitSlug, responsibility: `${draft.taskType} 업무 담당` };
+  return {
+    diff: { ops: [{ op: 'add_role', role: { slug: draft.roleSlug, description: `${draft.taskType} 업무를 맡는 역할 (재편 신호로 자동 생성한 초안)`, allowed_tools: JSON.parse(base!.allowed_tools) as unknown, unit } }] },
+    rationale: `최근 ${ORG_SIGNAL_THRESHOLDS.window_days}일 동안 '${draft.taskType}' 유형의 업무 ${count}건이 맞는 역할이 없어 unassigned 였다.`,
+    evidence_refs: [`signals:unassigned:${draft.taskType}`],
+    expected_effect: `'${draft.taskType}' 업무가 새 역할에 배정되어 처리된다.`,
+    risk_assessment: { risks: ['새 역할의 결과 품질이 낮을 수 있다'], mitigations: ['시험 기간에는 이 업무 유형만 받는다', '안전성 실패·비용 초과는 즉시 중단·롤백된다'] },
+    evaluation_plan: { min_pass_rate: 0.8, min_observations: 3, max_cost_usd: 5, baseline_window_days: 30, evaluation_days: 14 },
+    rollback_plan: { org_version: 'restore_parent', routines: 'disable', queued_tasks: { reroute_to: 'generalist' }, running_tasks: 'finish', external_effects: 'human' },
+    trial_scope: { task_types: [draft.taskType] },
+  };
+}
+
 export function createOrgChannel(options: OrgChannelOptions): (request: unknown) => Record<string, unknown> {
   const { db, clock } = options;
   const insertApproval = (tx: Db, id: string, hash: string, actor: string, comment: string): string => {
@@ -85,7 +114,18 @@ export function createOrgChannel(options: OrgChannelOptions): (request: unknown)
       const op = OPS.find((candidate) => candidate === request['op']) ?? refuse(`op must be one of ${OPS.join('|')}`);
       if (op === 'signals') return { ok: true, ...orgSignals(db, clock) };
       if (op === 'propose') {
-        const body = request['proposal'];
+        let body = request['proposal'];
+        if ((body === undefined) === (request['draft'] === undefined)) refuse('give exactly one of proposal (a full proposal) or draft ({task_type, role_slug, unit?})');
+        if (request['draft'] !== undefined) {
+          const d = request['draft'];
+          if (typeof d !== 'object' || d === null || Array.isArray(d)) return refuse('draft must be an object');
+          const bad = Object.keys(d).filter((key) => !DRAFT_KEYS.includes(key));
+          if (bad.length > 0) refuse(`draft has unknown field(s): ${bad.join(', ')}`);
+          const f = d as Record<string, unknown>;
+          if (typeof f['task_type'] !== 'string' || typeof f['role_slug'] !== 'string') refuse('draft needs task_type and role_slug');
+          if (f['unit'] !== undefined && typeof f['unit'] !== 'string') refuse('draft.unit must be a unit slug');
+          body = draftProposalFromSignal(db, clock, { taskType: f['task_type'] as string, roleSlug: f['role_slug'] as string, ...(f['unit'] === undefined ? {} : { unit: f['unit'] as string }) });
+        }
         if (typeof body !== 'object' || body === null || Array.isArray(body)) return refuse('proposal must be an object');
         const extra = Object.keys(body).filter((key) => !PROPOSAL_KEYS.includes(key));
         if (extra.length > 0) refuse(`proposal has unknown field(s): ${extra.join(', ')}`);

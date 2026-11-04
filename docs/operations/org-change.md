@@ -5,8 +5,20 @@
 ## 1. 신호 보기
 `org signals` — 최근 30일 `unassigned` 업무를 유형별로 세고(임계값 3건 이상이면 `candidate`), 역할별 `needs_review`·`failed` 반복을 보여 준다. 모델을 부르지 않는다.
 
-## 2. 제안 쓰기
-`proposal.json` (모든 필드 필수, 모르는 필드는 거부):
+## 2. 제안 만들기
+**보통은 JSON을 쓰지 않는다.** 신호에서 초안을 자동으로 만든다:
+```
+org propose --type weekly-market-research --role market-researcher [--unit research]
+```
+- `--type`은 `org signals`에 나온 업무 유형. 그 유형의 `unassigned` 업무가 최근 30일에 있어야 한다(근거).
+- 새 역할의 도구는 지금 `generalist`와 같다(권한 확대 없음 = 일반 변경). 평가·롤백 계획은 기본값(통과율 0.8, 최소 3건, 비용 $5, 14일; 롤백은 `generalist`로 재배정).
+- `--unit`을 생략하면 `core`. 기존에 없는 slug를 주면 새 부서를 함께 만든다.
+- 응답의 `proposal_id`를 `show org <id>`로 확인하고 승인한다(§3).
+
+기본값과 다른 제안(권한이 다른 역할, 다른 평가 기준 등)만 아래 JSON 파일로 직접 쓴다.
+
+### 직접 쓰는 제안서
+`org propose --file proposal.json` — `proposal.json` (모든 필드 필수, 모르는 필드는 거부):
 ```json
 {
   "diff": {"ops": [{"op": "add_role", "role": {
@@ -29,7 +41,7 @@
 - `evaluation_days`는 `trial_min_days` 이상이어야 한다. `rollback_plan`의 값은 지원하는 처리 하나뿐이고, `reroute_to`는 active 역할이어야 한다.
 - 정책·검증기·평가기·승인 엔진을 가리키는 연산·도구·이름은 거부된다. 새 역할이 지금 어느 active 역할도 요청하지 않는 (도구, 작업)을 요청하면 `risky`(권한 확대)로 분류된다 — 등급은 입력하지 않는다.
 
-`org propose --file proposal.json` → `proposal_id`, `change_class`, 위험 사유.
+응답: `proposal_id`, `change_class`, 위험 사유.
 
 ## 3. 승인
 `show org <id>`로 내용과 `hash`를 본 뒤 `approve org <id> --hash <hash>`. 일반 변경은 바로 `approved`. 위험 변경은 대기(정책 `risky_change.cooldown`) 뒤 `release org <id> --totp-stdin`. 대기 중에는 `cancel org <id>`로 철회할 수 있다. 거절은 `reject org <id> --comment 사유`. 승인 전에 조직 버전이 바뀌었거나 만료되면 `superseded`/`expired`로 기록되고 새로 제안해야 한다.

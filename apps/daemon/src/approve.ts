@@ -41,7 +41,7 @@ import { join } from 'node:path';
 import { otpauthUri, sendApprovalRequest, TotpSecretStore } from '@aot/policy';
 
 const KINDS = ['task', 'publication', 'policy_version', 'strategy_version', 'org_proposal'] as const;
-const ORG_FLAGS = ['socket', 'actor', 'file', 'comment'];
+const ORG_FLAGS = ['socket', 'actor', 'file', 'comment', 'type', 'role', 'unit'];
 const PRODUCT_FLAGS = ['socket', 'actor', 'name', 'repo', 'kind', 'stage', 'hash', 'comment'];
 const KIND_ALIASES: Readonly<Record<string, string>> = { policy: 'policy_version', strategy: 'strategy_version', org: 'org_proposal' };
 
@@ -231,10 +231,17 @@ async function main(): Promise<void> {
       };
       const orgId = (): string => (id !== undefined && positional[3] === undefined ? id : fail(`usage: org ${op} <proposal id>`));
       switch (op) {
-        case 'propose':
-          if (id !== undefined) fail('usage: org propose --file <proposal.json>');
-          request = { cmd, actor, op, proposal: readJson('proposal') };
+        case 'propose': {
+          if (id !== undefined) fail('usage: org propose --type <task type> --role <new role slug> [--unit <unit slug>]   (or --file <proposal.json>)');
+          if (flag('type') !== undefined || flag('role') !== undefined) {
+            if (flag('file') !== undefined) fail('use either --type/--role or --file, not both');
+            const unitFlag = flag('unit');
+            request = { cmd, actor, op, draft: { task_type: flag('type') ?? fail('org propose needs --type <task type from `org signals`>'), role_slug: flag('role') ?? fail('org propose needs --role <new role slug>'), ...(unitFlag === undefined ? {} : { unit: unitFlag }) } };
+          } else {
+            request = { cmd, actor, op, proposal: readJson('proposal') };
+          }
           break;
+        }
         case 'signals':
           if (id !== undefined) fail('usage: org signals');
           request = { cmd, actor, op };

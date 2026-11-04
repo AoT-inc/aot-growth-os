@@ -1,7 +1,8 @@
 // 조직 변경 시험 평가기 (Phase B / B4, ADR-0011 Amendment 1, operations/evaluation.md). 조직 관리팀이 아니라 평가 모듈이 판정한다:
 // 시험 업무(새 역할이 시험 시작 뒤에 받은 업무)의 *독립 평가* 기록(evaluation.outcome·safety)과 비용 원장(cost_entry)에서 직접 계산한다 — 에이전트 보고서는 쓰지 않는다.
 //
-// 판정 (`evaluateOrgTrial`, 읽기 전용):
+// 판정 (`evaluateOrgTrial`, 읽기 전용). 시험 업무 = 새 역할이 시험 시작 뒤에 받은 업무 + 시작 전에 만들어졌어도 시험 시작 뒤 배정(org-routing)된 업무.
+// 기준 조직 버전이 더 이상 active 가 아니면(다른 변경이 먼저 확정) 시험은 확정될 수 없으므로 `fail` 로 롤백한다.
 //  - 즉시 중단 → `fail` + abort_reason: 시험 업무 중 평가 safety='fail' 1건(`safety`), 시험 업무 비용 합계 > evaluation_plan.max_cost_usd(`budget`)
 //  - 관측 = 시험 업무 중 끝난 것(completed·failed). 통과 = completed AND 평가 pass AND safety pass. 취소된 업무는 관측이 아니다.
 //  - 관측 ≥ min_observations 이고 통과율 < min_pass_rate → `fail` (기간이 남아도 선언한다)
@@ -51,8 +52,10 @@ function trialTasks(db: Db, proposal: OrgProposalRow, startedAt: string): TrialT
        (SELECT e.outcome FROM evaluation e WHERE e.task_id = t.id ORDER BY e.at DESC, e.rowid DESC LIMIT 1) AS outcome,
        (SELECT e.safety FROM evaluation e WHERE e.task_id = t.id ORDER BY e.at DESC, e.rowid DESC LIMIT 1) AS safety
      FROM task t JOIN role r ON r.id = t.role_id
-     WHERE r.slug IN (${marks}) AND t.created_at >= ? ORDER BY t.created_at, t.id`,
-    [...slugs, startedAt],
+     WHERE r.slug IN (${marks})
+       AND (t.created_at >= ? OR EXISTS (SELECT 1 FROM task_transition x WHERE x.task_id = t.id AND x.caused_by = 'system:org-routing' AND x.at >= ?))
+     ORDER BY t.created_at, t.id`,
+    [...slugs, startedAt, startedAt],
   );
 }
 
@@ -102,6 +105,10 @@ export function evaluateOrgTrial(db: Db, clock: Clock, proposal: OrgProposalRow)
     verdict, abortReason, observations: finished.length, reason, metrics, evidenceRefs,
   });
 
+  const activeNow = db.get<{ id: string }>("SELECT id FROM org_version WHERE status = 'active' ORDER BY created_at DESC, rowid DESC LIMIT 1");
+  if (activeNow?.id !== proposal.base_org_version_id) {
+    return result('fail', `the base org_version '${proposal.base_org_version_id}' is no longer active (another change was confirmed): this trial cannot be confirmed and is rolled back`);
+  }
   if (safetyFailures.length > 0) return result('fail', `safety evaluation failed on ${safetyFailures.length} trial task(s): immediate stop`, 'safety');
   if (cost > plan.max_cost_usd) return result('fail', `trial cost $${cost.toFixed(4)} exceeds the allowed $${plan.max_cost_usd}: immediate stop`, 'budget');
   if (finished.length >= plan.min_observations && rate !== null && rate < plan.min_pass_rate) {

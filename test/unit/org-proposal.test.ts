@@ -249,3 +249,48 @@ test('a confirmation must come after the passing result: the earlier proposal ap
   move(proposalId, 'active', { by: 'system', approvalId: approval(proposalId, SEED_IDS.owner) });
   assert.equal(statusOf(db, proposalId), 'active');
 });
+
+test('review fixes: name variants of fixed components are refused; a dead proposal can be submitted again; a stale or duplicate proposal cannot be approved', (t) => {
+  const { db, clock, propose, approval, move } = setup(t);
+  const role = (over: Record<string, unknown>) => ({ ops: [{ op: 'add_role', role: { slug: 'example-role', description: 'x', allowed_tools: TOOLS, unit: 'core', ...over } }] });
+  for (const tool of ['policy-admin.deploy', 'policies.x', 'x.policy.deploy', 'evaluators.run']) {
+    assert.equal(code(() => propose({ diff: role({ allowed_tools: [{ tool, operations: ['x'] }] }) })), 'forbidden_target', tool);
+  }
+  for (const slug of ['evalu-ator', 'approver-role', 'org-mgmt']) assert.equal(code(() => propose({ diff: role({ slug }) })), 'forbidden_target', slug);
+
+  const first = propose().proposalId;
+  db.writeTx((tx) => transitionOrgProposal(tx, clock, { proposalId: first, to: 'rejected', by: 'human', actorId: SEED_IDS.owner, reason: 'no' }));
+  const again = propose();
+  assert.equal(again.created, true, 'a rejected proposal does not block the same content');
+  assert.notEqual(again.proposalId, first);
+  assert.equal(propose().proposalId, again.proposalId, 'but an open one is still idempotent');
+
+  // 승인 전에 같은 slug 의 역할이 생기면 승인할 수 없다 (시험 시작이 영원히 실패하지 않게)
+  db.writeTx((tx) => tx.run(
+    "INSERT INTO role (id, org_unit_id, slug, description, allowed_tools, lifecycle, version, trial_scope, created_at) VALUES ('role-dup', ?, 'example-researcher', 'x', '[]', 'active', 1, NULL, ?)", [SEED_IDS.unit, clock.nowIso()],
+  ));
+  assert.equal(code(() => move(again.proposalId, 'approved', { approvalId: approval(again.proposalId, SEED_IDS.owner) })), 'conflict');
+});
+
+test('review fixes: a normal proposal that would now expand permissions cannot get the normal approval; rollback/retire need the latest confirmed change', (t) => {
+  const { db, clock, propose, approval, move, result } = setup(t);
+  const a = propose({ diff: { ops: [{ op: 'add_role', role: { slug: 'role-a', description: 'a', allowed_tools: [{ tool: 'web_search', operations: ['search'] }], unit: 'core' } }] } }).proposalId;
+  // a 와 같은 도구를 쓰는 role-b: 만들 때는 일반 변경
+  const b = propose({ diff: { ops: [{ op: 'add_role', role: { slug: 'role-b', description: 'b', allowed_tools: [{ tool: 'web_search', operations: ['search'] }], unit: 'core' } }] }, trialScope: { task_types: ['other-type'] } }).proposalId;
+  assert.equal(getOrgProposal(db, b)!.change_class, 'normal');
+  // 시험 중에 도구 목록을 바꿀 수는 없지만, 지금 active 역할이 그 도구를 요청하지 않게 되면(예: generalist 가 바뀜) 등급이 달라질 수 있다
+  db.writeTx((tx) => tx.run("UPDATE role SET allowed_tools = '[]' WHERE slug = 'generalist'"));
+  assert.equal(code(() => move(b, 'approved', { approvalId: approval(b, SEED_IDS.owner) })), 'conflict');
+  assert.equal(statusOf(db, b), 'proposed');
+
+  // 확정된 a 를 되돌리거나 폐지하려면 a 가 마지막 확정이어야 한다
+  db.writeTx((tx) => tx.run("UPDATE role SET allowed_tools = '[{\"tool\":\"web_search\",\"operations\":[\"search\"]}]' WHERE slug = 'generalist'"));
+  move(a, 'approved', { approvalId: approval(a, SEED_IDS.owner) });
+  db.writeTx((tx) => transitionOrgProposal(tx, clock, { proposalId: a, to: 'trial', by: 'system' }));
+  result(a, 'pass');
+  move(a, 'active', { by: 'system', approvalId: approval(a, SEED_IDS.owner) });
+  db.writeTx((tx) => tx.run("INSERT INTO org_version (id, parent_id, proposal_id, snapshot, status, created_at) VALUES ('org-version-later', ?, NULL, '{}', 'active', ?)", [getOrgProposal(db, a)!.org_version_id, clock.nowIso()]));
+  db.writeTx((tx) => tx.run("UPDATE org_version SET status = 'retired' WHERE id = ?", [getOrgProposal(db, a)!.org_version_id]));
+  assert.equal(code(() => move(a, 'rolled_back', { reason: 'x' })), 'conflict');
+  assert.equal(code(() => move(a, 'retired', { reason: 'x' })), 'conflict');
+});

@@ -6,6 +6,8 @@ import { test } from 'node:test';
 
 import { evaluateOrgTrial, recordOrgTrialResult } from '@aot/evaluation';
 
+import { routeUnassignedTasks } from '@aot/task-engine';
+
 import { DAY, proposeAndStartTrial, seedTask } from '../support/org-trial.ts';
 
 const evaluate = (env: ReturnType<typeof proposeAndStartTrial>) => evaluateOrgTrial(env.db, env.clock, env.proposal());
@@ -104,4 +106,30 @@ test('only a running trial can be evaluated', (t) => {
   const env = proposeAndStartTrial(t);
   env.db.writeTx((tx) => tx.run("UPDATE org_proposal SET status = 'rolled_back' WHERE id = ?", [env.proposalId]));
   assert.throws(() => evaluate(env), /only a trial can be evaluated/);
+});
+
+test('review fixes: the unassigned backlog routed to the role counts as trial work (safety stop sees it), and a stale base rolls the trial back', (t) => {
+  const backlog: string[] = [];
+  const env = proposeAndStartTrial(t, { before: ({ db, clock }) => { backlog.push(seedTask(db, clock, {}), seedTask(db, clock, {})); clock.advance(DAY); } });
+  env.db.writeTx((tx) => routeUnassignedTasks(tx, env.clock));
+  assert.equal(env.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM task WHERE status = 'queued' AND role_id IS NOT NULL")!.n, 2);
+  env.db.writeTx((tx) => {
+    tx.run("UPDATE task SET status = 'completed' WHERE id = ?", [backlog[0]!]);
+    tx.run(
+      `INSERT INTO evaluation (id, task_id, task_run_id, evaluator, validation_passed, outcome, primary_evidence_refs, agent_report_used, safety, evidence_refs, at)
+       VALUES ('e1', ?, NULL, 'test-evaluator@1', 1, 'pass', '[]', 0, 'fail', '[]', ?)`, [backlog[0]!, env.clock.nowIso()],
+    );
+  });
+  const unsafe = evaluate(env);
+  assert.deepEqual({ verdict: unsafe.verdict, abort: unsafe.abortReason }, { verdict: 'fail', abort: 'safety' });
+
+  env.db.writeTx((tx) => tx.run("UPDATE evaluation SET safety = 'pass'"));
+  assert.notEqual(evaluate(env).verdict, 'fail');
+  env.db.writeTx((tx) => {
+    tx.run("UPDATE org_version SET status = 'retired' WHERE status = 'active'");
+    tx.run("INSERT INTO org_version (id, parent_id, proposal_id, snapshot, status, created_at) VALUES ('org-version-other', NULL, NULL, '{}', 'active', ?)", [env.clock.nowIso()]);
+  });
+  const stale = evaluate(env);
+  assert.equal(stale.verdict, 'fail');
+  assert.match(stale.reason, /no longer active/);
 });

@@ -33,7 +33,7 @@ export const ORG_EVENT = { source: 'org-proposal' } as const;
 
 const SLUG = /^[a-z][a-z0-9-]{1,40}$/;
 /** 고정 코어를 가리키는 이름: 연산·도구·역할/부서 slug 에 들어 있으면 거부한다 */
-const FORBIDDEN_WORDS = ['policy', 'approval', 'evaluator', 'evaluation', 'validator', 'verifier', 'org-management', 'org_management'];
+const FORBIDDEN_WORDS = ['polic', 'approv', 'evaluat', 'validat', 'verif', 'orgmanag', 'orgmgmt']; // 구분 문자를 뺀 소문자 이름에서 부분 문자열로 찾는다 (evalu-ator, policies, approver 도 걸린다)
 const FORBIDDEN_TOOL_PREFIXES = ['policy', 'approval', 'evaluator', 'evaluation', 'validator', 'verifier', 'org', 'approve'];
 const DAY_MS = 86_400_000;
 
@@ -160,7 +160,10 @@ function num(value: unknown, field: string, min: number, max: number, integer = 
   }
   return value;
 }
-const mentionsForbidden = (name: string): boolean => FORBIDDEN_WORDS.some((word) => name.toLowerCase().includes(word));
+const mentionsForbidden = (name: string): boolean => {
+  const flat = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return FORBIDDEN_WORDS.some((word) => flat.includes(word));
+};
 
 export function parseOrgDiff(raw: unknown): OrgDiff {
   const body = plain(raw, 'diff');
@@ -185,7 +188,7 @@ export function parseOrgDiff(raw: unknown): OrgDiff {
       const tool = plain(rawTool, toolPath);
       exactKeys(tool, ['tool', 'operations'], toolPath);
       const toolName = text(tool['tool'], `${toolPath}.tool`, 80);
-      if (FORBIDDEN_TOOL_PREFIXES.some((prefix) => toolName.toLowerCase() === prefix || toolName.toLowerCase().startsWith(`${prefix}.`) || toolName.toLowerCase().startsWith(`${prefix}_`))) {
+      if (mentionsForbidden(toolName) || FORBIDDEN_TOOL_PREFIXES.some((prefix) => toolName.toLowerCase() === prefix || toolName.toLowerCase().startsWith(`${prefix}.`) || toolName.toLowerCase().startsWith(`${prefix}_`))) {
         forbidden(`${toolPath}.tool '${toolName}' is a control-plane tool; roles cannot request it`);
       }
       tools.push({ tool: toolName, operations: stringList(tool['operations'], `${toolPath}.operations`, 1, 20) });
@@ -327,8 +330,14 @@ export function createOrgProposal(tx: Db, clock: Clock, input: OrgProposalInput)
   }
   const { changeClass, reasons } = classifyOrgDiff(tx, diff);
   const proposalHash = orgProposalHash({ diff, base: base.id, trialScope, evaluationPlan, rollbackPlan, changeClass, trialMinDays });
-  const id = proposalIdOf(proposalHash);
-  if (tx.get('SELECT 1 AS one FROM org_proposal WHERE id = ?', [id])) return { created: false, proposalId: id, proposalHash, changeClass, riskReasons: reasons };
+  // 같은 내용은 한 행이다(멱등). 단 이미 끝난 제안(거절·만료·충돌·롤백·폐지)과 같은 내용을 다시 내면 새 행을 만든다(`-2`, `-3` …)
+  let id = proposalIdOf(proposalHash);
+  for (let attempt = 2; ; attempt += 1) {
+    const existing = tx.get<{ status: string }>('SELECT status FROM org_proposal WHERE id = ?', [id]);
+    if (!existing) break;
+    if (['proposed', 'approved', 'trial', 'active', 'inconclusive'].includes(existing.status)) return { created: false, proposalId: id, proposalHash, changeClass, riskReasons: reasons };
+    id = `${proposalIdOf(proposalHash)}-${attempt}`;
+  }
 
   const now = clock.nowIso();
   const scope = { roles: diff.ops.map((op) => op.role.slug), task_types: trialScope.task_types };
@@ -417,6 +426,7 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
       if (!current || current.id !== row.base_org_version_id) {
         throw new OrgRuleError('conflict', `org_proposal '${row.id}' is based on org_version '${row.base_org_version_id}', but the active version is '${current?.id ?? '(none)'}'; propose again on the latest version`);
       }
+      recheckAtDecision(tx, row);
       humanOnly('approving a proposal');
       break;
     }
@@ -424,6 +434,7 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
       if (!isNonBlankString(request.reason)) throw new OrgRuleError('reason_required', 'a reason is required to reject a proposal');
       break;
     case 'approved>trial': {
+      recheckAtDecision(tx, row);
       result.orgVersionId = applyDiffAsTrial(tx, now, row);
       break;
     }
@@ -445,6 +456,7 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
         throw new OrgRuleError('result_missing', `org_proposal '${row.id}' has no failing trial result`);
       }
       if (from === 'active' && !isNonBlankString(request.reason)) throw new OrgRuleError('reason_required', 'a reason is required to roll back an active change');
+      if (from === 'active') requireLatestActive(tx, row);
       const undone = undoApplied(tx, now, row, from === 'active');
       result.reroutedTaskIds = undone.rerouted;
       result.disabledRoutineIds = undone.routines;
@@ -453,6 +465,7 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
     case 'inconclusive>trial': {
       if (row.trial_extensions >= ORG_MAX_TRIAL_EXTENSIONS) throw new OrgRuleError('extension_limit', `org_proposal '${row.id}' already used its ${ORG_MAX_TRIAL_EXTENSIONS} trial extension`);
       if (request.evaluationPlan === undefined) throw new OrgRuleError('invalid_field', 'a new evaluation plan is required to retry a trial');
+      if (activeOrgVersion(tx)?.id !== row.base_org_version_id) throw new OrgRuleError('conflict', `the organization changed since this trial (active org_version is not '${row.base_org_version_id}'); propose again`);
       const plan = parseEvaluationPlan(request.evaluationPlan, row.trial_min_days);
       humanOnly('retrying a trial', latestTrialResult(tx, row.id)?.at);
       reviveAddedRoles(tx, row);
@@ -461,7 +474,9 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
     }
     case 'active>retired': {
       if (!isNonBlankString(request.reason)) throw new OrgRuleError('reason_required', 'a reason is required to retire an active change');
+      requireLatestActive(tx, row);
       retireAddedRoles(tx, row);
+      result.reroutedTaskIds = rerouteOpenTasks(tx, now, row, addedSlugs(row).roles);
       break;
     }
     default:
@@ -474,6 +489,31 @@ export function transitionOrgProposal(tx: Db, clock: Clock, request: OrgTransiti
     org_version_id: result.orgVersionId, rerouted_task_ids: result.reroutedTaskIds, disabled_routine_ids: result.disabledRoutineIds,
   });
   return result;
+}
+
+/**
+ * 승인·시험 시작 시점의 재확인: (1) 등급 — 제안 때는 일반이었어도 그 사이 다른 역할이 폐지돼 지금 기준으로는 권한 확대라면 일반 승인으로 통과시키지 않는다(새로 제안),
+ * (2) 같은 slug 의 역할·부서가 그 사이 생겼으면 거부(시험 시작이 UNIQUE 위반으로 영원히 실패하지 않게)
+ */
+function recheckAtDecision(tx: Db, row: OrgProposalRow): void {
+  const diff = parseOrgDiff(parseJson(row.diff));
+  if (row.change_class === 'normal' && classifyOrgDiff(tx, diff).changeClass === 'risky') {
+    throw new OrgRuleError('conflict', `org_proposal '${row.id}' was a normal change, but against the current organization it would expand permissions; propose it again (it will be handled as risky)`);
+  }
+  for (const { role } of diff.ops) {
+    if (tx.get('SELECT 1 AS one FROM role WHERE slug = ?', [role.slug])) throw new OrgRuleError('conflict', `role '${role.slug}' already exists now; propose again with another slug`);
+    if (typeof role.unit !== 'string' && tx.get('SELECT 1 AS one FROM org_unit WHERE slug = ?', [role.unit.slug])) {
+      throw new OrgRuleError('conflict', `unit '${role.unit.slug}' already exists now; propose again`);
+    }
+  }
+}
+
+/** 확정된 변경을 되돌리거나 폐지하려면 그 변경이 지금의 active 버전이어야 한다 (뒤에 확정된 변경이 있으면 그것부터) */
+function requireLatestActive(tx: Db, row: OrgProposalRow): void {
+  const current = activeOrgVersion(tx);
+  if (!current || current.id !== row.org_version_id) {
+    throw new OrgRuleError('conflict', `org_proposal '${row.id}' is not the latest confirmed change (active org_version is '${current?.id ?? '(none)'}'); undo the later change first`);
+  }
 }
 
 export function latestTrialResult(db: Db, proposalId: string): { outcome: string; abort_reason: string | null; at: string } | undefined {
@@ -557,10 +597,36 @@ function reviveAddedRoles(tx: Db, row: OrgProposalRow): void {
   for (const slug of units) tx.run("UPDATE org_unit SET lifecycle = 'trial' WHERE slug = ? AND lifecycle = 'retired'", [slug]);
 }
 
-function undoApplied(tx: Db, now: string, row: OrgProposalRow, wasActive: boolean): { rerouted: string[]; routines: string[] } {
-  const { roles, units } = retireAddedRoles(tx, row);
+/**
+ * 폐지·롤백되는 역할에 남은 업무(대기 queued, 재시도 대기 retry_wait, 사람 검토 needs_review)를 `rollback_plan.queued_tasks.reroute_to` 역할로 옮긴다 — 상태는 그대로,
+ * 역할만 바꾼다(업무 상태 전이가 아니다). running 업무는 끝까지 둔다. 옮길 업무가 있는데 대상 역할이 active 가 아니면 조용히 건너뛰지 않고 거부한다.
+ * 업무 승인 해시에 역할이 들어 있어 승인받은 업무는 다음 실행 때 재승인 요청(needs_review)이 된다.
+ */
+function rerouteOpenTasks(tx: Db, now: string, row: OrgProposalRow, roleSlugs: string[]): string[] {
   const rollback = parseJson<OrgRollbackPlan>(row.rollback_plan);
   const target = tx.get<{ id: string; version: number; org_unit_id: string }>("SELECT id, version, org_unit_id FROM role WHERE slug = ? AND lifecycle = 'active'", [rollback.queued_tasks.reroute_to]);
+  const moved: string[] = [];
+  for (const slug of roleSlugs) {
+    const role = tx.get<RoleRow>('SELECT * FROM role WHERE slug = ?', [slug]);
+    if (!role) continue;
+    const open = tx.all<{ id: string; spec: string; status: string }>("SELECT id, spec, status FROM task WHERE role_id = ? AND status IN ('queued', 'retry_wait', 'needs_review') ORDER BY id", [role.id]);
+    if (open.length > 0 && !target) throw new OrgRuleError('conflict', `cannot move ${open.length} open task(s) of role '${slug}': the reroute target '${rollback.queued_tasks.reroute_to}' is not an active role`);
+    for (const task of open) {
+      const spec = parseJson<Record<string, unknown>>(task.spec);
+      const versions = isPlainObject(spec['versions']) ? { ...spec['versions'], role_version: Number(target!.version) } : spec['versions'];
+      const next = { ...spec, role: rollback.queued_tasks.reroute_to, versions };
+      delete (next as Record<string, unknown>)['department'];
+      tx.run('UPDATE task SET role_id = ?, role_version = ?, org_unit_id = ?, spec = ?, updated_at = ? WHERE id = ? AND status = ?', [
+        target!.id, Number(target!.version), target!.org_unit_id, JSON.stringify(next), now, task.id, task.status,
+      ]);
+      moved.push(task.id);
+    }
+  }
+  return moved;
+}
+
+function undoApplied(tx: Db, now: string, row: OrgProposalRow, wasActive: boolean): { rerouted: string[]; routines: string[] } {
+  const { roles, units } = retireAddedRoles(tx, row);
   const rerouted: string[] = [];
   const routines: string[] = [];
   for (const slug of units) {
@@ -571,20 +637,7 @@ function undoApplied(tx: Db, now: string, row: OrgProposalRow, wasActive: boolea
       routines.push(routine.id);
     }
   }
-  for (const slug of roles) {
-    const role = tx.get<RoleRow>('SELECT * FROM role WHERE slug = ?', [slug]);
-    if (!role || !target) continue;
-    for (const task of tx.all<{ id: string; spec: string }>("SELECT id, spec FROM task WHERE role_id = ? AND status = 'queued' ORDER BY id", [role.id])) {
-      const spec = parseJson<Record<string, unknown>>(task.spec);
-      const versions = isPlainObject(spec['versions']) ? { ...spec['versions'], role_version: Number(target.version) } : spec['versions'];
-      const next = { ...spec, role: rollback.queued_tasks.reroute_to, versions };
-      delete (next as Record<string, unknown>)['department'];
-      tx.run('UPDATE task SET role_id = ?, role_version = ?, org_unit_id = ?, spec = ?, updated_at = ? WHERE id = ? AND status = ?', [
-        target.id, Number(target.version), target.org_unit_id, JSON.stringify(next), now, task.id, 'queued',
-      ]);
-      rerouted.push(task.id);
-    }
-  }
+  rerouted.push(...rerouteOpenTasks(tx, now, row, roles));
   const versionId = row.org_version_id;
   if (versionId) {
     tx.run("UPDATE org_version SET status = 'rolled_back' WHERE id = ?", [versionId]);

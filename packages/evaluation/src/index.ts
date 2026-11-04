@@ -60,3 +60,7 @@ export {
   MAX_UNCERTAINTIES, MAX_UNCERTAINTY_NOTE_CHARS, MAX_UNCERTAINTY_TOPIC_CHARS, uncertaintiesFromResult, type UncertaintiesCheck, type Uncertainty,
 } from './uncertainties.ts';
 export { createTaskValidator, summarizeEvaluation } from './validator.ts';
+export {
+  BASELINE_TOLERANCE, evaluateOrgTrial, ORG_TRIAL_EVALUATOR_ID, ORG_TRIAL_EVALUATOR_REF, ORG_TRIAL_EVALUATOR_VERSION, recordOrgTrialResult,
+  type OrgTrialAssessment, type OrgTrialVerdict,
+} from './org-trial.ts';

@@ -21,7 +21,10 @@ export {
   beginDispatch, confirmByLookup, effectKeyOf, performEffect, planEffect, recordDispatchResult,
   type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
 } from './effects.ts';
-export { DEFAULT_DRAFT_TTL_MS, DraftRefusedError, effectApprovalOf, recordDraft, type RecordDraftOptions } from './drafts.ts';
+export {
+  DEFAULT_DRAFT_TTL_MS, DraftIntegrityError, DraftRefusedError, dispatchApprovedDrafts, effectApprovalOf, recordDraft,
+  type DispatchedDraft, type DispatchResult, type RecordDraftOptions,
+} from './drafts.ts';
 export {
   activateExperiment, endExperiment, endExperimentInTx, EXPERIMENT_TASK_CAUSE, ExperimentActivationError,
   type ActivateExperimentInput, type ActivateExperimentResult, type ApprovalCheck, type EndExperimentInput, type EndExperimentResult, type ExperimentRefusalCode,

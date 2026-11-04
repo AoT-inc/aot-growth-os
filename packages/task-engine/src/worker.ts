@@ -10,7 +10,7 @@ import {
   type Clock, type Db, type ExternalEffectRow, type RunPhase, type TaskPolicyGate, type TaskSpec, type TaskValidator,
 } from '@aot/domain';
 
-import { DEFAULT_DRAFT_TTL_MS, effectApprovalOf, recordDraft } from './drafts.ts';
+import { DEFAULT_DRAFT_TTL_MS, dispatchApprovedDrafts, effectApprovalOf, recordDraft } from './drafts.ts';
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
 import { EffectDeclarationError, EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
 import { validateEffectToolDeclaration, type DeclarationError } from './idempotency.ts';
@@ -269,11 +269,6 @@ export class TaskWorker {
       }
     };
 
-    if (phase === 'dispatch') {
-      // 전송 단계는 호스트 전송기가 맡는다 (W7). 에이전트 실행기를 부르지 않는다 (ADR-0015 I2)
-      throw new Error('dispatch phase is not runnable by the agent executor');
-    }
-
     const timer = this.#timers.setInterval(() => {
       if (abort.signal.aborted) return;
       try {
@@ -322,7 +317,10 @@ export class TaskWorker {
     try {
       let output: { result: unknown };
       try {
-        output = await executor.execute(context);
+        // 전송 단계는 호스트 전송기가 맡는다. 에이전트 실행기(LLM)는 부르지 않는다 (ADR-0015 I2)
+        output = phase === 'dispatch'
+          ? { result: await dispatchApprovedDrafts(db, clock, lease, tools ?? {}, this.#gate) }
+          : await executor.execute(context);
       } catch (error) {
         if (lost(error) || abort.signal.aborted) return report('lease_lost');
         if (error instanceof RunKilledError) {

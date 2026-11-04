@@ -5,10 +5,10 @@
 // 초안 행은 호스트(이 모듈)만 쓴다. 에이전트는 DB 에 닿지 못하고, 같은 run 에서 다시 부르면 새 초안(다른 effect_key)이 늘 뿐 기존 행은 바뀌지 않는다.
 import { randomUUID } from 'node:crypto';
 
-import { DRAFT_LIMITS, sha256Hex, type Clock, type Db, type EffectApprovalMode, type EffectDraftRow, type TaskRow, type TaskSpec } from '@aot/domain';
+import { DRAFT_LIMITS, proposedDraftsOf, sha256Hex, type Clock, type Db, type EffectApprovalMode, type EffectDraftRow, type TaskPolicyGate, type TaskRow, type TaskSpec } from '@aot/domain';
 
 import { canonicalJson } from './canonical.ts';
-import { effectKeyOf, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
+import { effectKeyOf, performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
 import { EffectDeclarationError } from './errors.ts';
 import { resolveActionDeclaration } from './idempotency.ts';
 import { assertLeaseHeld, type Lease } from './lease.ts';
@@ -100,4 +100,62 @@ export function recordDraft(
     );
     return { state: 'drafted' as const, draftId: id };
   });
+}
+
+export interface DispatchedDraft {
+  draft_id: string;
+  effect_id: string;
+  state: 'confirmed' | 'failed' | 'unknown' | 'compensated';
+}
+
+export interface DispatchResult {
+  dispatched: DispatchedDraft[];
+}
+
+/** 저장된 초안이 변조됐거나(payload 해시·effect_key 불일치) 보낼 수 없다. 아무것도 보내지 않았다(보내기 전에 모든 초안을 확인한다). */
+export class DraftIntegrityError extends Error {
+  constructor(message: string) {
+    super(`draft integrity check failed: ${message}`);
+    this.name = 'DraftIntegrityError';
+  }
+}
+
+/**
+ * 호스트 전송기 (§2.7). `proposed` 초안을 `seq` 순으로 기존 원장 규칙대로 보낸다 — 펜싱, planned → dispatched → confirmed/failed/unknown, 재전송 창, 정책 재확인
+ * (`beforeEffect` 가 `request_hash` 가 승인된 초안의 해시인지 한 번 더 막는다)은 바꾸지 않는다.
+ *  1. 보내기 전에 모든 초안의 `sha256(payload) = payload_hash` 와 `effectKeyOf(task_id, step_id, payload) = effect_key` 를 확인한다. 다르면 DraftIntegrityError (전송 0)
+ *  2. `performEffect(..., {stepId, action, target, request: JSON.parse(payload)})`
+ *  3. `confirmed`(새로 보냈든 재사용이든)면 다음 초안, `unknown` 이나 `failed` 면 멈춘다(뒤 초안은 보내지 않는다, D9). `failed` 는 호출한 쪽이 run 오류로 처리한다.
+ * 이 함수는 에이전트 실행기·LLM 을 부르지 않는다. lease 를 잃으면 LeaseLostError, 정책이 거부하면 EffectRefusedError 를 그대로 던진다.
+ */
+export async function dispatchApprovedDrafts(
+  db: Db, clock: Clock, lease: Lease, tools: Readonly<Record<string, EffectTool>>, gate: TaskPolicyGate,
+): Promise<DispatchResult> {
+  if (lease.phase !== 'dispatch') throw new Error(`run ${lease.runId} is not a dispatch-phase run`);
+  const drafts = proposedDraftsOf(db, lease.taskId);
+  if (drafts.length === 0) throw new DraftIntegrityError('the task has no proposed drafts to dispatch');
+  const prepared = drafts.map((draft) => {
+    if (sha256Hex(draft.payload) !== draft.payload_hash) throw new DraftIntegrityError(`draft ${draft.id}: payload does not match payload_hash`);
+    let request: unknown;
+    try {
+      request = JSON.parse(draft.payload);
+    } catch {
+      throw new DraftIntegrityError(`draft ${draft.id}: payload is not JSON`);
+    }
+    if (canonicalJson(request) !== draft.payload) throw new DraftIntegrityError(`draft ${draft.id}: payload is not canonical JSON`);
+    if (effectKeyOf(lease.taskId, draft.step_id, request) !== draft.effect_key) throw new DraftIntegrityError(`draft ${draft.id}: effect_key does not match`);
+    const tool = tools[draft.tool];
+    if (!tool) throw new DraftIntegrityError(`draft ${draft.id}: tool '${draft.tool}' is not registered`);
+    return { draft, tool, request };
+  });
+  const dispatched: DispatchedDraft[] = [];
+  for (const { draft, tool, request } of prepared) {
+    const outcome = await performEffect(db, clock, lease, tool, { stepId: draft.step_id, action: draft.action, target: draft.target, request }, gate);
+    if (outcome.state === 'drafted') throw new Error('a dispatch run must not draft');
+    dispatched.push({ draft_id: draft.id, effect_id: outcome.effectId, state: outcome.state });
+    if (outcome.state !== 'confirmed') break;
+  }
+  const failed = dispatched.find((entry) => entry.state === 'failed');
+  if (failed) throw new Error(`draft ${failed.draft_id}: the external service answered with a failure; later drafts were not sent`);
+  return { dispatched };
 }

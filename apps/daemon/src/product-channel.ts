@@ -5,6 +5,7 @@
 //
 // 요청 (한 줄 JSON; 허용 키는 op 마다 다르다. 모르는 키는 거부):
 //   {cmd:'product', actor, op:'add', slug, name, repo_path, kind?, stage?}   후보 등록: product(candidate) + product_repo(access_scope=none)
+//   {cmd:'product', actor, op:'remove', slug}                                 잘못 올린 후보 지우기: candidate·access_scope=none·검증 업무 없음일 때만 (product + product_repo 삭제, 사실은 event 로 남김)
 //   {cmd:'product', actor, op:'start', slug}                                  candidate → verifying: 검증 업무 1건을 만들고 읽기 접근(access_scope=read)을 승인한다 (한 트랜잭션)
 //   {cmd:'product', actor, op:'restart', slug, comment}                       재검증: 이전 검증 업무를 취소하고 새 검증 업무를 만든다 (verifying 또는 pending_approval; 실행 중이면 거부)
 //   {cmd:'product', actor, op:'status', slug?}                                상태·업무·평가·섀도 판정·증거 목록·review_hash (slug 생략하면 전체 요약)
@@ -33,6 +34,7 @@ export const READ_ACCESS_EVENT_SOURCE = 'product-registration';
 export const READ_ACCESS_GRANTED = 'registration.read_access_granted';
 export const READ_ACCESS_REVOKED = 'registration.read_access_revoked';
 export const VERIFICATION_RESTARTED = 'registration.verification_restarted';
+export const CANDIDATE_REMOVED = 'registration.candidate_removed';
 
 /** 파일럿 종료 조건 (docs/plans/registration-dogfood.md Q22 f): 처음 5건 */
 export const PILOT_TARGET_COUNT = 5;
@@ -54,10 +56,11 @@ export function isProductCommand(request: unknown): boolean {
     && (PRODUCT_COMMANDS as readonly unknown[]).includes((request as Record<string, unknown>)['cmd']);
 }
 
-const OPS = ['add', 'start', 'restart', 'status', 'evidence', 'decide', 'pilot'] as const;
+const OPS = ['add', 'remove', 'start', 'restart', 'status', 'evidence', 'decide', 'pilot'] as const;
 type Op = (typeof OPS)[number];
 const KEYS: Readonly<Record<Op, readonly string[]>> = {
   add: ['cmd', 'actor', 'op', 'slug', 'name', 'repo_path', 'kind', 'stage'],
+  remove: ['cmd', 'actor', 'op', 'slug'],
   start: ['cmd', 'actor', 'op', 'slug'],
   restart: ['cmd', 'actor', 'op', 'slug', 'comment'],
   status: ['cmd', 'actor', 'op', 'slug'],
@@ -75,6 +78,8 @@ type RepoRow = { id: string; local_path: string | null; access_scope: string };
 type TaskRow = { id: string; status: string; attempts: number; max_attempts: number; created_at: string };
 type EvaluationRow = { id: string; outcome: string; safety: string; quality_note: string | null; at: string };
 type EvidenceRow = { id: string; kind: string; ref: string; content_hash: string | null; trust_origin: string; verified: number };
+
+class RemoveRefused extends Error {}
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
@@ -198,6 +203,40 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
       tx.run('INSERT INTO product_repo (id, product_id, name, local_path, access_scope) VALUES (?, ?, ?, ?, ?)', [`repo-${randomUUID()}`, productId, 'main', real, 'none']);
     });
     return { ok: true, product: view(productBySlug(slug)!), added_by: actorId };
+  };
+
+  // ----- remove -----
+  const remove = (actorId: string, request: Record<string, unknown>): Record<string, unknown> => {
+    const slug = request['slug'];
+    if (typeof slug !== 'string') return refused('invalid_request', 'slug is required');
+    const product = productBySlug(slug);
+    if (product === undefined) return refused('not_found', `no product '${slug}'`);
+    if (product.registration_status !== 'candidate') return refused('wrong_state', `the product is '${product.registration_status}'; only a candidate that never started verification can be removed`);
+    const repo = repoOf(product.id);
+    if (repo !== undefined && repo.access_scope !== 'none') return refused('wrong_state', `the repository access is '${repo.access_scope}'; only a candidate without any access can be removed`);
+    if (latestTask(slug) !== undefined) return refused('wrong_state', 'the product already has a verification task; it cannot be removed');
+    try {
+      db.writeTx((tx) => {
+        // 한 트랜잭션에서 다시 확인한다 (조회와 삭제 사이에 start 가 끼어들지 못하게)
+        const current = tx.get<{ registration_status: string }>('SELECT registration_status FROM product WHERE id = ?', [product.id]);
+        const access = tx.get<{ n: number }>("SELECT COUNT(*) AS n FROM product_repo WHERE product_id = ? AND access_scope <> 'none'", [product.id]);
+        if (current?.registration_status !== 'candidate' || (access?.n ?? 0) > 0 || latestTask(slug, tx) !== undefined) throw new RemoveRefused();
+        tx.run('DELETE FROM product_repo WHERE product_id = ?', [product.id]);
+        tx.run("DELETE FROM product WHERE id = ? AND registration_status = 'candidate'", [product.id]);
+        const now = clock.nowIso();
+        const eventId = `event-${randomUUID()}`;
+        tx.run(
+          `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+          [eventId, READ_ACCESS_EVENT_SOURCE, slug, CANDIDATE_REMOVED, JSON.stringify({ slug, actor_id: actorId, repo_path: repo?.local_path ?? null }), `${READ_ACCESS_EVENT_SOURCE}:${eventId}`, now, now],
+        );
+      });
+    } catch (error) {
+      if (error instanceof RemoveRefused) return refused('wrong_state', 'the product changed while removing it; check `product status`');
+      // 다른 표가 이 상품을 참조하고 있으면(외래 키) 지우지 않는다
+      if (error instanceof Error && /FOREIGN KEY/i.test(error.message)) return refused('wrong_state', 'other records refer to this product; it cannot be removed');
+      throw error;
+    }
+    return { ok: true, removed: slug, removed_by: actorId };
   };
 
   // ----- start -----
@@ -510,6 +549,7 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     if (unknown.length > 0) return refused('invalid_request', `unknown field(s) for ${op}: ${unknown.join(', ')}`);
     switch (op as Op) {
       case 'add': return add(actorId, request);
+      case 'remove': return remove(actorId, request);
       case 'start': return start(actorId, request);
       case 'restart': return restart(actorId, request);
       case 'status': return status(request);

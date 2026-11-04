@@ -29,6 +29,7 @@
 
 ```
 approve.ts product add <slug> --name "<이름>" --repo <저장소 루트 절대 경로>
+approve.ts product remove <slug>                    # 잘못 올린 후보 지우기 (start 하기 전의 후보만; 같은 슬러그·경로로 다시 add 가능)
 approve.ts product start <slug>
 # (데몬이 업무를 실행·검증한다. 보통 수 분)
 approve.ts product status <slug>                    # pending_approval 이 될 때까지 되풀이
@@ -80,9 +81,9 @@ approve.ts product pilot                            # 언제든: 지금까지의
 
 ## 7. 알려진 한계
 
-(아래 한계 중 일부는 [준비 마무리 작업](../plans/handoff-pilot-prep.md)이 해소한다: `product remove`, 실행 중 반려, 수집 사실 반영.)
+(아래 한계 중 일부는 [준비 마무리 작업](../plans/handoff-pilot-prep.md)이 해소한다: 실행 중 반려, 수집 사실 반영. `product remove`는 구현됨.)
 
-- **잘못 올린 후보를 채널로 고치거나 지울 수 없다.** 경로를 잘못 적었으면 `start` 전에는 데이터베이스에서 직접 정리해야 한다(후속: `product remove`). `start`는 경로를 다시 검사한다.
+- **후보를 고칠 수는 없고, 지우고 다시 올린다.** 경로를 잘못 적었으면 `start` 전에 `product remove <slug>`로 지우고 다시 `add` 한다(지운 사실은 `registration.candidate_removed` 이벤트로 남는다). `start`한 상품은 지울 수 없다. `start`는 경로를 다시 검사한다.
 - **검증 업무가 실행 중이면 반려할 수 없다**(`task_active`) — 읽기 접근도 그 사이에는 회수되지 않는다. `needs_review`에 닿기를 기다리거나 업무를 취소한다.
 - 일반 `reject task`로 업무만 반려하면 상품은 `pending_approval`·`read`로 남는다. 상품도 `product decide reject`로 마무리한다.
 - 컨테이너 에이전트가 보고한 토큰으로 `token_ratio`의 분모가 정해진다(구독 CLI 어댑터는 호스트가 센다).

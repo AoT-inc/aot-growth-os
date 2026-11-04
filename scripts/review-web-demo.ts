@@ -3,14 +3,16 @@
 //   npm run review-web -- --db instance/demo/review.db
 // 시각은 FakeClock 으로 45일 전부터 흘려 현재까지 오게 한다(시험 기간·기준선이 실제처럼 보이게). 시험(test/integration/review-web.test.ts)이 같은 데이터를 쓴다.
 import { createHash } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 import {
-  applyMigrations, createOrgProposal, FakeClock, openDb, seedPhaseA, SEED_IDS, transitionOrgProposal, type TaskPolicyGate,
+  applyMigrations, createOrgProposal, EXPERIMENT_RESULT_EVENT, experimentEventId, experimentResultKey, FakeClock, openDb, recordExperimentReview, seedPhaseA, SEED_IDS, transitionOrgProposal,
+  type TaskPolicyGate,
 } from '@aot/domain';
+import { PolicyStore } from '@aot/policy';
 import { createTask } from '@aot/task-engine';
 
 import { draftProposalFromSignal } from '../apps/daemon/src/org-channel.ts';
@@ -31,7 +33,7 @@ export interface DemoResult {
   nowIso: string;
   ids: {
     orgNormal: string; orgRisky: string; orgTrial: string; orgPass: string; orgInconclusive: string;
-    task: string; publication: string; strategy: string; productSlug: string; effect: string;
+    task: string; publication: string; strategy: string; productSlug: string; effect: string; policy: string; plainTask: string; experiments: { promote: string; needs: string; wait: string };
     evidence: { text: string; injected: string; png: string; svg: string; mismatch: string; outside: string; url: string };
   };
 }
@@ -77,7 +79,7 @@ export function demoPng(): Buffer {
 
 const sha = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 
-export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
+export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean }): DemoResult {
   const dir = resolve(options.dir);
   const nowMs = options.nowMs ?? Date.now();
   const dbPath = join(dir, 'review.db');
@@ -94,6 +96,10 @@ export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
     seedPhaseA(db, { clock });
     const agent = 'actor-demo-agent';
     db.writeTx((tx) => tx.run('INSERT INTO actor (id, kind, name, adapter, created_at) VALUES (?, ?, ?, ?, ?)', [agent, 'agent', 'example-agent', 'fake-adapter', clock.nowIso()]));
+    if (options.empty === true) {
+      clock.set(nowMs);
+      return { dbPath, dir, evidenceDir, outsideDir, nowIso: clock.nowIso(), ids: {} as DemoResult['ids'] };
+    }
 
     let counter = 0;
     const draft = (type: string, extra: Record<string, unknown> = {}): Record<string, unknown> => {
@@ -175,6 +181,7 @@ export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
     for (let i = 0; i < 4; i += 1) task('support-triage');
     for (let i = 0; i < 3; i += 1) task('customer-followup');
     task('monthly-digest');
+    for (let i = 0; i < 3; i += 1) task('invoice-check');
     const draftBody = draftProposalFromSignal(db, clock, { taskType: 'support-triage', roleSlug: 'example-support-triager' }) as Record<string, unknown>;
     const orgNormal = db.writeTx((tx) => createOrgProposal(tx, clock, {
       proposedBy: agent, diff: draftBody['diff'], rationale: draftBody['rationale'] as string, evidenceRefs: draftBody['evidence_refs'], expectedEffect: draftBody['expected_effect'] as string,
@@ -190,7 +197,7 @@ export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
     })).proposalId;
 
     // 검토 필요 업무 3건 (고객 대상 알림은 승인 대상) + 응답을 잃은 외부 효과 1건
-    const reviewTasks = [0, 1, 2].map((i) => {
+    const reviewTasks = [0, 1, 2, 3].map((i) => {
       const id = createTask(db, { clock, gate: ALLOW }, {
         spec: draft('manual', {
           trigger: { kind: 'manual', ref: `actor:example-owner-${i}` }, role: 'generalist', objective: `고객 안내 메일 초안 #${i + 1} 발송`,
@@ -207,7 +214,7 @@ export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
       return id;
     });
     const taskId = reviewTasks[0]!;
-    const effectTask = reviewTasks[1]!;
+    const effectTask = reviewTasks[3]!;
     const effect = 'effect-demo-1';
     db.writeTx((tx) => {
       tx.run(
@@ -223,6 +230,44 @@ export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
         `INSERT INTO strategy_version (id, parent_id, title, body, rationale_refs, status, experiment_scope, created_by, created_at)
          VALUES ('strategy-demo-1', NULL, '주간 뉴스레터 제목에 질문형 문장 쓰기', '질문형 제목이 열람률을 높이는지 4주 동안 비교한다.', '[]', 'proposed', ?, ?, ?)`,
         [JSON.stringify({ weeks: 4, signal: 'newsletter_open_rate', note: '가상의 실험 범위' }), agent, clock.nowIso()],
+      );
+    });
+
+    // 사람 확인이 필요한 내부 업무 1건 (다른 사유라 묶이지 않는다)
+    const plainTask = createTask(db, { clock, gate: ALLOW }, { spec: draft('manual', { trigger: { kind: 'manual', ref: 'actor:example-owner-plain' }, role: 'generalist', objective: '주간 요약 보고서를 내부 문서함에 정리' }) }).taskId;
+    db.writeTx((tx) => {
+      tx.run("UPDATE task SET status = 'needs_review' WHERE id = ?", [plainTask]);
+      tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [plainTask, 'queued', 'needs_review', '정책이 사람 확인을 요구했다', 'system:policy', clock.nowIso()]);
+    });
+
+    // 정책 변경 제안 1건: 한도를 올린 새 정책안을 보관소에 두고 승인 기록만 남긴다 (배포 대기)
+    const policyText = readFileSync(fileURLToPath(new URL('../policies/default.yaml', import.meta.url)), 'utf8').replace('max_usd_per_task: 5', 'max_usd_per_task: 8');
+    const archived = new PolicyStore({ dir: join(dir, 'policies') }).archive(policyText);
+    const policyProposal = 'policy-demo-2';
+    db.writeTx((tx) => tx.run("INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at) VALUES ('approval-policy-demo', 'policy_version', ?, 'approved', ?, ?, NULL, ?)", [policyProposal, archived.hash, SEED_IDS.owner, clock.nowIso()]));
+
+    // 실험: 결과 통과(승격 대기) 1건, 결과 판정 보류 1건, 결과 대기 1건
+    const experimentScope = JSON.stringify({ weeks: 4, signal: 'newsletter_open_rate', note: '가상의 실험 범위' });
+    const strategies = { promote: 'strategy-demo-promote', needs: 'strategy-demo-needs', wait: 'strategy-demo-wait' };
+    const reviewTask = (status: string): string => task('experiment-review', { role: 'generalist', status });
+    db.writeTx((tx) => {
+      const add = (id: string, title: string): void => {
+        tx.run("INSERT INTO strategy_version (id, parent_id, title, body, rationale_refs, status, experiment_scope, created_by, created_at) VALUES (?, NULL, ?, '가상의 실험 설명', '[]', 'experiment', ?, ?, ?)", [id, title, experimentScope, agent, clock.nowIso()]);
+      };
+      add(strategies.promote, '뉴스레터 발송 요일을 화요일로 바꾸기');
+      add(strategies.needs, '제목에 숫자 넣기');
+      add(strategies.wait, '본문 길이를 절반으로 줄이기');
+    });
+    const reviewInput = (id: string, taskId: string) => ({ strategyVersionId: id, reviewTaskId: taskId, experimentWeek: '2026-W45', signalId: 'newsletter_open_rate', period: { start: '2026-11-02', end: '2026-11-08', tz: 'Asia/Seoul' }, activatedAt: clock.nowIso(), baseline: null, passAtLeast: 0.2, planningTaskId: null, by: 'system' as const });
+    const needsTask = reviewTask('failed');
+    const waitTask = reviewTask('queued');
+    db.writeTx((tx) => {
+      recordExperimentReview(tx, clock, reviewInput(strategies.needs, needsTask));
+      recordExperimentReview(tx, clock, reviewInput(strategies.wait, waitTask));
+      const key = experimentResultKey(strategies.promote);
+      tx.run(
+        `INSERT INTO event (id, source, external_id, type, payload, product_id, idempotency_key, occurred_at, received_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        [experimentEventId(key), EXPERIMENT_RESULT_EVENT.source, strategies.promote, EXPERIMENT_RESULT_EVENT.type, JSON.stringify({ strategy_version_id: strategies.promote, review_task_id: 'task-demo-review', evaluation_id: 'evaluation-demo-promote', conclusion: 'pass', measurement_memory_id: 'memory-demo-1', strategy_record_memory_id: 'memory-demo-2', total_cost_usd: 1.2, human_minutes: 5 }), key, clock.nowIso(), clock.nowIso()],
       );
     });
 
@@ -280,7 +325,7 @@ export function seedDemo(options: { dir: string; nowMs?: number }): DemoResult {
     clock.set(nowMs);
     return {
       dbPath, dir, evidenceDir, outsideDir, nowIso: clock.nowIso(),
-      ids: { orgNormal, orgRisky, orgTrial, orgPass, orgInconclusive, task: taskId, publication: 'publication-demo-1', strategy: 'strategy-demo-1', productSlug: slug, effect, evidence },
+      ids: { orgNormal, orgRisky, orgTrial, orgPass, orgInconclusive, task: taskId, publication: 'publication-demo-1', strategy: 'strategy-demo-1', productSlug: slug, effect, policy: policyProposal, plainTask, experiments: strategies, evidence },
     };
   } finally {
     db.close();

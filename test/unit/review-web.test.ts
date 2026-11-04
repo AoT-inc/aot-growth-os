@@ -4,7 +4,8 @@ import { test } from 'node:test';
 
 import { parseReviewWebArgs, UsageError, type ConfigDeps } from '../../apps/daemon/src/review-web/config.ts';
 import { sniffImage } from '../../apps/daemon/src/review-web/evidence-file.ts';
-import { command, full, h, prettyJson, raw, shellArg, table, text } from '../../apps/daemon/src/review-web/html.ts';
+import { ago, clip, monthDay, percent, until } from '../../apps/daemon/src/review-web/format.ts';
+import { choices, command, full, h, prettyJson, raw, shellArg, table, text } from '../../apps/daemon/src/review-web/html.ts';
 import { hostAllowed } from '../../apps/daemon/src/review-web/server.ts';
 import { barChart, lineChart } from '../../apps/daemon/src/review-web/svg.ts';
 import { demoPng } from '../../scripts/review-web-demo.ts';
@@ -104,4 +105,30 @@ test('text masks before it cuts, and says when it cut', () => {
 test('prettyJson masks by key name (maskSecrets) before printing', () => {
   const out = prettyJson({ verdict: 'ok', password: 'hunter2-value', nested: [{ api_token: 'abc-value', count: 3 }] });
   assert.ok(!out.includes('hunter2-value') && !out.includes('abc-value') && out.includes('"count": 3') && out.includes('[REDACTED]'));
+});
+
+test('format: relative Korean dates, short text and percentages', () => {
+  const now = Date.parse('2026-11-04T03:00:00.000Z');
+  assert.equal(until('2026-11-17T03:00:00.000Z', now), '13일 뒤 만료');
+  assert.equal(until('2026-11-04T10:00:00.000Z', now), '오늘 만료');
+  assert.equal(until('2026-11-05T03:00:00.000Z', now), '내일 만료');
+  assert.equal(until('2026-11-03T03:00:00.000Z', now), '만료됨');
+  assert.equal(until('2026-11-15T03:00:00.000Z', now, '판정'), '11일 뒤 판정');
+  assert.equal(ago('2026-11-01T03:00:00.000Z', now), '3일 전');
+  assert.equal(ago('2026-11-03T03:00:00.000Z', now), '어제');
+  assert.equal(ago('2026-11-04T01:00:00.000Z', now), '오늘');
+  assert.equal(monthDay('2026-11-17T03:00:00.000Z'), '11월 17일');
+  assert.equal(clip('가'.repeat(50), 40).length, 40);
+  assert.equal(clip('a\n  b', 40), 'a b');
+  assert.equal(percent(0.8), '80%');
+  assert.equal(percent(null), '-');
+  assert.equal(until('not a date', now), '-');
+});
+
+test('choices: approve and reject boxes, or the reason when approval is not possible', () => {
+  const both = choices({ approve: { command: 'cmd-a' }, reject: { command: 'cmd-r' } }).html;
+  assert.ok(both.indexOf('승인') < both.indexOf('cmd-a') && both.indexOf('cmd-a') < both.indexOf('거절') && both.indexOf('거절') < both.indexOf('cmd-r'));
+  const blocked = choices({ approve: { blocked: '<b>만료됨</b>' }, reject: { command: 'cmd-r' } }).html;
+  assert.ok(blocked.includes('승인할 수 없습니다') && blocked.includes('&lt;b&gt;만료됨') && !blocked.includes('<code>cmd-a'));
+  assert.ok(!choices({ reject: { command: 'x' } }).html.includes('승인'));
 });

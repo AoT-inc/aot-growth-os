@@ -11,9 +11,9 @@ import type { AddressInfo } from 'node:net';
 import type { ReviewContext } from './context.ts';
 import { readEvidence } from './evidence-file.ts';
 import { h, page, type Raw } from './html.ts';
-import { APPROVAL_KINDS, approvalDetailPage, approvalsPage, KIND_LABEL, type ApprovalKind } from './pages-approvals.ts';
-import { effectsPage, evidenceDetail, evidenceListPage, experimentsPage, homePage, productDetailPage, productsPage } from './pages-more.ts';
-import { signalsPage, trialsPage } from './pages-org.ts';
+import {
+  approvalDetail, batchDetail, effectsDetail, evidenceDetail, evidenceList, experimentDetail, homePage, productDetail, signalDetail, trialDetail, watchPage, type Rendered,
+} from './pages.ts';
 
 export const LOOPBACK_HOST = '127.0.0.1';
 export const COOKIE_NAME = 'aot_review';
@@ -46,40 +46,27 @@ interface Reply {
 }
 
 const htmlReply = (title: string, body: Raw, status = 200): Reply => ({ status, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: page(title, body) });
-const notFound = (): Reply => htmlReply('찾을 수 없음', h`<p class="card">그런 화면이 없다. <a href="/">홈으로</a></p>`, 404);
+const notFound = (): Reply => htmlReply('찾을 수 없습니다', h`<p class="card">그런 화면이 없습니다. <a href="/">결정할 일로 가기</a></p>`, 404);
 
 function route(ctx: ReviewContext, segments: string[], query: URLSearchParams): Reply {
-  const [first, second, third, fourth] = segments;
-  if (first === undefined) return htmlReply('홈', homePage(ctx));
-  if (first === 'approvals') {
-    if (second === undefined && segments.length === 1) return htmlReply('승인 대기', approvalsPage(ctx));
-    if (segments.length === 3 && APPROVAL_KINDS.includes(second as ApprovalKind)) {
-      const kind = second as ApprovalKind;
-      const detail = approvalDetailPage(ctx, kind, third!);
-      return htmlReply(`${KIND_LABEL[kind]} 상세`, detail.body, detail.status);
-    }
-    return notFound();
+  const [first, second, third] = segments;
+  const out = (r: Rendered): Reply => htmlReply(r.title, r.body, r.status);
+  if (first === undefined) return out(homePage(ctx));
+  if (segments.length === 1) {
+    if (first === 'watch') return out(watchPage(ctx));
+    if (first === 'effects') return out(effectsDetail(ctx));
+    if (first === 'evidence') return out(evidenceList(ctx, query.get('task')));
   }
-  if (first === 'trials' && segments.length === 1) return htmlReply('시험 현황', trialsPage(ctx));
-  if (first === 'signals' && segments.length === 1) return htmlReply('조직 신호', signalsPage(ctx));
-  if (first === 'effects' && segments.length === 1) return htmlReply('외부 효과 확인 필요', effectsPage(ctx));
-  if (first === 'experiments' && segments.length === 1) return htmlReply('실험 결과 검토', experimentsPage(ctx));
-  if (first === 'products') {
-    if (segments.length === 1) return htmlReply('상품 등록 검토', productsPage(ctx));
-    if (segments.length === 2) {
-      const detail = productDetailPage(ctx, second!);
-      return htmlReply(detail.title, detail.body, detail.status);
-    }
-    return notFound();
+  if (segments.length === 3 && first === 'approvals') return out(approvalDetail(ctx, second!, third!));
+  if (segments.length === 2) {
+    if (first === 'batch') return out(batchDetail(ctx, second!));
+    if (first === 'products') return out(productDetail(ctx, second!));
+    if (first === 'experiments') return out(experimentDetail(ctx, second!));
+    if (first === 'trials') return out(trialDetail(ctx, second!));
+    if (first === 'signals') return out(signalDetail(ctx, second!));
+    if (first === 'evidence') return out(evidenceDetail(ctx, second!));
   }
-  if (first === 'evidence') {
-    if (segments.length === 1) return htmlReply('증거 보기', evidenceListPage(ctx, query.get('task')));
-    if (segments.length === 2) {
-      const detail = evidenceDetail(ctx, second!);
-      return htmlReply(detail.title, detail.body, detail.status);
-    }
-    if (segments.length === 3 && third === 'file' && fourth === undefined) return imageReply(ctx, second!);
-  }
+  if (segments.length === 3 && first === 'evidence' && third === 'file') return imageReply(ctx, second!);
   return notFound();
 }
 
@@ -115,7 +102,7 @@ function cookieToken(header: string | undefined): string | null {
   return null;
 }
 
-const unauthorized = (): Reply => htmlReply('인증 필요', h`<p class="card">이 화면은 서버를 시작한 사람만 볼 수 있다. 서버를 시작할 때 터미널에 찍힌 주소(<code>?token=…</code> 이 붙은 주소)로 처음 들어온다. 한 번 들어오면 이 브라우저는 계속 볼 수 있다.</p>`, 401);
+const unauthorized = (): Reply => htmlReply('인증이 필요합니다', h`<p class="card">이 화면은 서버를 시작한 사람만 볼 수 있습니다. 서버를 시작할 때 터미널에 찍힌 주소(<code>?token=…</code> 이 붙은 주소)로 처음 들어오세요. 한 번 들어오면 이 브라우저는 계속 볼 수 있습니다.</p>`, 401);
 
 export function handle(ctx: ReviewContext, port: number, req: IncomingMessage, token: string): Reply {
   if (!hostAllowed(req.headers.host, port)) return { status: 421, headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: 'misdirected request: unexpected Host header' };
@@ -147,7 +134,7 @@ export function handle(ctx: ReviewContext, port: number, req: IncomingMessage, t
   } catch (error) {
     // 내부 오류의 자세한 내용은 화면에 내지 않는다 (DB 값이 섞일 수 있다)
     process.stderr.write(`review-web: ${error instanceof Error ? error.message : String(error)}\n`);
-    return htmlReply('오류', h`<p class="card">화면을 만드는 중 오류가 났다. 서버 로그를 본다.</p>`, 500);
+    return htmlReply('오류', h`<p class="card">화면을 만드는 중 오류가 났습니다. 서버 로그를 확인하세요.</p>`, 500);
   }
 }
 

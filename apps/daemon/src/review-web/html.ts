@@ -78,41 +78,71 @@ export function list(items: readonly unknown[], empty = '없음'): Raw {
   return items.length === 0 ? h`<p class="empty">${empty}</p>` : h`<ul>${items.map((item) => h`<li>${item}</li>`)}</ul>`;
 }
 
-const NAV: readonly (readonly [string, string])[] = [
-  ['/', '홈'], ['/approvals', '승인 대기'], ['/trials', '시험 현황'], ['/signals', '조직 신호'], ['/products', '상품 등록 검토'],
-  ['/experiments', '실험 결과'], ['/effects', '외부 효과 확인'], ['/evidence', '증거 보기'],
-];
+const NAV: readonly (readonly [string, string])[] = [['/', '결정할 일'], ['/watch', '지켜보는 중'], ['/evidence', '증거']];
 
 const STYLE = `
-:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1c2330;--mute:#5d6778;--card:#fff;--line:#d9dee6;--accent:#2457c5;--ok:#17783a;--warn:#9a5b00;--bad:#b3261e;--code:#eef1f6}
-@media (prefers-color-scheme:dark){:root{--bg:#12161d;--fg:#e6e9ef;--mute:#9aa4b5;--card:#1b212b;--line:#2f3846;--accent:#7aa2ff;--ok:#5dd28a;--warn:#f0b050;--bad:#ff8a80;--code:#10141b}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
-header{background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;position:sticky;top:0}
-header strong{margin-right:12px}nav{display:flex;flex-wrap:wrap;gap:4px 14px}nav a{color:var(--accent);text-decoration:none}nav a:hover{text-decoration:underline}
-main{max-width:1000px;margin:0 auto;padding:16px}h1{font-size:22px;margin:8px 0 14px}h2{font-size:17px;margin:22px 0 8px}h3{font-size:15px;margin:14px 0 6px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:10px 0}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}.grid a.card{display:block;color:inherit;text-decoration:none}.grid a.card:hover{border-color:var(--accent)}
-.big{font-size:28px;font-weight:700}.mute{color:var(--mute)}.empty{color:var(--mute)}
-.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--mute);font-weight:600;white-space:nowrap}
-dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:6px 0}dt{color:var(--mute)}dd{margin:0;word-break:break-word}
-.badge{display:inline-block;border-radius:999px;padding:0 9px;font-size:12px;border:1px solid var(--line);white-space:nowrap}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.warn{color:var(--warn);border-color:var(--warn)}.badge.bad{color:var(--bad);border-color:var(--bad)}.badge.info{color:var(--accent);border-color:var(--accent)}
-.untrusted{border-left:4px solid var(--warn);padding-left:10px}
-.cmd{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;overflow-x:auto}.cmd code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}.cmd .note{display:block;color:var(--mute);font-size:12px;margin-top:2px}
-pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;max-height:480px}
-img.evidence{max-width:100%;max-height:480px;border:1px solid var(--line);border-radius:6px;background:#fff}
+:root{color-scheme:light dark;--bg:#f7f7f5;--fg:#1d2330;--mute:#5f6878;--card:#fff;--line:#dcdfe5;--accent:#1f4fc4;--ok:#17703a;--warn:#8a5300;--bad:#b3261e;--code:#eef0f4}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e8eaf0;--mute:#a0a8b8;--card:#1c2129;--line:#323a48;--accent:#8fb0ff;--ok:#6cd696;--warn:#f2b660;--bad:#ff9a90;--code:#10131a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:12px 16px}
+nav{max-width:720px;margin:0 auto;display:flex;gap:22px}nav a{color:var(--mute);text-decoration:none;padding:2px 0}nav a:hover{color:var(--accent)}
+main{max-width:720px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:24px;line-height:1.4;margin:12px 0 10px;color:var(--accent)}h2{font-size:18px;margin:34px 0 10px}h3{font-size:16px;margin:16px 0 6px}
+.lead{font-size:17px;margin:0 0 14px}.mute{color:var(--mute)}.empty{color:var(--mute)}
+.facts{list-style:none;margin:10px 0 14px;padding:0}.facts li{padding:5px 0 5px 4px;border-bottom:1px solid var(--line)}.facts b{display:inline-block;min-width:4.5em;color:var(--mute);font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+.card h3{font-size:18px;margin:0 0 6px;color:var(--accent);line-height:1.45}.card .go{display:inline-block;margin-top:6px;font-weight:600;color:var(--accent)}
+a{color:var(--accent)}
+.badge{display:inline-block;border-radius:999px;padding:1px 11px;font-size:14px;border:1px solid var(--line);white-space:nowrap}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.warn{color:var(--warn);border-color:var(--warn)}.badge.bad{color:var(--bad);border-color:var(--bad)}.badge.info{color:var(--accent);border-color:var(--accent)}
+.choice{border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:12px 0;background:var(--card)}.choice h3{margin:0 0 6px;font-size:16px}.choice.no h3{color:var(--bad)}.choice.yes h3{color:var(--ok)}.choice.na h3{color:var(--mute)}
+.cmd{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;overflow-x:auto}.cmd code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}.cmd .note{display:block;color:var(--mute);font-size:13px;margin-top:2px}
+details{margin:26px 0;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;font-weight:600;color:var(--mute)}details h2{font-size:16px;margin:20px 0 6px}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--mute);font-weight:600;white-space:nowrap}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:6px 0;font-size:14px}dt{color:var(--mute)}dd{margin:0;word-break:break-word}
+.untrusted{border-left:4px solid var(--warn);padding-left:12px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;max-height:420px;font-size:13px}
+img.evidence{max-width:100%;max-height:420px;border:1px solid var(--line);border-radius:8px;background:#fff}img.thumb{width:140px;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;display:block;margin:6px 0}
 svg.chart{max-width:100%;height:auto}svg.chart text{fill:var(--fg);font-size:12px}svg.chart .axis{stroke:var(--line)}svg.chart .b1{fill:var(--accent)}svg.chart .b2{fill:var(--mute)}svg.chart .line{stroke:var(--accent);fill:none;stroke-width:2}svg.chart .ref{stroke:var(--bad);stroke-dasharray:4 3}
-.banner{background:var(--code);border:1px dashed var(--line);border-radius:8px;padding:6px 12px;color:var(--mute);font-size:13px}
+.banner{color:var(--mute);font-size:13px;margin-top:40px}
+@media (max-width:520px){h1{font-size:21px}main{padding:14px 12px 40px}.card{padding:14px}}
 `;
 
 export function page(title: string, body: Raw): string {
   return h`<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · 검토 화면</title><style>${raw(STYLE)}</style></head>
-<body><header><strong>AoT 검토 화면 (읽기 전용)</strong><nav>${NAV.map(([href, label]) => h`<a href="${href}">${label}</a>`)}</nav></header>
+<body><header><nav>${NAV.map(([href, label]) => h`<a href="${href}">${label}</a>`)}</nav></header>
 <main><h1>${title}</h1>${body}
-<p class="banner">이 화면은 아무것도 바꾸지 못한다. 결정은 위에 보인 명령을 승인 CLI 로 직접 실행한다. 행위자는 <code>--actor</code> 또는 <code>AOT_ACTOR</code> 로 준다.</p></main></body></html>`.html;
+<p class="banner">읽기 전용 화면입니다. 결정은 위의 명령을 승인 CLI 로 직접 실행합니다. 행위자는 <code>--actor</code> 또는 <code>AOT_ACTOR</code> 로 줍니다.</p></main></body></html>`.html;
 }
 
 export const back = (href: string, label: string): Raw => h`<p><a href="${href}">← ${label}</a></p>`;
+
+/** 첫 화면의 핵심 사실 줄 (최대 3). [이름, 내용] */
+export function facts(items: readonly (readonly [string, unknown])[]): Raw {
+  return items.length === 0 ? h`` : h`<ul class="facts">${items.map(([name, body]) => h`<li><b>${name}</b> ${body}</li>`)}</ul>`;
+}
+
+/** 접힌 "자세히" 구역 */
+export const details = (body: Raw, label = '자세히'): Raw => h`<details><summary>${label}</summary>${body}</details>`;
+
+export interface Choices {
+  /** 승인 선택. 명령이 없으면 못 하는 이유(`blocked`)를 보인다 */
+  approve?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
+  reject?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
+  /** 그 밖의 안내 (예: 대기 중 취소) */
+  extra?: Raw | undefined;
+}
+
+/** 승인·거절 두 선택. 명령은 복사하기 쉬운 상자 안에만 둔다 */
+export function choices(c: Choices): Raw {
+  const one = (kind: 'yes' | 'no', fallback: string, entry: Choices['approve']): Raw => {
+    if (entry === undefined) return h``;
+    if ('blocked' in entry) return h`<div class="choice na"><h3>${fallback}할 수 없습니다</h3><p>${entry.blocked}</p></div>`;
+    return h`<div class="choice ${kind}"><h3>${entry.label ?? fallback}</h3>${command(entry.command, entry.note)}</div>`;
+  };
+  return h`${one('yes', '승인', c.approve)}${one('no', '거절', c.reject)}${c.extra ?? ''}`;
+}
+
 
 /** 내부 이동 링크. 경로 조각은 인코딩하고 값은 이스케이프한다 */
 export const link = (path: readonly string[], label: unknown, query = ''): Raw => h`<a href="/${path.map(encodeURIComponent).join('/')}${query}">${label}</a>`;

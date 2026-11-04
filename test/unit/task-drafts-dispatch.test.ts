@@ -134,3 +134,19 @@ test('the dispatcher refuses to run outside a dispatch lease or without proposed
   await assert.rejects(() => dispatchApprovedDrafts(e.db, e.clock, { ...lease, phase: 'execute' }, { [fake.tool.name]: fake.tool }, phaseGate()), /not a dispatch-phase run/);
   await assert.rejects(() => dispatchApprovedDrafts(e.db, e.clock, { ...lease, phase: 'dispatch' }, { [fake.tool.name]: fake.tool }, phaseGate()), /no proposed drafts/);
 });
+
+test('a dispatch run has a time limit: a send that never answers is killed, the effect is left unknown (not failed), and no later draft is sent', async (t) => {
+  for (const idempotent of [false, true]) {
+    const e = draftEngine(t);
+    const hang = createFakeMessageTool({ idempotent });
+    let sends = 0;
+    const hanging: EffectTool = { ...hang.tool, send: () => { sends += 1; return new Promise(() => undefined); } };
+    await e.draftAndPropose(requests, hanging);
+    const report = await e.worker(hanging, { count: 0 }, phaseGate(), { dispatchTimeLimitMs: 30 }).tick();
+    assert.equal(report.executed?.end !== 'lease_lost' && report.executed?.end.outcome, idempotent ? 'killed' : 'effect_unknown', `idempotent=${idempotent}`);
+    assert.equal(sends, 1, 'the second draft was not sent');
+    assert.deepEqual(effectsOf(e.db, e.taskId).map((x) => x.state), ['unknown']);
+    assert.equal(taskStatus(e.db, e.taskId), idempotent ? 'retry_wait' : 'needs_review');
+    assert.match(runsOf(e).at(-1)!.outcome ?? '', idempotent ? /killed/ : /effect_unknown/);
+  }
+});

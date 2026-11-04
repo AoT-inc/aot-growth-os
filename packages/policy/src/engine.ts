@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   activeOrgVersion, checkTransition, contentHash, experimentsInProgress, findExperimentActivation, getOrgProposal, listStrategyReviews, OrgRuleError, StrategyRuleError, TASK_MACHINE,
-  proposedDraftsOf, transitionDrafts, transitionOrgProposal, transitionStrategyVersion,
+  draftSendStates, maskedPathsOf, maskSecretKeys, proposedDraftsOf, transitionDrafts, transitionOrgProposal, transitionStrategyVersion,
   type Clock, type Db, type OrgProposalRow, type PublicationRow, type StrategyVersionRow, type TaskRow, type TaskSpec,
 } from '@aot/domain';
 
@@ -78,6 +78,11 @@ export interface ApprovalEngineOptions {
   store: PolicyStore;
   totp: TotpSecretStore;
   newId?: () => string;
+  /**
+   * 초안 payload 를 *표시용으로* 가리는 함수 (agent-runtime 의 `maskSecrets`; 이 패키지는 agent-runtime 을 참조하지 않아 데몬이 주입한다). 없으면 키 이름만 가리는 기본값(`maskSecretKeys`). 가려지는 값이 있는
+   * 초안은 사람이 모든 바이트를 보고 승인할 수 없으므로 `show` 가 알리고 승인·해제를 거부한다 (ADR-0015).
+   */
+  maskPayload?: (payload: unknown) => unknown;
 }
 
 const SELF_APPROVAL_RULE = 'self-approval is allowed only when risky_change.min_approvers is 1';
@@ -208,8 +213,10 @@ export class ApprovalEngine {
     const requests = requestsFromSpec(spec);
     const verdicts = requests.map((request) => ({ request, verdict: evaluateRequest(policy.document, request) }));
     const drafts = proposedDraftsOf(tx, id);
+    const sendStates = draftSendStates(tx, drafts);
+    const masked = new Map(drafts.map((draft) => [draft.id, maskedPathsOf(JSON.parse(draft.payload), (this.#o.maskPayload ?? maskSecretKeys)(JSON.parse(draft.payload)))]));
     const subject = taskSubject(task, spec, policy.versionId, drafts);
-    return { task, spec, policy, verdicts, drafts, subject, hash: taskSubjectHash(subject), requester: taskRequester(tx, task), params: taskApprovalParams(policy.document, requests) };
+    return { task, spec, policy, verdicts, drafts, sendStates, masked, subject, hash: taskSubjectHash(subject), requester: taskRequester(tx, task), params: taskApprovalParams(policy.document, requests) };
   }
 
   #approveTask(actor: string, id: string, hash: string, comment?: string): Record<string, unknown> {
@@ -219,6 +226,7 @@ export class ApprovalEngine {
       const denied = ctx.verdicts.filter((v) => v.verdict.decision === 'deny');
       if (denied.length > 0) refuse(`the current policy denies this task (${denied.map((v) => v.verdict.reason).join('; ')}); an approval cannot override deny`);
       this.#refuseExpiredDrafts(ctx.drafts, 'approved');
+      this.#refuseMaskedDrafts(ctx, 'approved');
       if (hash !== ctx.hash) refuse('the task changed since it was shown (subject hash mismatch); show it again before approving');
       const params = ctx.params;
       if (!params.self_approval && ctx.requester === actor) refuse(`the requester cannot approve their own task (${SELF_APPROVAL_RULE})`);
@@ -245,6 +253,21 @@ export class ApprovalEngine {
   }
 
   /** 기한이 지난 초안이 있으면 승인·해제를 거부한다 (ADR-0015): 변경 요청으로 다시 쓰게 한다 */
+  #refuseMaskedDrafts(ctx: { drafts: readonly { id: string }[]; masked: ReadonlyMap<string, string[]> }, what: 'approved' | 'released'): void {
+    const hidden = ctx.drafts.filter((draft) => (ctx.masked.get(draft.id) ?? []).length > 0);
+    if (hidden.length > 0) {
+      refuse(`${hidden.length} of ${ctx.drafts.length} drafts would show masked values (${hidden.map((d) => `${d.id}: ${ctx.masked.get(d.id)!.join(', ')}`).join('; ')}): a person cannot see every byte, so the content cannot be ${what}; ask for changes (request-changes) so the secret-like values are removed`);
+    }
+  }
+
+  /** 이미 전송이 시작된(planned 보다 나아간) 초안이 있으면 초안을 버리거나 거절할 수 없다: 다시 쓴 초안이 같은 내용을 다른 문구로 또 보낼 수 있다 */
+  #refuseStartedDrafts(ctx: { drafts: readonly { id: string }[]; sendStates: ReadonlyMap<string, string> }, what: string): void {
+    const started = ctx.drafts.filter((draft) => !['none', 'planned'].includes(ctx.sendStates.get(draft.id) ?? 'none'));
+    if (started.length > 0) {
+      refuse(`${started.length} draft(s) already left the ledger (${started.map((d) => `${d.id}: ${ctx.sendStates.get(d.id)!}`).join(', ')}); ${what} would let a rewritten draft send the same content again. Check the external service and settle the effect with \`effects\` / \`resolve-effect\` first`);
+    }
+  }
+
   #refuseExpiredDrafts(drafts: readonly { id: string; expires_at: string }[], what: 'approved' | 'released'): void {
     const now = this.#now();
     const expired = drafts.filter((draft) => now >= draft.expires_at);
@@ -268,6 +291,7 @@ export class ApprovalEngine {
     if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; only an approved task in needs_review can be released`);
     if (ctx.task.approved_hash === null) refuse(`task '${id}' has no approval to release`);
     this.#refuseExpiredDrafts(ctx.drafts, 'released');
+    this.#refuseMaskedDrafts(ctx, 'released');
     if (ctx.task.approved_hash !== ctx.hash) refuse('the task or the policy changed since approval (approved_hash mismatch); re-approval required');
     const params = ctx.params;
     const status = approvalStatus(tx, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params, now: this.#now(), checkReauth: false });
@@ -519,6 +543,7 @@ export class ApprovalEngine {
       if (kind !== 'task') return { state: 'rejected', approval_id: this.#insertApproval(tx, kind, id, 'rejected', null, actor, comment ?? 'rejected') };
       const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [id]) ?? refuse(`task '${id}' does not exist`);
       if (task.status !== 'needs_review') refuse(`task '${id}' is '${task.status}'; only a task in needs_review can be rejected`);
+      this.#refuseStartedDrafts(this.#taskContext(tx, id), 'rejecting the task');
       const approvalId = this.#insertApproval(tx, 'task', id, 'rejected', task.approved_hash, actor, comment ?? 'rejected');
       assertAllowed('needs_review', 'failed', approvalId);
       tx.run("UPDATE task SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'needs_review'", [this.#now(), id]);
@@ -540,6 +565,7 @@ export class ApprovalEngine {
     return this.#o.db.writeTx((tx) => {
       const ctx = this.#taskContext(tx, id);
       if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; changes can only be requested for a task in needs_review`);
+      this.#refuseStartedDrafts(ctx, 'requesting changes');
       const approvalId = this.#insertApproval(tx, 'task', id, 'changes_requested', ctx.hash, actor, comment);
       assertAllowed('needs_review', 'queued', approvalId);
       const now = this.#now();
@@ -566,6 +592,8 @@ export class ApprovalEngine {
         drafts: ctx.drafts.map((draft) => ({
           id: draft.id, seq: draft.seq, tool: draft.tool, action: draft.action, target: draft.target, payload_hash: draft.payload_hash,
           expires_at: draft.expires_at, expired: this.#now() >= draft.expires_at, influenced_by_external_input: draft.influenced_by_external_input === 1,
+          // 표시용 가리기가 바꾸는 값의 경로 (비어 있어야 승인할 수 있다), 원장의 전송 상태 (none|planned|dispatched|confirmed|failed|unknown|compensated)
+          masked_paths: ctx.masked.get(draft.id) ?? [], send_state: ctx.sendStates.get(draft.id) ?? 'none',
           payload: JSON.parse(draft.payload) as unknown,
         })),
         decisions: ctx.verdicts.map((v) => ({ action: v.request.action, resource: v.request.resource, scope: v.request.scope, impact: v.request.impact, decision: v.verdict.decision, reason: v.verdict.reason })),

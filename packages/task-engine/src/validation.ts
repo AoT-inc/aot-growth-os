@@ -93,6 +93,10 @@ export async function validateTask(db: Db, options: ValidationOptions, taskId: s
           transitionDrafts(tx, { taskId, from: ['pending'], to: 'superseded', by: 'validator', now, runId: run.id });
         }
       }
+      // 초안 단계 run 이 초안을 하나도 남기지 못했는데 완료로 갈 수는 없다 (모든 호출이 거부됐거나 에이전트가 쓰지 않았다): 사람이 본다
+      if (pendingDrafts === 0 && run.phase === 'draft' && route.to === 'completed') {
+        route = { to: 'needs_review', reason: 'no_drafts: the draft run left no drafts, so nothing can be approved or sent (every external-effect call may have been refused: out of scope, too many drafts, or not written); a person decides' };
+      }
       transitionTask(tx, {
         taskId, from: 'validating', to: route.to, by: 'validator', now, reason: route.reason.slice(0, 500),
         ...(route.to === 'retry_wait'

@@ -2,14 +2,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { Db, EvidenceRow, FakeClock, TaskRow, TaskRunRow, TaskSpec } from '@aot/domain';
+import { isSecretKey } from '@aot/agent-runtime';
+import { isSecretKeyName, type Db, type EvidenceRow, type FakeClock, type TaskRow, type TaskRunRow, type TaskSpec } from '@aot/domain';
 import { createTaskValidator, runDeterministicChecks, SourceReader, type CheckContext } from '@aot/evaluation';
 import { validateTask } from '@aot/task-engine';
 
 import { draftEngine } from '../support/draft-engine.ts';
 import { draftRowFor, insertDraftRow } from '../support/drafts.ts';
 import { taskStatus } from '../support/engine.ts';
-import { FakeFetcher, recordEvaluation, submittedRun } from '../support/evaluation.ts';
+import { addEvidence, FakeFetcher, recordEvaluation, submittedRun } from '../support/evaluation.ts';
 import { createFakeMessageTool, examplePayload } from '../support/message-tool.ts';
 import { seededDb } from '../support/seeded-db.ts';
 
@@ -110,4 +111,29 @@ test('no_secret_in_outputs: a clean draft is not a failure (without an evidence 
   const { db, clock } = seededDb(t);
   const report = await runDeterministicChecks(secretContext(db, clock, examplePayload()), ['no_secret_in_outputs']);
   assert.equal(report.checks[0]?.status, 'unknown');
+});
+
+// ----- 초안 비밀 검사는 명세가 요구하지 않아도 항상 돈다 (리뷰 반영) -----
+
+test('a run with drafts always gets the draft secret scan as a safety check, even when the spec does not list no_secret_in_outputs', async (t) => {
+  for (const payload of [examplePayload({ text: 'log in with Bearer abcdefgh12345678' }), { ...examplePayload(), headers: { authorization: 'abc' } }]) {
+    const { db, clock } = seededDb(t);
+    const run = submittedRun(db, clock, { spec: { validation: { deterministic: ['budget'], llm: null, human: false } } });
+    insertDraftRow(db, draftRowFor(run.taskId, run.runId, { state: 'pending', request: payload }));
+    addEvidence(db, clock, run, { kind: 'source_url', ref: 'https://docs.example.com/a' });
+    const validator = createTaskValidator({ db, clock, fetcher: new FakeFetcher({ 'https://docs.example.com/a': 'page' }) });
+    const task = db.get<TaskRow>('SELECT * FROM task WHERE id = ?', [run.taskId])!;
+    const verdict = await validator.validate({ task, spec: JSON.parse(task.spec) as TaskSpec, runId: run.runId });
+    assert.equal(verdict.safety, 'fail');
+    assert.equal(verdict.outcome, 'fail');
+    const note = db.get<{ safety_note: string }>('SELECT safety_note FROM evaluation WHERE task_run_id = ?', [run.runId])!.safety_note;
+    assert.match(note, /draft_secret_scan/);
+    assert.doesNotMatch(note, /abcdefgh12345678/);
+  }
+});
+
+test('the key-name rule used for drafts is the same as the call-log masking', () => {
+  for (const key of ['authorization', 'Authorization', 'api_key', 'apiKey', 'access-token', 'refresh_token', 'password', 'x-signature', 'cookie', 'totp', 'otp', 'max_tokens', 'subject', 'text', 'to', 'tokens', 'monkey']) {
+    assert.equal(isSecretKeyName(key), isSecretKey(key), key);
+  }
 });

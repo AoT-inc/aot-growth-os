@@ -23,7 +23,7 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type DockerCli, type OrphanCleanupResult } from '@aot/agent-runtime';
+import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, maskSecrets, type DockerCli, type JsonValue, type OrphanCleanupResult } from '@aot/agent-runtime';
 import type { Clock, Db, MeasurementSignal, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createMeasurementSignalSource, createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import {
@@ -192,7 +192,11 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   }
   const store = new PolicyStore({ dir: options.paths.policyStoreDir, templates: [DEFAULT_POLICY_TEMPLATE] });
   const gate = createPolicyGate({ store });
-  const engine = new ApprovalEngine({ db: options.db, clock: options.clock, store, totp: new TotpSecretStore(options.paths.totpDir) });
+  const engine = new ApprovalEngine({
+    db: options.db, clock: options.clock, store, totp: new TotpSecretStore(options.paths.totpDir),
+    // 초안 승인은 사람이 가려지지 않은 모든 바이트를 보고 하는 승인이다: CLI·화면과 같은 가리기(maskSecrets)로 가려지는 값이 있으면 승인하지 못한다 (ADR-0015)
+    maskPayload: (payload) => maskSecrets(payload as JsonValue),
+  });
   const toolCallPolicy = createToolCallPolicy({ db: options.db, store });
   const phone = options.phone === undefined ? null : createPhoneRuntime({ db: options.db, clock: options.clock, store, options: options.phone });
   const agentOptions = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);

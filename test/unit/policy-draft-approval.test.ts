@@ -2,11 +2,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { contentHash, type EffectDraftRow } from '@aot/domain';
+import { contentHash, sha256Hex as sha, type EffectDraftRow } from '@aot/domain';
 import { taskSubject, taskSubjectHash, verifyTaskApproval } from '@aot/policy';
 import type { TaskRow, TaskSpec } from '@aot/domain';
 
-import { claimNextTask } from '@aot/task-engine';
+import { claimNextTask, effectKeyOf } from '@aot/task-engine';
 
 import { draftsOf } from '../support/drafts.ts';
 import { claimWith, draftedTask, LEASE_MS } from '../support/draft-flow.ts';
@@ -95,7 +95,7 @@ test('show lists the proposed drafts with the exact payload and a hash that bind
   assert.deepEqual(drafts.map((d) => d.payload), requestsTwo, 'payload is the parsed JSON original');
   assert.deepEqual(drafts.map((d) => d.influenced_by_external_input), [true, false]);
   assert.deepEqual(drafts.map((d) => d.expired), [false, false]);
-  assert.deepEqual(Object.keys(drafts[0]!).sort(), ['action', 'expired', 'expires_at', 'id', 'influenced_by_external_input', 'payload', 'payload_hash', 'seq', 'target', 'tool']);
+  assert.deepEqual(Object.keys(drafts[0]!).sort(), ['action', 'expired', 'expires_at', 'id', 'influenced_by_external_input', 'masked_paths', 'payload', 'payload_hash', 'send_state', 'seq', 'target', 'tool']);
   assert.deepEqual(draftsOf(env.db, taskId).map((d) => d.payload_hash), drafts.map((d) => d.payload_hash));
   assert.equal(shown['hash'], taskSubjectHash(taskSubject(taskRow(env.db, taskId), JSON.parse(taskRow(env.db, taskId).spec) as TaskSpec, 'policy-v1', draftsOf(env.db, taskId))));
   assert.equal((shown['subject'] as { drafts: unknown[] }).drafts.length, 2);
@@ -274,4 +274,72 @@ test('tasks without drafts keep today\'s show output hash and approval flow (I3)
   assert.deepEqual(shown['drafts'], []);
   assert.equal('drafts' in (shown['subject'] as object), false);
   assert.equal(shown['hash'], taskSubjectHash(taskSubject(taskRow(env.db, id), JSON.parse(taskRow(env.db, id).spec) as TaskSpec, 'policy-v1')));
+});
+
+// ===== 리뷰 반영: 가려지는 초안, 전송이 시작된 초안 =====
+
+
+/** proposed 초안의 payload 를 직접 바꿔 넣는다 (평가기를 거치지 않은 경우를 흉내 낸다) */
+function rewriteDraft(env: ReturnType<typeof policyEnv>, taskId: string, payload: object): void {
+  const row = draftsOf(env.db, taskId)[0]!;
+  const text = JSON.stringify(payload);
+  env.db.writeTx((tx) => tx.run('UPDATE effect_draft SET payload = ?, payload_hash = ?, effect_key = ? WHERE id = ?', [text, sha(text), effectKeyOf(taskId, row.step_id, payload), row.id]));
+}
+
+test('show reports masked_paths and approve/release refuse a draft the person could not see in full', async (t) => {
+  const env = policyEnv(t);
+  const { taskId } = await draftedTask(env);
+  rewriteDraft(env, taskId, { to: ['a@example.com'], subject: 's', text: 'hi', headers: { authorization: 'abc', note: 'x' } });
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'task', id: taskId });
+  assert.deepEqual((shown['drafts'] as { masked_paths: string[] }[])[0]!.masked_paths, ['headers.authorization']);
+  const refused = env.send({ cmd: 'approve', actor: OWNER, kind: 'task', id: taskId, hash: String(shown['hash']) });
+  assert.equal(refused['ok'], false);
+  assert.match(String(refused['error']), /would show masked values \(.*headers\.authorization\)/);
+  assert.equal(taskRow(env.db, taskId).approved_hash, null);
+  // 깨끗한 초안은 masked_paths 가 비어 있고 승인된다
+  const clean = await draftedTask(env, { dedupeKey: 'clean' });
+  assert.deepEqual((env.send({ cmd: 'show', actor: OWNER, kind: 'task', id: clean.taskId })['drafts'] as { masked_paths: string[] }[])[0]!.masked_paths, []);
+  assert.equal(approve(env, clean.taskId).ok, true);
+  // 승인 뒤 release 직전에 가려지는 값이 생기면 해제도 거부된다 (해시가 달라져 먼저 막히지만 사유가 분명하다)
+  env.clock.advance(HOUR);
+  rewriteDraft(env, clean.taskId, { to: ['a@example.com'], subject: 's', text: 'hi', api_token: 'x' });
+  assert.equal(env.send({ cmd: 'release', actor: OWNER, kind: 'task', id: clean.taskId, totp: env.code() })['ok'], false);
+});
+
+test('show reports send_state per draft; once a draft left the ledger, request_changes and reject are refused and point to effects/resolve-effect', async (t) => {
+  const env = policyEnv(t);
+  const { taskId } = await draftedTask(env, { requests: requestsTwo });
+  const states = () => (env.send({ cmd: 'show', actor: OWNER, kind: 'task', id: taskId })['drafts'] as { send_state: string }[]).map((d) => d.send_state);
+  assert.deepEqual(states(), ['none', 'none']);
+  const [first, second] = draftsOf(env.db, taskId);
+  const insertEffect = (draft: typeof first, state: string) => env.db.writeTx((tx) => tx.run(
+    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, planned_at, at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    [`e-${draft!.id}`, draft!.effect_key, taskId, draft!.task_run_id, draft!.tool, draft!.action, draft!.target, draft!.payload_hash, state, env.clock.nowIso(), env.clock.nowIso()],
+  ));
+  insertEffect(first, 'planned');
+  assert.deepEqual(states(), ['planned', 'none']);
+  // planned 는 아직 나가지 않았다: 변경 요청이 가능하다 (아래에서 다시 확인)
+  insertEffect(second, 'confirmed');
+  assert.deepEqual(states(), ['planned', 'confirmed']);
+  for (const command of [{ cmd: 'request_changes', comment: 'again' }, { cmd: 'reject' }]) {
+    const refused = env.send({ ...command, actor: OWNER, kind: 'task', id: taskId });
+    assert.equal(refused['ok'], false, command.cmd);
+    assert.match(String(refused['error']), /already left the ledger/);
+    assert.match(String(refused['error']), /resolve-effect/);
+  }
+  assert.equal(taskStatus(env.db, taskId), 'needs_review');
+  assert.deepEqual(draftsOf(env.db, taskId).map((d) => d.state), ['proposed', 'proposed']);
+});
+
+test('a draft that is only planned (never dispatched) may still be sent back for changes', async (t) => {
+  const env = policyEnv(t);
+  const { taskId } = await draftedTask(env);
+  const d = draftsOf(env.db, taskId)[0]!;
+  env.db.writeTx((tx) => tx.run(
+    `INSERT INTO external_effect (id, effect_key, task_id, task_run_id, tool, action, target, request_hash, state, supports_idempotency, planned_at, at)
+     VALUES ('e1', ?, ?, ?, ?, ?, ?, ?, 'planned', 0, ?, ?)`,
+    [d.effect_key, taskId, d.task_run_id, d.tool, d.action, d.target, d.payload_hash, env.clock.nowIso(), env.clock.nowIso()],
+  ));
+  assert.equal(env.send({ cmd: 'request_changes', actor: OWNER, kind: 'task', id: taskId, comment: 'again' })['ok'], true);
 });

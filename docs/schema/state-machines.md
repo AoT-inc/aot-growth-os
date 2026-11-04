@@ -31,7 +31,7 @@ queued ──► running ──► validating ──► completed
 | running | retry_wait | 스케줄러 | 어댑터가 일을 시작하지 않고 미뤘다(`deferred`: `claude-code-cli` 의 사람 우선 게이트 `usage_deferred`). run은 `killed`. 실패가 아니라 "나중에 다시"이므로 **시도를 소모하지 않고**(`attempts` 그대로, 시도가 다 지난 뒤에도 `failed`가 되지 않는다) `next_run_at`을 defer 대기(`deferDelayMs`, 기본 15분) 뒤로 둔다. 허용표에 새 전이는 없다 |
 | validating | completed | **검증기만** | 모든 acceptance_criteria 충족 AND `safety != fail` |
 | validating | retry_wait | 검증기 | 기준 미충족, 재시도 가능 (`attempts + 1 < max_attempts`, 시도 1회 소모). 소진되면 `needs_review` — `validating → failed` 전이는 없으므로 사람이 정한다 |
-| validating | needs_review | 검증기/정책 | **초안 승인 대기**(ADR-0015: 평가 `pass`·`safety='pass'`이고 그 run의 초안이 있음 — 초안은 `proposed`가 된다. `validation.human=true`여도 같은 한 번의 사람 단계로 합친다), `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
+| validating | needs_review | 검증기/정책 | **초안 승인 대기**(ADR-0015: 평가 `pass`·`safety='pass'`이고 그 run의 초안이 있음 — 초안은 `proposed`가 된다. 초안 단계 run이 초안을 남기지 못하고 `completed`로 가려 하면 사유 `no_drafts`로 이 전이를 쓴다. `validation.human=true`여도 같은 한 번의 사람 단계로 합친다), `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
 | needs_review | queued / completed / failed | 사람(approval 기록 필수) | `needs_review → queued`의 승인 행은 `approved`(승인·해제) 또는 `changes_requested`(ADR-0015 변경 요청: 초안을 버리고 다시 쓰게 한다) |
 | retry_wait | queued | 스케줄러 | `next_run_at` 도달 |
 | * (비종료) | cancelled | 사람 또는 정책 | 사유 필수 |

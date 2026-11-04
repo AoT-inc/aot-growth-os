@@ -88,3 +88,14 @@ test('only the validated run\'s pending drafts move; drafts of other runs are le
   await validate(db, clock, run);
   assert.deepEqual(states(db, run).sort(), ['proposed', 'rejected']);
 });
+
+test('a draft-phase run that left no drafts never completes: it goes to needs_review with no_drafts', async (t) => {
+  const { db, clock } = seededDb(t);
+  const run = draftRun(db, clock, 'pass', { drafts: 0 });
+  db.writeTx((tx) => tx.run("UPDATE task_run SET phase = 'draft' WHERE id = ?", [run.runId]));
+  assert.equal((await validate(db, clock, run))?.taskStatus, 'needs_review');
+  assert.match(transitionsOf(db, run.taskId).at(-1)!.reason, /^no_drafts:/);
+  // 초안 단계가 아닌 run 은 그대로 completed
+  const plain = draftRun(db, clock, 'pass', { drafts: 0 });
+  assert.equal((await validate(db, clock, plain))?.taskStatus, 'completed');
+});

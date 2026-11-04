@@ -198,9 +198,9 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
         reason: `lease acquired by ${options.workerId} (run ${runId}, attempt ${attempt})`,
       });
       tx.run(
-        `INSERT INTO task_run (id, task_id, attempt, actor_id, adapter, started_at, lease_owner, lease_expires_at, heartbeat_at, checkpoint)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [runId, task.id, attempt, options.actorId, adapter, now, options.workerId,
+        `INSERT INTO task_run (id, task_id, attempt, actor_id, adapter, phase, started_at, lease_owner, lease_expires_at, heartbeat_at, checkpoint)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [runId, task.id, attempt, options.actorId, adapter, phase, now, options.workerId,
           isoAfter(options.clock.nowMs(), options.leaseMs), now, previous?.checkpoint ?? null],
       );
       return {

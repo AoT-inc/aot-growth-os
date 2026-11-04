@@ -312,3 +312,16 @@ test('a policy change between the draft approval and the dispatch stops the disp
   assert.equal(r.fake.sent.length, 1);
   assert.equal(r.adapterRuns.count, 1);
 });
+
+test('a secret-like draft is stopped by the mandatory draft scan even when the spec does not list the check: nothing becomes proposed', async (t) => {
+  const r = rig(t, { message: () => ({ ...examplePayload(), authorization: 'abc' }) as MessagePayload });
+  const taskId = draftTask(r, validationSpec(['url_reachable', 'budget']));
+  await r.daemon.worker.tick();
+  const validated = await r.daemon.worker.tick();
+  assert.deepEqual(validated.validated.map((v) => v.taskStatus), ['needs_review']);
+  assert.deepEqual(draftsOf(r.env.db, taskId).map((d) => d.state), ['superseded']);
+  assert.equal(evaluationsOf(r.env.db, taskId)[0]?.safety, 'fail');
+  assert.match(r.env.db.get<{ reason: string }>('SELECT reason FROM task_transition WHERE task_id = ? ORDER BY id DESC LIMIT 1', [taskId])!.reason, /safety failed/);
+  assert.deepEqual((show(r, taskId)['drafts']), []);
+  assert.equal(r.fake.sent.length, 0);
+});

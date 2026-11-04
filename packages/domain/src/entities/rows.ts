@@ -4,7 +4,7 @@ import type {
   AbortReason, ActorKind, ApprovalDecision, ApprovalSubjectKind, CallArtifactKind, CallArtifactSource, CallDirection, CallStatus, CatchUpMode, ChangeClass, CostCategory,
   EffectDraftState, EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
   OrgProposalStatus, OrgVersionStatus, PolicyDecisionValue, ReauthMethod, ProductKind, ProductLifecycleStage,
-  ProductRegistrationStatus, PublicationStatus, SafetyResult, Scope, Sensitivity, StrategyStatus,
+  ProductRegistrationStatus, PublicationStatus, RunPhase, SafetyResult, Scope, Sensitivity, StrategyStatus,
   TaskRunOutcome, TaskStatus, TriggerKind, TrustOrigin, VerificationStatus,
 } from './enums.ts';
 
@@ -90,7 +90,7 @@ export type TaskTransitionRow = {
 }
 
 export type TaskRunRow = {
-  id: string; task_id: string; attempt: number; actor_id: string; adapter: string; started_at: Iso; ended_at: Iso | null;
+  id: string; task_id: string; attempt: number; actor_id: string; adapter: string; phase: RunPhase; started_at: Iso; ended_at: Iso | null;
   lease_owner: string; lease_expires_at: Iso; heartbeat_at: Iso; checkpoint: Json | null; outcome: TaskRunOutcome | null;
   result: Json | null; run_log_ref: string | null;
 }

@@ -87,3 +87,54 @@ export function messagePreviewOf(payload: unknown): MessagePreview | null {
   const firstLine = record.text.split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '') ?? null;
   return { recipients, subject, firstLine };
 }
+
+/**
+ * 표시용 가리기(`mask`)가 원본에서 바꾼 값의 경로 (`to[0]`, `text`, `headers.authorization`). 원본과 가린 사본을 나란히 걸어 다른 잎(leaf)·가려진 키를 모은다.
+ * 사람이 승인하는 초안은 표시에서 한 바이트도 가려지지 않아야 하므로, 비어 있지 않으면 승인할 수 없다 (ADR-0015).
+ */
+export function maskedPathsOf(original: unknown, masked: unknown, path = ''): string[] {
+  if (original === masked) return [];
+  if (Array.isArray(original) && Array.isArray(masked) && original.length === masked.length) {
+    return original.flatMap((child, index) => maskedPathsOf(child, masked[index], `${path}[${index}]`));
+  }
+  if (original !== null && masked !== null && typeof original === 'object' && typeof masked === 'object' && !Array.isArray(original) && !Array.isArray(masked)) {
+    const a = original as Record<string, unknown>;
+    const b = masked as Record<string, unknown>;
+    return Object.keys(a).flatMap((key) => maskedPathsOf(a[key], b[key], path === '' ? key : `${path}.${key}`));
+  }
+  return [path === '' ? '(root)' : path];
+}
+
+export const DRAFT_SEND_STATES = ['none', 'planned', 'dispatched', 'confirmed', 'failed', 'unknown', 'compensated'] as const;
+export type DraftSendState = (typeof DRAFT_SEND_STATES)[number];
+
+/** 초안의 전송 상태: 같은 effect_key 의 원장 행 상태 (행이 없으면 `none`). 원장이 유일한 근거다 */
+export function draftSendStates(db: Db, rows: readonly Pick<EffectDraftRow, 'id' | 'effect_key'>[]): Map<string, DraftSendState> {
+  const out = new Map<string, DraftSendState>();
+  for (const row of rows) {
+    const effect = db.get<{ state: DraftSendState }>('SELECT state FROM external_effect WHERE effect_key = ?', [row.effect_key]);
+    out.set(row.id, effect?.state ?? 'none');
+  }
+  return out;
+}
+
+const SECRET_KEY = /(password|passwd|passphrase|secret|apikey|accesskey|privatekey|authorization|cookie|credential|bearer|signature|totp)/;
+const SECRET_KEY_SUFFIX = /(token|otp)$/;
+
+/**
+ * 키 이름(소문자, 영숫자만 남김)이 비밀을 가리키는가. agent-runtime/src/mask.ts 의 `isSecretKey` 와 같은 규칙이다 — 이 패키지들은 서로 참조할 수 없어 복사본이고,
+ * test/unit/evaluation-secret-patterns.test.ts 가 같은 표본으로 대조한다. 초안 검사(evaluation)와 승인 엔진의 기본 가리기(policy)가 쓴다.
+ */
+export function isSecretKeyName(key: string): boolean {
+  const compact = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return SECRET_KEY.test(compact) || SECRET_KEY_SUFFIX.test(compact);
+}
+
+/** 키 이름만 보는 기본 가리기. 값 모양(Bearer 토큰 등)은 평가기의 초안 검사(안전성 실패)가 막는다. 주입이 없을 때의 기본값이다 */
+export function maskSecretKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(maskSecretKeys);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, isSecretKeyName(key) ? '[REDACTED]' : maskSecretKeys(child)]));
+  }
+  return value;
+}

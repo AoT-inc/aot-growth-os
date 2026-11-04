@@ -239,6 +239,7 @@ CREATE TABLE task_run (
   attempt      INTEGER NOT NULL,
   actor_id     TEXT NOT NULL REFERENCES actor(id),
   adapter      TEXT NOT NULL,
+  phase        TEXT NOT NULL DEFAULT 'execute' CHECK (phase IN ('execute','draft','dispatch')),  -- run 단계 (ADR-0015): 지금 방식 / 보내지 않고 초안만 / 호스트 전송
   started_at   TEXT NOT NULL,
   ended_at     TEXT,
   lease_owner  TEXT NOT NULL,                 -- 이 실행을 소유한 워커 id

@@ -20,8 +20,8 @@ export {
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
 export {
-  DRAFT_LIMITS, draftSubjectEntries, HOST_DISPATCH_ADAPTER, messagePreviewOf, proposedDraftsOf, transitionDrafts,
-  type DraftSubjectEntry, type DraftTransitionRequest, type MessagePreview,
+  DRAFT_LIMITS, DRAFT_SEND_STATES, draftSendStates, draftSubjectEntries, HOST_DISPATCH_ADAPTER, isSecretKeyName, maskedPathsOf, maskSecretKeys, messagePreviewOf, proposedDraftsOf, transitionDrafts,
+  type DraftSendState, type DraftSubjectEntry, type DraftTransitionRequest, type MessagePreview,
 } from './drafts.ts';
 export {
   PHONE_TARGET_TOOLS, EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,

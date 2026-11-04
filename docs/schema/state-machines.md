@@ -18,11 +18,11 @@ queued ──► running ──► validating ──► completed
 | (none) | queued | 업무 생성 엔진 | 명세 검증 통과, 의존 업무 존재, 배정 가능한 `trial`/`active` 역할 있음 |
 | (none) | unassigned | 업무 생성 엔진 | 맞는 역할 없음 → 조직 관리팀의 재편 신호 |
 | unassigned | queued | 스케줄러 | 역할 배정됨(기존 역할 확장 또는 새 역할 `trial` 시작) |
-| queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용, 실행 인자 = `approved_hash`, lease 획득 |
+| queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용, 실행 인자 = `approved_hash`, lease 획득. **또는 초안 단계**(ADR-0015: 초안 승인 업무, `require_approval`이 모두 `external_effect`, 제안된 초안 없음 — 승인 없이 시작하고 아무것도 보내지 않는다), **또는 전송 단계**(제안된 초안 + 초안 해시 승인 유효, `adapter='host:dispatch'`; 이 경우 이미 쓴 비용으로 예산 정지하지 않는다) |
 | queued | needs_review | 스케줄러/정책 | `approved_hash` 불일치(재승인 요청), 실행 직전 재검증에서 승인 범위 이탈, 또는 (A6-U11) 명세의 선행 결과 입력(`inputs[kind=task_result]`)이 충족되지 않았거나(통과 평가가 있는 완료 업무가 아님) 업무별 어댑터를 고를 수 없음. run 을 만들지 않고 시도도 소모하지 않는다. 사유는 `upstream_unmet: <code>` / `adapter_unresolved` |
 | running | validating | 스케줄러 | `task_run.outcome='submitted'` |
 | running | queued | 스케줄러 | lease 만료로 run을 `lease_expired`로 닫음, 미확정 부작용 없음 ([recovery §4](../operations/recovery.md)) |
-| running | needs_review | 스케줄러 | run `effect_unknown`(재전송할 수 없는 `unknown`: 멱등 미지원, 또는 `planned_at`부터 `idempotency_retention_ms`의 50%가 지나 재전송 창이 닫힘. lease 만료 인수 때도 같은 판정), 또는 submit 시 업무 범위에 해결 안 된 `unknown`(다른 run의 것, 창 안 재전송 가능 포함)이나 다른 run의 `dispatched`가 남음, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈 |
+| running | needs_review | 스케줄러 | run `effect_unknown`(재전송할 수 없는 `unknown`: 멱등 미지원, 또는 `planned_at`부터 `idempotency_retention_ms`의 50%가 지나 재전송 창이 닫힘. lease 만료 인수 때도 같은 판정), 또는 submit 시 업무 범위에 해결 안 된 `unknown`(다른 run의 것, 창 안 재전송 가능 포함)이나 다른 run의 `dispatched`가 남음, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈(전송 단계는 초안 불일치·만료·정책 변경 포함, ADR-0015) |
 | running | retry_wait | 스케줄러 | error/timeout, `attempts < max_attempts` |
 | running | failed | 스케줄러 | `attempts >= max_attempts` 또는 치명적 정책 위반 |
 | running | retry_wait / failed | 스케줄러 | 실행 관리가 `time_limit` 초과로 취소해 run을 `killed`로 닫음 — `error/timeout`과 같은 규칙(시도 1회 소모, `attempts < max_attempts`면 `retry_wait`, 아니면 `failed`). 허용표에 새 전이는 없다 (A5 U4) |
@@ -31,8 +31,8 @@ queued ──► running ──► validating ──► completed
 | running | retry_wait | 스케줄러 | 어댑터가 일을 시작하지 않고 미뤘다(`deferred`: `claude-code-cli` 의 사람 우선 게이트 `usage_deferred`). run은 `killed`. 실패가 아니라 "나중에 다시"이므로 **시도를 소모하지 않고**(`attempts` 그대로, 시도가 다 지난 뒤에도 `failed`가 되지 않는다) `next_run_at`을 defer 대기(`deferDelayMs`, 기본 15분) 뒤로 둔다. 허용표에 새 전이는 없다 |
 | validating | completed | **검증기만** | 모든 acceptance_criteria 충족 AND `safety != fail` |
 | validating | retry_wait | 검증기 | 기준 미충족, 재시도 가능 (`attempts + 1 < max_attempts`, 시도 1회 소모). 소진되면 `needs_review` — `validating → failed` 전이는 없으므로 사람이 정한다 |
-| validating | needs_review | 검증기/정책 | `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
-| needs_review | queued / completed / failed | 사람(approval 기록 필수) | |
+| validating | needs_review | 검증기/정책 | **초안 승인 대기**(ADR-0015: 평가 `pass`·`safety='pass'`이고 그 run의 초안이 있음 — 초안은 `proposed`가 된다. `validation.human=true`여도 같은 한 번의 사람 단계로 합친다), `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
+| needs_review | queued / completed / failed | 사람(approval 기록 필수) | `needs_review → queued`의 승인 행은 `approved`(승인·해제) 또는 `changes_requested`(ADR-0015 변경 요청: 초안을 버리고 다시 쓰게 한다) |
 | retry_wait | queued | 스케줄러 | `next_run_at` 도달 |
 | * (비종료) | cancelled | 사람 또는 정책 | 사유 필수 |
 

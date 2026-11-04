@@ -1,6 +1,6 @@
 # 초안 먼저, 그다음 승인 (draft → approve → host dispatch)
 
-상태: 설계 제안 (2026-11-04). 엔진 코드는 아직 바꾸지 않았다. 결정 기록은 [ADR-0015](../adr/0015-draft-before-approval.md)(proposed).
+상태: 구현됨 (2026-11-05, W1~W10·W12). 남은 것: W11 검토 화면, W13(선택), W14(별도 설계). 구현 기록과 설계에서 달라진 곳은 [ADR-0015 구현 기록](../adr/0015-draft-before-approval.md#구현-기록-2026-11-05)에 있다. 결정 기록은 [ADR-0015](../adr/0015-draft-before-approval.md)(proposed).
 
 ## 0. 문제
 
@@ -372,8 +372,8 @@ CREATE INDEX effect_draft_task ON effect_draft(task_id, state);
 - `docs/operations/review-web.md`: 화면 표 갱신.
 - 시험: §7 화면 행.
 
-**W12 문서**
-- §4 목록 전부. ADR-0015 구현 기록 단락. `docs/adr/README.md` 상태 그대로(proposed).
+**W12 문서** (완료)
+- §4 목록 전부(`docs/operations/review-web.md` 화면 표는 W11과 함께). ADR-0015 구현 기록 단락. `docs/adr/README.md` 상태 그대로(proposed).
 
 **W13 (선택) 변경 요청 피드백**
 - `packages/agent-runtime/src/contract.ts` `AdapterInput.review_feedback?: {comment: string; at: string}`(사람이 쓴 것이라 `internal`, 지시가 아니라 참고 의견으로 프롬프트에 넣는다). `agent-executor.ts`가 마지막 초안 run 이후 `changes_requested` 승인 행의 `comment`를 넣는다. ADR-0005 Amendment.

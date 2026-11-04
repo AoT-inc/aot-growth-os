@@ -27,3 +27,23 @@
 - 전화와 기존 범위 승인 업무는 그대로다. 승인이 필요한 읽기와 메일이 섞인 업무는 여전히 범위 승인이다(알려진 한계).
 - 첫 실제 사용에는 메시지 부작용 도구가 필요하다(provider, 멱등 키, 받는 사람 범위·사생활 규칙). 별도 설계다.
 - 구현할 때 ADR-0003(승인 스냅샷), ADR-0005(원장 실행기의 외부 입력 하한), ADR-0006(업무 해시), ADR-0014 §8(전화는 `scope`)에 이 ADR을 가리키는 Amendment를 단다.
+
+## 구현 기록 (2026-11-05)
+작업 W1~W10·W12를 구현했다(커밋 `c36f585` W1 스키마·domain, `568ecad` W2 선언, `f668968` W3 해시, `a032b94` W4 정책 게이트, `7e972dc` W5 단계·초안 기록, `f5ade49` W6 검증, `7a63be4` W7 전송기, `46ad26f` W8 평가, `1421872` W9 게이트웨이, `fabbe62` W10 승인 엔진·CLI, `f4a471e` 통합 시험). 상태는 `proposed` 그대로다. 아직 하지 않은 것: **W11 검토 화면**(다른 작업자), **W13 변경 요청 피드백 어댑터 계약**(선택), **W14 첫 메시지 도구**(별도 설계). 설계 문서의 불변식 I1~I6은 단계마다 시험으로 고정했다(`test/integration/daemon-draft-approval.test.ts`가 전체 경로를 본다).
+
+설계 문서와 달라진 곳(불변식을 지키는 방향으로 정리):
+- **전송 단계는 예산 정지를 하지 않는다.** 초안 run이 쓴 비용이 예산에 닿았다고 `beforeRun`의 `budgetSpent`로 막으면 사람이 승인한 초안이 영영 나가지 못한다. 전송 run은 LLM 비용이 없으므로 제안된 초안이 있으면 정책 상한(`budgetCap`)만 본다.
+- **전송 단계의 `beforeEffect`는 정책 판정이 `allow`여도 초안 해시에 대한 사람 승인을 다시 확인한다.** 설계는 `require_approval`일 때만 확인한다고 했으나, `beforeRun` 규칙 2("초안이 있으면 사람 승인 없이 dispatch로 가지 않는다")와 같은 기준을 효과 직전에도 적용했다.
+- **초안 기록 시점에 명세 범위를 확인한다.** `recordDraft`가 (도구, action, 대상)이 명세 `allowed_tools`의 `external_effect` 항목과 맞지 않으면 `out_of_scope`로 거부한다. 설계는 이 확인을 전송 때(`beforeEffect`)에만 두어, 범위 밖 초안이 사람 승인을 받은 뒤에야 막힐 수 있었다.
+- **제출하지 못하고 끝난 run의 초안 정리**를 `closeRun`에 두었다(오류·시간 초과·킬·lease 만료 인수·효과 미확정·정책 정지 모두 그 run의 `pending` 초안을 `superseded`로). 설계의 "run이 submit 못 하고 끝남" 전이를 한 곳에서 처리한다.
+- **원장 실행기의 영향 표시는 `bindToEffectLedger`가 요청에서 읽어 원장 입구에 `meta.influenced`로 넘긴다.** 설계는 실행기 본문이 `perform`에 넘기는 것으로 적었으나, 본문이 빠뜨려도 초안에 표시가 남게 했다. `ToolExecutionRequest.influencedByExternalInput`은 필수 필드다.
+- **전송기 무결성 확인에 정규 JSON 확인을 더했다**(`canonicalJson(JSON.parse(payload)) === payload`). `failed`가 나오면 전송기가 뒤 초안을 보내지 않고 던진다(run 오류 → `retry_wait`).
+- **`no_secret_in_outputs`는 근거 저장소 리더가 없어도 DB의 초안 payload를 먼저 훑는다**(비밀 모양이면 안전성 실패). 깨끗하면 리더가 없을 때 기존처럼 `unknown`(→ inconclusive)이므로, 이 검사를 쓰는 초안 업무는 데몬에 근거 저장소 리더가 연결돼 있어야 통과한다.
+- **데몬 설정 이름은 `draft_ttl_ms`**(ms, 기본 72시간)다. 다른 기간 설정(`retry_delay_ms` 등)과 단위를 맞췄다. `assembleDaemon`은 `draftTtlMs`.
+- **`show`는 초안이 없어도 `drafts: []`를 돌려주고 `list`의 업무 행에 `drafts`(제안된 초안 수)가 붙는다.** 초안이 없는 업무의 승인 대상 해시·`subject`는 그대로다(`drafts` 키 없음).
+- **`request_changes`는 `needs_review`인 업무면 초안이 없어도 받는다**(승인 컬럼을 비우고 다시 큐에 넣는다). 응답에 `drafts_superseded`가 있다.
+
+알려진 한계·남은 일: 승인 방식이 `draft`인 업무가 초안 없이 `needs_review`가 되면(예: 평가 inconclusive) `approve`는 명세 해시 승인이 되어 다시 초안 run을 시작할 뿐이다(해가 없지만 승인이 헛되다 — 사람은 `request-changes`를 쓴다). 설계 §7의 통합 시험 중 "전송 중 lease 상실 → 인수 → `unknown` → `resolve-effect` → 중복 전송 없음"은 통합이 아니라 단위 시험(`task-drafts-dispatch`: `unknown`에서 멈춤, 재전송 run의 `confirmed` 재사용)으로 고정했다. 메시지 도구 자체(W14), 검토 화면(W11), 변경 요청 사유의 다음 초안 run 전달(W13)이 남았다.
+
+### 검토 화면(W11)이 읽는 것
+`ApprovalEngine`의 `show` 응답(`kind: 'task'`): `hash`(승인에 보내는 해시), `subject.drafts`(해시에 묶인 항목: `draft_id`·`seq`·`tool`·`action`·`target`·`step_id`·`payload_hash`·`expires_at`), 그리고 `drafts[]`: `{id, seq, tool, action, target, payload_hash, expires_at, expired, influenced_by_external_input, payload}`(`payload`는 JSON으로 파싱한 원문이며 비밀·주소 가리기는 표시하는 쪽이 한다). 읽기 전용 경로는 `@aot/domain`의 `proposedDraftsOf(db, taskId)`(행: `EffectDraftRow`)와 `messagePreviewOf(payload)`(`{recipients, subject, firstLine} | null`)를 쓴다. `list`의 `tasks[].drafts`는 제안된 초안 수다. 사람 명령: `approve`(show의 해시), `reject`, `request_changes`(CLI `request-changes task <id> --comment`).

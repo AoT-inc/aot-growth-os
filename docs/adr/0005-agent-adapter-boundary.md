@@ -63,3 +63,6 @@
 - 검토 대상 오류 코드(`login_required`·`usage_limit`·`server_limited`·`cli_unavailable`·`consent_required`)는 `AdapterOutput.error.code` 로만 알린다. 처음에는 `needs_review` 로 옮기는 경로를 만들지 않았고 `failed`(재시도)로 흘렀다. 2026-10-26 사용자 결정으로 연결했다: 데몬 실행기(`agent-executor.ts`)가 이 5개 코드를 `RunKilledError('review_required')` 로 올리면 워커가 run 을 `killed` 로 닫고 업무는 시도를 소모하지 않고 `running → needs_review` 가 된다(허용표 변경 없음). 한도 리셋 후 자동 재큐는 하지 않는다(한도 문구 확정 후 후속).
 - 고지 동의(가드레일 4)는 2026-10-26 사용자 결정으로 데몬 설정 + 승인 CLI로 받는다: 설정 `claude_code_cli`가 어댑터를 연결하고, 동의는 승인 소켓의 `consent show|accept|revoke`(사람만)가 `event`(source=`consent`)에 남기며 어댑터가 run마다 읽는다. 동의는 현재 고지 판에만 유효하다(문구를 바꾸면 판을 올려 다시 동의). 스키마 변경 없음. 운영: [claude-code-cli.md §1.1](../operations/claude-code-cli.md).
 - 사용량 한도 도달의 실제 문구는 미확인이다. 문구는 설정 목록이고 한 건 관찰 후 확정한다.
+
+## Amendment (2026-11-05): 초안 단계의 원장 실행기 (ADR-0015)
+원장에 묶인 실행기(`bindToEffectLedger`)의 "외부 입력 영향 run이면 막는다"는 하한은 **초안 단계(draft) run에서만** 풀린다: 이 run은 아무것도 보내지 않고 원장 입구가 요청을 `effect_draft`에 남기며, 사람이 정확한 내용을 승인한다. 게이트웨이는 `effectMode: 'draft'`에서 원장에 묶이지 않은 부작용 도구를 `approval_required`로 거부하고 `deny`는 그대로 막는다. 게이트웨이가 채우는 `ToolExecutionRequest.influencedByExternalInput`을 `bindToEffectLedger`가 원장에 `meta.influenced`로 넘겨 초안 행과 화면 배지에 남긴다. 전송 단계(dispatch) run에는 에이전트 어댑터가 없다. `send` 모드의 동작은 그대로다. 변경 요청 피드백을 어댑터 입력으로 넘기는 계약 변경(`review_feedback`)은 아직 하지 않았다. [ADR-0015](0015-draft-before-approval.md).

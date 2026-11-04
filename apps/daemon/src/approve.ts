@@ -40,9 +40,10 @@ import { join } from 'node:path';
 
 import { otpauthUri, sendApprovalRequest, TotpSecretStore } from '@aot/policy';
 
-const KINDS = ['task', 'publication', 'policy_version', 'strategy_version'] as const;
+const KINDS = ['task', 'publication', 'policy_version', 'strategy_version', 'org_proposal'] as const;
+const ORG_FLAGS = ['socket', 'actor', 'file', 'comment'];
 const PRODUCT_FLAGS = ['socket', 'actor', 'name', 'repo', 'kind', 'stage', 'hash', 'comment'];
-const KIND_ALIASES: Readonly<Record<string, string>> = { policy: 'policy_version', strategy: 'strategy_version' };
+const KIND_ALIASES: Readonly<Record<string, string>> = { policy: 'policy_version', strategy: 'strategy_version', org: 'org_proposal' };
 
 function fail(message: string): never {
   console.error(`aot-approve: ${message}`);
@@ -216,6 +217,45 @@ async function main(): Promise<void> {
       }
       break;
     }
+    case 'org': {
+      // 조직 변경 (Phase B): 제안 승인·거절·취소·해제는 `approve|reject|cancel|release org <id>` (승인 엔진), 아래는 제안 등록·신호·확인·재시험·되돌리기
+      for (const name of flags.keys()) if (!ORG_FLAGS.includes(name)) fail(`unknown option --${name} for org (allowed: ${ORG_FLAGS.join(', ')})`);
+      const op = kindArg ?? fail('org needs an operation: propose|signals|status|confirm|retrial|rollback|retire');
+      const readJson = (what: string): unknown => {
+        const file = flag('file') ?? fail(`org ${op} needs --file <${what}.json>`);
+        try {
+          return JSON.parse(readFileSync(file, 'utf8')) as unknown;
+        } catch (error) {
+          return fail(`--file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      const orgId = (): string => (id !== undefined && positional[3] === undefined ? id : fail(`usage: org ${op} <proposal id>`));
+      switch (op) {
+        case 'propose':
+          if (id !== undefined) fail('usage: org propose --file <proposal.json>');
+          request = { cmd, actor, op, proposal: readJson('proposal') };
+          break;
+        case 'signals':
+          if (id !== undefined) fail('usage: org signals');
+          request = { cmd, actor, op };
+          break;
+        case 'status':
+          if (positional[3] !== undefined) fail('usage: org status [<proposal id>]');
+          request = { cmd, actor, op, ...(id === undefined ? {} : { id }) };
+          break;
+        case 'confirm':
+        case 'rollback':
+        case 'retire':
+          request = { cmd, actor, op, id: orgId(), comment: comment ?? fail(`org ${op} needs --comment <reason>`) };
+          break;
+        case 'retrial':
+          request = { cmd, actor, op, id: orgId(), evaluation_plan: readJson('evaluation-plan'), comment: comment ?? fail('org retrial needs --comment <reason>') };
+          break;
+        default:
+          fail('org needs an operation: propose|signals|status|confirm|retrial|rollback|retire');
+      }
+      break;
+    }
     case 'show':
       needKind();
       request = { cmd, actor, kind, id };
@@ -243,7 +283,7 @@ async function main(): Promise<void> {
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
   }
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
   process.stdout.write(`${JSON.stringify(response)}\n`);

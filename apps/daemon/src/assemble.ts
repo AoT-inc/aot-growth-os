@@ -38,6 +38,7 @@ import { createConsentHandler, isConsentCommand } from './consent.ts';
 import { createProductChannel, isProductCommand } from './product-channel.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
+import { createOrgChannel, isOrgCommand } from './org-channel.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
 
@@ -217,6 +218,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const resolveEffects = createEffectResolutionHandler({ db: options.db, clock: options.clock, reauth: (tx, actorId, code, purpose) => engine.reauthenticateInTx(tx, actorId, code, purpose) });
   const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
   const consent = createConsentHandler({ db: options.db, clock: options.clock });
+  const org = createOrgChannel({ db: options.db, clock: options.clock });
   const productChannel = options.productChannel === undefined ? null : createProductChannel({
     db: options.db, clock: options.clock, gate, forbiddenRoots: options.productChannel.forbiddenRoots,
     ...(options.evaluation?.evidenceReader === undefined ? {} : { evidenceReader: options.evaluation.evidenceReader }),
@@ -224,6 +226,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const handleChannelRequest = (request: unknown): unknown => {
     if (isEffectResolutionCommand(request)) return resolveEffects(request);
     if (isConsentCommand(request)) return consent(request);
+    if (isOrgCommand(request)) return org(request as Record<string, unknown>);
     if (isProductCommand(request)) return productChannel === null ? { ok: false, error: 'the product channel is not configured (set registration_tools)' } : productChannel(request);
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
     if (isExperimentDecisionCommand(options.db, request)) return decide(request);

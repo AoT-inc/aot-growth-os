@@ -79,3 +79,13 @@ Phase A는 `task.policy_version_id`가 NOT NULL이고 업무가 `trial`/`active`
 - 이 역할은 시드 시점부터 `active`이며 별도 시험 기간이 없다. 조직 관리팀이 만든 역할이 아니므로 `org_proposal` 흐름의 대상이 아니다. 이후 변경은 §3의 제안 흐름을 따른다.
 - 부서는 만들지 않는다. 본문 §1의 "실제 업무로 검증되지 않은 부서를 만들지 않는다" 원칙은 유지된다.
 - [task-spec 예시](../schema/task-spec.md)의 `planning`/`market-researcher`는 가상 예시로 두며, Phase A 시드와 맞추려면 `generalist`로 바꾼다.
+
+## Amendment (2026-11-04): Phase B 구현 (잠정 결정 포함)
+
+구현은 [phase-b 계획](../plans/phase-b.md)과 그 "구현 기록"이 정본이다. 이 ADR 본문에서 달라진 점·정한 점만 적는다.
+1. 제안 연산은 `add_role` 하나다. 새 부서는 `add_role`이 새 부서를 가리킬 때만 만들어지고 시험 중 `trial`이다. 폐지는 확정된 제안의 `active → retired`(사람)로 한다.
+2. 위험 분류는 코드가 정한다: 새 역할이 요청하는 (도구, 작업)이 현재 active 역할 어디에도 없으면 `risky`(권한 확대). 제안자는 등급을 입력하지 않는다. 정책·검증기·평가기·승인 엔진·조직 관리팀을 가리키는 연산·도구·역할/부서 이름은 `forbidden_target`으로 거부한다.
+3. 승인은 승인 엔진이 한다(`approve|release|cancel|reject org_proposal`): 일반 변경 = 사람 1인 승인으로 즉시 `approved`, 위험 변경 = 현재 정책의 `risky_change`(대기 → 해제 때 TOTP). 승인 해시는 제안 해시 + 승인 시점 정책 버전. 기준 버전 충돌·만료는 승인 시도 때 `superseded`/`expired`로 기록한다.
+4. `approved → trial`, 시험 평가, `trial → rolled_back|inconclusive`는 데몬 주기(`org-cycle`)가 한다. `trial → active`는 평가 `pass`와 사람 확인(`org confirm`, 승인 기록 포함)이 모두 있어야 하며 자동 승격은 없다.
+5. 시험 역할은 `trial_scope.task_types`의 업무 유형만 받는다. 업무 유형 = 루틴 트리거 ref의 `@` 앞 이름, 그 밖에는 `manual`. 맞는 역할이 없어 `unassigned`인 업무 중 범위에 드는 것은 주기 처리가 `unassigned → queued`(scheduler)로 배정한다.
+6. 시험 판정(평가기 `org-trial-evaluator@1`)은 독립 평가 기록과 비용 원장으로만 한다: 안전성 실패 1건·비용 초과는 즉시 `fail`, 통과율 미달은 관측이 찰 때 `fail`, 기간 끝에 관측 부족은 `inconclusive`, `pass`는 최소 시험 기간 이후. 기준선이 없으면 최소 통과율만 본다.

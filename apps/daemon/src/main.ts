@@ -29,6 +29,7 @@ import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
 import { readClaudeCodeConsent } from './consent.ts';
 import { daemonForbiddenRoots } from './forbidden-roots.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
+import { advanceOrganization } from './org-cycle.ts';
 import { createRepeatFilter } from './log-throttle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
@@ -144,8 +145,17 @@ async function main(): Promise<void> {
       }
       if (report.executed) console.log(`executed ${report.executed.taskId} attempt ${report.executed.attempt}: ${JSON.stringify(report.executed.end)}`);
     },
-    ...(experimentCycle === null && phoneRuntime === null ? {} : {
-      afterTick: async () => {
+    afterTick: async () => {
+        {
+          // 조직 변경(Phase B): 승인된 제안의 시험 시작, 범위 안 unassigned 업무 배정, 시험 평가와 롤백. 제안이 없으면 읽기만 한다
+          const org = advanceOrganization(db, systemClock);
+          for (const s of org.started) console.log(`org proposal ${s.proposalId}: trial started (org_version ${s.orgVersionId})`);
+          for (const r of org.routed) console.log(`task ${r.taskId}: assigned to role ${r.role} (type ${r.taskType})`);
+          for (const e of org.evaluated) console.log(`org proposal ${e.proposalId}: trial ${e.verdict}${e.transitionedTo === null ? '' : ` -> ${e.transitionedTo}`}: ${e.reason}`);
+          for (const id of org.awaitingConfirmation) console.log(`org proposal ${id}: trial passed; waiting for a person to confirm (org confirm)`);
+          for (const id of [...org.expired, ...org.superseded]) console.log(`org proposal ${id}: closed (expired or superseded)`);
+          for (const f of org.failed) console.error(`org cycle failed${f.proposalId === null ? '' : ` ${f.proposalId}`}: ${f.error}`);
+        }
         if (phoneRuntime !== null) {
           // webhook 이 늦거나 오지 않은 통화를 provider 에 조회하고, 마감을 넘기면 닫는다 (업무 검증 보류가 영원히 이어지지 않게)
           try {
@@ -173,7 +183,6 @@ async function main(): Promise<void> {
         }
         for (const f of report.resultFailed) console.error(`experiment result failed ${f.strategyVersionId}: ${f.error}`);
       },
-    }),
     onError: (error) => console.error('tick failed:', error),
   });
   await webhookServer?.close();

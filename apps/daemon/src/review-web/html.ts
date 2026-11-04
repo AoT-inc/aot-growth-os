@@ -136,7 +136,7 @@ export interface Choices {
   approve?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
   reject?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
   /** 변경 요청 (초안 승인 업무: 제안된 초안을 버리고 다시 쓰게 한다) */
-  changes?: { label?: string; command: string; note?: string } | undefined;
+  changes?: { label?: string; command: string; note?: string } | { blocked: string } | undefined;
   /** 그 밖의 안내 (예: 대기 중 취소) */
   extra?: Raw | undefined;
 }

@@ -34,21 +34,21 @@ test('home is a decision inbox: one question per card, three short facts, no ids
   const text = textOf(home.text);
   assert.match(text, /결정할 일 \d+건/);
   for (const question of [
-    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 초안 3건 발송을 승인할까요?',
+    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 4통(받는 사람 8명)을 보낼까요?', '예약 확인 메일 1통(받는 사람 1명)을 보낼까요?', '고객 안내 메일 2통(받는 사람 3명)을 보낼까요?',
     "'주간 요약 보고서를 내부 문서함에 정리' — 진행해도 될까요?", "'가을 신제품 안내' 게시물을 누구나 볼 수 있게 공개할까요?", "상품 '예시 상품'을 등록할까요?",
     "'고객 안내 메일 초안 #4 발송' 전송 여부 1건 — 실제로 나갔나요?", '정책 변경을 배포할까요?', '실험을 시작할까요?', '정식 전략으로 올릴까요?', '실험 결과를 판정하지 못했습니다',
     "'분기 검토 자료 담당' 시험은 관측이 부족했습니다. 한 번 더 시험할까요?", "'주간 시장 조사 담당' 시험이 통과했습니다. 정식 확정할까요?", "'invoice-check' 업무 3건이 맡을 역할이 없어 멈췄습니다 — 새 역할 제안서를 만들까요?",
   ]) assert.ok(text.includes(question), question);
   assert.ok(!text.includes("'support-triage' 업무 4건"), 'a signal that already has a proposal is not suggested again');
   // 같은 사유의 고객 메일 3건은 한 장으로 묶인다
-  assert.equal(home.text.split('<a class="card"').filter((c) => c.includes('고객 안내 메일 초안 3건')).length, 1, 'batched into one card, named from the common part of the objectives');
+  assert.equal(home.text.split('<a class="card"').filter((c) => c.includes('고객 안내 메일 4통')).length, 1, 'batched into one card, named from the common part of the objectives');
   assert.ok(!text.includes('초안 #1') && !text.includes('초안 #2'), 'the batched tasks are listed only on the detail page');
   assert.ok(text.includes('13일 뒤 만료') && text.includes('검증 통과') && text.includes('판정 보류') && text.includes('어제부터 대기'));
   assert.ok(text.includes('지켜보는 중') && text.includes("'월간 지표 보고서 담당' 시험 중 — 3/6건 관측, 지금까지 통과 100%"), 'running trial as one line');
   // 삼분류: 먼저 / 이번 주 안에, 그리고 분류별 개수 한 줄
-  assert.ok(text.includes('바깥에 나가는 일 3건 · 조직 변경 5건 · 실험 3건 · 상품 등록 1건 · 기타 2건'));
+  assert.ok(text.includes('바깥에 나가는 일 5건 · 조직 변경 5건 · 실험 3건 · 상품 등록 1건 · 기타 2건'));
   const firstGroup = home.text.slice(home.text.indexOf('<h2 class="grp">먼저'), home.text.indexOf('<h2 class="grp">이번 주 안에'));
-  assert.ok(firstGroup.includes('고객 안내 메일 초안 3건') && firstGroup.includes('게시물') && firstGroup.includes('전송 여부') && !firstGroup.includes('시험 투입'), 'outside-reaching items come first');
+  assert.ok(firstGroup.includes('고객 안내 메일 4통') && firstGroup.includes('게시물') && firstGroup.includes('전송 여부') && !firstGroup.includes('시험 투입'), 'outside-reaching items come first');
   assert.ok(home.text.includes('<a class="card" href='), 'the whole card is the link');
   assert.ok(!home.text.includes('열기 →') && !/slug|retired|public-web|unassigned|OTP 해제|notify-tool/.test(firstLevel(home.text)), 'no slugs or jargon on the first level');
   // 첫 화면에는 id·해시·ISO 시각·엔진 상태 문구·JSON 이 없다
@@ -121,7 +121,7 @@ test('every kind of decision opens on a question with its commands: risky org, t
   assert.equal((batch.text.slice(0, batch.text.indexOf('<details>')).match(/ approve task /g) ?? []).length, 2, 'one joined command above the fold (the expired draft is left out)');
   assert.ok(batch.text.slice(0, batch.text.indexOf('<details>')).includes('2건 승인') && batch.text.includes('&amp;&amp; node apps/daemon/src/approve.ts approve task') || batch.text.includes('&& node apps/daemon/src/approve.ts approve task'), 'joined with &&');
   assert.ok((batch.text.slice(batch.text.indexOf('<details>')).match(/ approve task /g) ?? []).length >= 2 && (batch.text.slice(batch.text.indexOf('<details>')).match(/ request-changes task /g) ?? []).length >= 3, 'per-item commands inside the details');
-  assert.ok(batch.text.includes('고객 안내 메일 초안 #1 발송') && batch.text.includes('<h1>고객 안내 메일 초안 3건 발송을 승인할까요?</h1>'));
+  assert.ok(batch.text.includes('고객 안내 메일 초안 #1 발송') && batch.text.includes('<h1>고객 안내 메일 4통(받는 사람 8명)을 보낼까요?</h1>'));
   const publication = await rig.get(`/approvals/publication/${rig.demo.ids.publication}`);
   assert.ok(publication.text.includes(`${CLI} approve publication ${rig.demo.ids.publication} --hash `) && textOf(publication.text).includes('가을 신제품 안내') && textOf(publication.text).includes('누구나 볼 수 있게 공개할까요?') && textOf(publication.text).includes('이번 달 말부터 새 제품을 판매합니다'));
   const strategy = await rig.get(`/approvals/strategy_version/${rig.demo.ids.strategy}`);
@@ -426,16 +426,21 @@ const setPayload = (db: import('@aot/domain').Db, run: string, seq: number, requ
 test('a customer-mail task with drafts shows who gets what, in three rows, with the influenced badge and the expiry', async (t) => {
   const rig = await startRig(t);
   const home = (await rig.get('/')).text;
-  const card = home.split('<a class="card"').find((c) => c.includes('고객 안내 메일 초안 3건'))!;
+  const card = home.split('<a class="card"').find((c) => c.includes('고객 안내 메일 4통'))!;
   const cardText = textOf(card);
-  assert.ok(cardText.includes("메일 4건 · 받는 사람 모두 8명 · 첫 제목 '"), cardText);
+  assert.ok(cardText.includes("메일 4통 · 받는 사람 모두 8명 · 첫 제목 '"), cardText);
+  assert.ok(cardText.includes('고객 안내 메일 4통(받는 사람 8명)을 보낼까요?') && !cardText.includes('3건'), 'the question counts mails, not tasks');
+  assert.ok(cardText.includes('1통 기한 지남') && !cardText.includes('어제부터 대기'), 'expired count is a badge; the waiting time stays in the details');
+  const risk = /위험·기한 (.*?)\s*$/.exec(cardText)![1]!;
+  assert.equal(risk.split(' · ').length, 2, risk);
+  assert.equal(risk, '보내면 되돌릴 수 없음 · 초안 23시간 뒤 만료');
   assert.ok(cardText.includes('받는 사람과 문구가 이대로 나가도 되는지') && cardText.includes('초안 23시간 뒤 만료') && cardText.includes('외부 입력 영향 하에 작성됨 (1건)'), cardText);
   assert.ok(!cardText.includes('내용 미리보기 없음'), 'the old placeholder copy is gone for tasks with drafts');
   assert.deepEqual(idsIn(cardText), []);
   // 한 업무(메일 2건): 제목·받는 사람 가림·도메인별 수·본문·짧은 해시(자세히 안)
   const one = await rig.get(`/approvals/task/${rig.demo.ids.task}`);
   const first = firstLevel(one.text);
-  assert.ok(first.includes("메일 2건 · 받는 사람 모두 4명 · 첫 제목 '가을 신제품 판매 시작 안내'") && first.includes('초안 47시간 뒤 만료'), first);
+  assert.ok(first.includes("메일 2통 · 받는 사람 모두 4명 · 첫 제목 '가을 신제품 판매 시작 안내'") && first.includes('초안 47시간 뒤 만료'), first);
   assert.ok(first.includes('k***@example.com, l***@example.com, p***@example.org') && first.includes('example.com 2명, example.org 1명') && first.includes('이번 달 말부터 새 제품을 판매합니다') && first.includes('정확한 주소는 CLI show 에서'), first);
   assert.ok(!first.includes('외부 입력 영향'), 'not influenced');
   assert.deepEqual(idsIn(first), [], 'no ids or hashes above the fold');
@@ -484,16 +489,57 @@ test('tasks with drafts are never batched with tasks without; other kinds of dra
   });
   const home = (await rig.get('/')).text;
   const cards = home.split('<a class="card"').slice(1).map(textOf);
-  const mixed = cards.filter((c) => c.includes('고객 안내 메일 초안') && !c.includes('전송 여부'));
-  assert.equal(mixed.length, 2, 'a batch of the two draft tasks and the task without drafts');
-  const plain = mixed.find((c) => c.includes('초안 #2'))!;
+  const plainCards = cards.filter((c) => c.includes('초안 #2'));
+  assert.equal(plainCards.length, 1, 'the task without drafts is its own card');
+  assert.ok(!plainCards[0]!.includes('/batch/'), 'not folded into the draft batch');
+  const plain = plainCards[0]!;
   assert.ok(plain.includes('내용 미리보기 없음, 자세히에서 원문 확인') && plain.includes('받는 사람과 문구가 맞는지') && !plain.includes('이대로'), 'today\'s copy for a task without drafts');
-  const draftBatch = mixed.find((c) => c.includes('초안 2건'))!;
-  assert.ok(draftBatch.includes('받는 사람 모두 4명') || draftBatch.includes('받는 사람 모두'), draftBatch);
+  const draftBatch = cards.find((c) => c.includes('/batch/'))!;
+  assert.ok(!draftBatch.includes('초안 #2') && draftBatch.includes('받는 사람 모두'), draftBatch);
   assert.ok(draftBatch.includes('그 밖 1건은 미리보기 없음'), draftBatch);
   const detail = (await rig.get(`/approvals/task/${rig.demo.ids.task}`)).text;
   assert.ok(detail.includes('메일 모양이 아닌 초안입니다') && detail.includes('create'), 'the raw payload is shown instead of a preview');
   const only = await startRig(t, { before: (db) => db.writeTx((tx) => tx.run("UPDATE effect_draft SET payload = '{\"op\":\"x\"}' WHERE task_run_id = 'run-demo-draft-1'")) });
-  const onlyCard = textOf((await only.get('/')).text.split('<a class="card"').find((c) => c.includes('고객 안내 메일'))!);
-  assert.ok(onlyCard.includes('메일 3건') && onlyCard.includes('그 밖 1건은 미리보기 없음'), onlyCard);
+  const onlyCard = textOf((await only.get('/')).text.split('<a class="card"').find((c) => c.includes('/batch/'))!);
+  assert.ok(onlyCard.includes('메일 3통') && onlyCard.includes('그 밖 1건은 미리보기 없음'), onlyCard);
+});
+
+test('a draft with a secret-looking value cannot be approved on the screen: badge, one line of reason, request-changes only', async (t) => {
+  const rig = await startRig(t);
+  const id = taskOfRun(rig, 'run-demo-draft-4');
+  const page = await rig.get(`/approvals/task/${id}`);
+  const first = firstLevel(page.text);
+  assert.ok(first.includes('예약 확인 메일 1통(받는 사람 1명)을 보낼까요?') && first.includes('승인 불가 — 가려진 값이 있음'), first);
+  assert.ok(first.includes('비밀값처럼 보이는 내용이 있어 사람이 전부 볼 수 없습니다. 변경 요청으로 다시 쓰게 하세요'), first);
+  assert.ok(!page.text.includes(`approve task ${id}`), 'no approve command');
+  assert.ok(page.text.includes(`${CLI} request-changes task ${id} --comment`) && page.text.includes(`${CLI} reject task ${id}`));
+  assert.ok(textOf(page.text).includes('headers.X-Api-Token') && !page.text.includes('xxxxxxxx'), 'the path is named, the value never shown');
+  const risk = /위험·기한 (.*?)\s*$/.exec(textOf((await rig.get('/')).text.split('<a class="card"').find((c) => c.includes('예약 확인 메일'))!))![1]!;
+  assert.ok(risk.split(' · ').length <= 2);
+  // 값 모양만 비밀인 본문(키 이름은 평범함)도 같은 가리기(maskSecrets)로 걸러진다
+  const valueOnly = await startRig(t, { before: (db) => setPayload(db, 'run-demo-draft-2', 1, { to: ['oh.sora@example.com'], subject: '점검 안내', text: `토큰 ${'sk'}-${'z'.repeat(30)}` }) });
+  const vo = await valueOnly.get(`/approvals/task/${taskOfRun(valueOnly, 'run-demo-draft-2')}`);
+  assert.ok(vo.text.includes('승인 불가 — 가려진 값이 있음') && !vo.text.includes(`approve task ${taskOfRun(valueOnly, 'run-demo-draft-2')}`) && !vo.text.includes('zzzzzzzz'));
+});
+
+test('a partly sent draft task shows what went out, and offers neither reject nor request-changes', async (t) => {
+  const rig = await startRig(t);
+  const id = taskOfRun(rig, 'run-demo-effect');
+  const page = await rig.get(`/approvals/task/${id}`);
+  const first = firstLevel(page.text);
+  assert.ok(first.includes('이미 나간 1통, 전송 여부 불명 1통 · 전송 여부 카드에서 확인') && first.includes('보냄') && first.includes('전송 여부 불명'), first);
+  assert.ok(first.includes('거절 불가') && first.includes('변경 요청 불가'), first);
+  assert.ok(!page.text.includes(`request-changes task ${id}`) && !page.text.includes(`reject task ${id}`), 'neither command is offered');
+  assert.ok(page.text.includes(`approve task ${id}`), 'approving (after the unknown effect is resolved) is still the engine\'s call');
+  assert.ok((await rig.get('/effects')).text.includes('전송 여부 1건'), 'the effects card still owns the unknown effect');
+  // 보내지 못함
+  const failed = await startRig(t, { before: (db) => db.writeTx((tx) => tx.run("UPDATE external_effect SET state = 'failed' WHERE id = 'effect-demo-sent'")) });
+  assert.ok(textOf((await failed.get(`/approvals/task/${taskOfRun(failed, 'run-demo-effect')}`)).text).includes('보내지 못함'));
+});
+
+test('draft cards stay short: at most two risk segments on every draft card', async (t) => {
+  const rig = await startRig(t);
+  const cards = (await rig.get('/')).text.split('<a class="card"').slice(1).map(textOf).filter((c) => c.includes('확인할 것 받는 사람과 문구가 이대로'));
+  assert.equal(cards.length, 3, 'batch, partly sent, masked');
+  for (const c of cards) assert.ok(/위험·기한 (.*?)\s*$/.exec(c)![1]!.split(' · ').length <= 2, c);
 });

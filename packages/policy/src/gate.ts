@@ -5,7 +5,7 @@
 //  - beforeEffect: 부작용 직전 재검증 — 요청에 있던 도구·작업·대상인지, 영향이 external_effect 로 선언됐는지, 판정과 승인.
 //                  `failed` 재전송은 정책 판정이 allow 일 때만 (승인은 한 번의 전송에 대한 것이므로 재전송을 덮지 않는다)
 // 모든 판정은 policy_decision 에 남는다. 판정할 정책 내용을 찾지 못하면 거부한다(기본 거부).
-import type { Db, TaskPolicyGate, TaskRow, TaskSpec } from '@aot/domain';
+import type { Db, EffectDraftRow, TaskPolicyGate, TaskRow, TaskSpec } from '@aot/domain';
 
 import { approvalStatus, taskRequester, taskSubject, taskSubjectHash, type ApprovalStatus } from './approval.ts';
 import { recordDecision, recordVerdict } from './decisions.ts';
@@ -140,14 +140,22 @@ function budgetSpent(tx: Db, task: TaskRow): string | null {
  *  1. 현재 대상 해시(명세 + 현재 정책 버전) = task.approved_hash. 다르면 실행 인자가 바뀌었거나 정책이 바뀐 것 → 재승인
  *  2. 역할 버전·상태가 승인 당시와 같은가 (조직·역할 변경이 승인 범위를 벗어나면 재검토)
  *  3. 승인자 수·자기 승인·취소 (approvalStatus). 외부 부작용이 있으면 cooldown·재인증도 (그 밖의 require_approval 은 사람 1인 승인만)
+ * 초안 승인 업무(ADR-0015)는 `drafts`(제안된 초안)를 해시에 더한다. 기한(`expires_at`)이 지난 초안이 있으면 승인이 유효해도 거부한다
+ * (새 상태를 만들지 않고 `hash_mismatch`: 사람이 변경 요청으로 초안을 다시 쓰게 한다).
  */
-export function verifyTaskApproval(tx: Db, task: TaskRow, spec: TaskSpec, policy: ActivePolicy, now: string): ApprovalStatus {
-  const subject = taskSubject(task, spec, policy.versionId);
+export function verifyTaskApproval(
+  tx: Db, task: TaskRow, spec: TaskSpec, policy: ActivePolicy, now: string, drafts?: readonly EffectDraftRow[],
+): ApprovalStatus {
+  const subject = taskSubject(task, spec, policy.versionId, drafts);
   const hash = taskSubjectHash(subject);
   const fail = (state: ApprovalStatus['state'], reason: string): ApprovalStatus => ({
     ok: false, state, reason, approvers: [], quorumApprovalId: null, quorumAt: null, cooldownEndsAt: null,
   });
   if (task.approved_hash === null) return fail('missing', 'approval required (no approval recorded)');
+  const expired = (drafts ?? []).filter((draft) => now >= draft.expires_at);
+  if (expired.length > 0) {
+    return fail('hash_mismatch', `draft expired (${expired.length} of ${drafts!.length} drafts past expires_at); ask for changes so the content is rewritten`);
+  }
   if (task.approved_hash !== hash) {
     const snapshot = task.approved_snapshot === null ? null : (JSON.parse(task.approved_snapshot) as { policy_version_id?: string });
     if (snapshot?.policy_version_id !== undefined && snapshot.policy_version_id !== policy.versionId) {

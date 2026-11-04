@@ -5,8 +5,8 @@
 //  - 'approved' 가 아닌 행(rejected 등)은 그 앞의 승인을 모두 무효로 한다 (거절, 대기 중 취소)
 //  - 남은 'approved' 중 subject_hash 가 지금 해시와 같고, 사람(actor.kind='human')이며, 자기 승인이 금지(min_approvers ≥ 2)면 요청자가 아닌 것만 센다
 //  - 서로 다른 승인자 수가 min_approvers 에 닿은 시각 + cooldown 이 지나야 하고, reauth_before_effect 면 그 뒤의 재인증 기록이 있어야 한다
-import type { ApprovalSubjectKind, Db, PublicationRow, StrategyVersionRow, TaskRow, TaskSpec } from '@aot/domain';
-import { contentHash } from '@aot/domain';
+import type { ApprovalSubjectKind, Db, EffectDraftRow, PublicationRow, StrategyVersionRow, TaskRow, TaskSpec } from '@aot/domain';
+import { contentHash, draftSubjectEntries } from '@aot/domain';
 
 import { type ApprovalParams } from './document.ts';
 
@@ -110,12 +110,19 @@ export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
 
 // ===== 승인 대상의 정규화 내용 =====
 
-/** 업무 승인 대상: 실행 인자(명세)와 승인 시점의 정책 버전. 실행 중 쌓이는 evidence_refs 는 뺀다. */
-export function taskSubject(task: Pick<TaskRow, 'id' | 'role_id' | 'role_version' | 'product_id'>, spec: TaskSpec, policyVersionId: string) {
+/**
+ * 업무 승인 대상: 실행 인자(명세)와 승인 시점의 정책 버전. 실행 중 쌓이는 evidence_refs 는 뺀다.
+ * 초안 승인 업무(ADR-0015)는 제안된 초안 목록(`drafts`: payload_hash·도구·action·대상·step_id·만료)을 더한다.
+ * 초안이 없거나 비어 있으면 `drafts` 키를 더하지 않으므로 해시는 초안 도입 전과 비트 단위로 같다.
+ */
+export function taskSubject(
+  task: Pick<TaskRow, 'id' | 'role_id' | 'role_version' | 'product_id'>, spec: TaskSpec, policyVersionId: string,
+  drafts?: readonly EffectDraftRow[],
+) {
   const args: Record<string, unknown> = { ...spec };
   delete args['evidence_refs'];
   delete args['approved_snapshot'];
-  return {
+  const subject = {
     kind: 'task' as const,
     task_id: task.id,
     spec: args,
@@ -124,6 +131,8 @@ export function taskSubject(task: Pick<TaskRow, 'id' | 'role_id' | 'role_version
     product_id: task.product_id,
     policy_version_id: policyVersionId,
   };
+  if (drafts === undefined || drafts.length === 0) return subject;
+  return { ...subject, drafts: draftSubjectEntries(drafts) };
 }
 
 export type TaskSubject = ReturnType<typeof taskSubject>;

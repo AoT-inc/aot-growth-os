@@ -8,7 +8,7 @@ import { minimalDraft } from './spec-fixtures.ts';
 /** 시험용: 생성·실행을 모두 허용한다. 실제 판정은 A3 의 policy 가 같은 포트로 구현한다. */
 export const ALLOW_ALL_GATE: TaskPolicyGate = {
   beforeCreate: () => ({ decision: 'allow' }),
-  beforeRun: () => ({ decision: 'allow' }),
+  beforeRun: () => ({ decision: 'allow', phase: 'execute' }),
   beforeEffect: () => ({ decision: 'allow' }),
 };
 

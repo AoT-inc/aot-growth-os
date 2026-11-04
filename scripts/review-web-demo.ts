@@ -22,7 +22,7 @@ import { buildRegistrationTaskSpec } from '../apps/daemon/src/registration-task.
 
 const DAY = 86_400_000;
 const MIGRATIONS = fileURLToPath(new URL('../migrations', import.meta.url));
-const ALLOW: TaskPolicyGate = { beforeCreate: () => ({ decision: 'allow' }), beforeRun: () => ({ decision: 'allow' }), beforeEffect: () => ({ decision: 'allow' }) };
+const ALLOW: TaskPolicyGate = { beforeCreate: () => ({ decision: 'allow' }), beforeRun: () => ({ decision: 'allow', phase: 'execute' }), beforeEffect: () => ({ decision: 'allow' }) };
 
 export interface DemoResult {
   dbPath: string;

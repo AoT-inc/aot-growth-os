@@ -157,7 +157,7 @@ export function beginDispatch(db: Db, clock: Clock, lease: Lease, effect: Pick<E
     const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [lease.taskId])!;
     const verdict = gate.beforeEffect(tx, {
       task, spec: JSON.parse(task.spec) as TaskSpec, runId: lease.runId, tool: row.tool, action: row.action, target: row.target,
-      dispatch, now,
+      dispatch, now, phase: lease.phase ?? 'execute', requestHash: row.request_hash,
     });
     if (verdict.decision !== 'allow') {
       if (dispatch === 'resend_failed') return { started: false, code: 'policy_refused', reason: verdict.reason, runStopped: false };

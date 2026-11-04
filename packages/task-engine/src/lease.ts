@@ -7,7 +7,7 @@
 //  - 만료 인수 (규칙 3·4): 옛 run 을 lease_expired 로 닫고, 남은 부작용을 §3 절차로 먼저 처리한 뒤 업무를 되돌린다.
 import { randomUUID } from 'node:crypto';
 
-import type { Clock, Db, EvidenceRow, ExternalEffectRow, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
+import type { Clock, Db, EvidenceRow, ExternalEffectRow, RunPhase, TaskPolicyGate, TaskRow, TaskRunOutcome, TaskSpec, TaskStatus } from '@aot/domain';
 
 import { LeaseLostError, type RunKillReason } from './errors.ts';
 import { resendAllowed } from './idempotency.ts';
@@ -23,6 +23,8 @@ export interface Lease {
   owner: string;
   attempt: number;
   leaseMs: number;
+  /** run 단계 (ADR-0015). 없으면 `execute`. `beforeRun` 이 정하고 claim 이 넣는다 */
+  phase?: RunPhase;
 }
 
 /** 펜싱 확인. 반드시 쓰기 트랜잭션 안에서 부르고, 같은 트랜잭션에서 쓴다. */
@@ -167,6 +169,10 @@ export function claimNextTask(db: Db, options: ClaimOptions): ClaimResult {
       if (verdict.decision !== 'allow') {
         transitionTask(tx, { taskId: task.id, from: 'queued', to: 'needs_review', by: 'policy', reason: verdict.reason, now });
         sentToReview.push(task.id);
+        continue;
+      }
+      if (verdict.phase !== 'execute') {
+        toReview(`run_phase_unsupported: the policy gate asked for the '${verdict.phase}' phase, which this scheduler cannot run`);
         continue;
       }
       if (measurementInputsOf(spec).length > 0) attachRecordedMeasurements(tx, task.id, spec, now);

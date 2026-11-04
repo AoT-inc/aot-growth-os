@@ -1,11 +1,14 @@
 // TaskPolicyGate(domain 포트)의 실제 구현. apps/daemon 이 조립해 task-engine 에 넘긴다.
 //  - beforeCreate: 명세의 모든 요청(도구 × 작업)을 현재 정책으로 판정. deny 가 하나라도 있으면 생성 거부
 //  - beforeRun:    실행 직전 재검증 — 현재 정책으로 다시 판정(정책이 강화됐으면 새 정책이 적용된다), 예산 잔여,
-//                  require_approval 이면 승인 확인(approved_hash = 현재 대상 해시, 정책 버전, 승인자 수, cooldown, 재인증)
+//                  require_approval 이면 승인 확인(approved_hash = 현재 대상 해시, 정책 버전, 승인자 수, cooldown, 재인증).
+//                  run 단계(ADR-0015)도 여기서 정한다: 제안된 초안이 있으면 `dispatch`(초안 해시 승인 필수), 초안 승인 업무이고
+//                  승인이 필요한 요청이 모두 외부 부작용이면 승인 없이 `draft`(아무것도 보내지 않는다), 그 밖은 `execute`
 //  - beforeEffect: 부작용 직전 재검증 — 요청에 있던 도구·작업·대상인지, 영향이 external_effect 로 선언됐는지, 판정과 승인.
+//                  draft 단계는 무조건 거부, dispatch 단계는 요청 해시가 승인된(제안된·만료 전) 초안의 해시일 때만 통과한다.
 //                  `failed` 재전송은 정책 판정이 allow 일 때만 (승인은 한 번의 전송에 대한 것이므로 재전송을 덮지 않는다)
 // 모든 판정은 policy_decision 에 남는다. 판정할 정책 내용을 찾지 못하면 거부한다(기본 거부).
-import type { Db, EffectDraftRow, TaskPolicyGate, TaskRow, TaskSpec } from '@aot/domain';
+import { proposedDraftsOf, type Db, type EffectDraftRow, type TaskPolicyGate, type TaskRow, type TaskSpec } from '@aot/domain';
 
 import { approvalStatus, taskRequester, taskSubject, taskSubjectHash, type ApprovalStatus } from './approval.ts';
 import { recordDecision, recordVerdict } from './decisions.ts';
@@ -57,7 +60,7 @@ export function createPolicyGate(options: PolicyGateOptions): TaskPolicyGate {
       return { decision: 'allow' };
     },
 
-    beforeRun(tx, { task, spec, now }) {
+    beforeRun(tx, { task, spec, now, effectApproval }) {
       const found = activeOrNull(tx);
       if ('missing' in found) {
         recordMissing(tx, spec, found.versionId, found.missing, now, task.id);
@@ -66,13 +69,22 @@ export function createPolicyGate(options: PolicyGateOptions): TaskPolicyGate {
       const { policy } = found;
       const requests = requestsFromSpec(spec);
       const verdicts = requests.map((request) => evaluateRequest(policy.document, request));
-      const budget = budgetCap(policy, spec) ?? budgetSpent(tx, task);
+      // 제안된 초안이 있으면 이번 run 은 호스트 전송(dispatch)이다. LLM 비용이 없으므로 이미 쓴 비용(초안 run)이 예산에 닿았다고 막지 않는다.
+      const drafts = proposedDraftsOf(tx, task.id);
+      const dispatching = drafts.length > 0;
+      const budget = budgetCap(policy, spec) ?? (dispatching ? null : budgetSpent(tx, task));
       const denied = verdicts.filter((v) => v.decision === 'deny');
       const needsApproval = verdicts.some((v) => v.decision === 'require_approval');
-      const approval = denied.length === 0 && needsApproval ? verifyTaskApproval(tx, task, spec, policy, now) : null;
+      // 초안 단계: 초안 승인 업무이고 승인이 필요한 요청이 모두 외부 부작용이면 승인 없이 시작한다 (아무것도 보내지 않는다)
+      const draftPhase = !dispatching && needsApproval && effectApproval === 'draft'
+        && requests.every((request, i) => verdicts[i]!.decision !== 'require_approval' || request.impact === 'external_effect');
+      const approval = denied.length === 0 && (dispatching || (needsApproval && !draftPhase))
+        ? verifyTaskApproval(tx, task, spec, policy, now, dispatching ? drafts : undefined) : null;
       requests.forEach((request, i) => {
         const verdict = verdicts[i]!;
-        const suffix = verdict.decision === 'require_approval' && approval ? `; approval: ${approval.ok ? 'valid' : approval.reason}` : '';
+        let suffix = '';
+        if (verdict.decision === 'require_approval' && approval) suffix = `; approval: ${approval.ok ? 'valid' : approval.reason}`;
+        else if (verdict.decision === 'require_approval' && draftPhase) suffix = '; draft run: nothing is sent; drafts await approval';
         recordDecision(tx, {
           taskId: task.id, request, decision: verdict.decision, reason: `${verdict.reason}${suffix} (re-check before run)`,
           approvalRequired: verdict.approval, policyVersionId: policy.versionId, now,
@@ -80,15 +92,40 @@ export function createPolicyGate(options: PolicyGateOptions): TaskPolicyGate {
       });
       if (budget) return { decision: 'needs_review', reason: budget };
       if (denied.length > 0) return { decision: 'needs_review', reason: `denied by the current policy ${policy.versionId}: ${denied.map((v) => v.reason).join('; ')}`.slice(0, 1000) };
+      if (dispatching) {
+        // 정책이 승인을 요구하지 않더라도 초안이 있으면 사람의 초안 해시 승인이 있어야 한다. 승인 뒤 LLM 이 다시 쓰는 길은 없다.
+        return approval!.ok ? { decision: 'allow', phase: 'dispatch' } : { decision: 'needs_review', reason: approval!.reason };
+      }
+      if (draftPhase) return { decision: 'allow', phase: 'draft' };
       if (approval && !approval.ok) return { decision: 'needs_review', reason: approval.reason };
-      return { decision: 'allow' };
+      return { decision: 'allow', phase: 'execute' };
     },
 
-    beforeEffect(tx, { task, spec, runId, tool, action, target, dispatch, now }) {
+    beforeEffect(tx, { task, spec, runId, tool, action, target, dispatch, now, phase, requestHash }) {
       const found = activeOrNull(tx);
       if ('missing' in found) return { decision: 'refuse', reason: `${found.missing}; default deny` };
       const { policy } = found;
       const base = { taskId: task.id, taskRunId: runId, policyVersionId: policy.versionId, now };
+      // 초안 단계 run 은 아무것도 보내지 않는다 (ADR-0015, 방어: 전송 경로가 draft lease 로 여기까지 오면 거부)
+      if (phase === 'draft') {
+        const request: PolicyRequest = { ...requestOf(spec, { tool }, action), resource: target, impact: 'external_effect' };
+        const reason = `${tool}.${action} on ${target} cannot be sent from a draft run (a draft run sends nothing)`;
+        recordDecision(tx, { ...base, request, decision: 'deny', reason, approvalRequired: null });
+        return { decision: 'refuse', reason };
+      }
+      // 전송 단계는 사람이 승인한 초안만 보낸다: (도구, 작업, 대상, 요청 해시)가 맞는 제안된 초안이 있고 만료 전이어야 한다
+      let drafts: EffectDraftRow[] | undefined;
+      if (phase === 'dispatch') {
+        drafts = proposedDraftsOf(tx, task.id);
+        const draft = drafts.find((d) => d.tool === tool && d.action === action && d.target === target && d.payload_hash === requestHash);
+        const refuse = draft === undefined ? `${tool}.${action} on ${target} does not match any approved draft (request_hash is not an approved draft hash)`
+          : now >= draft.expires_at ? `draft ${draft.id} expired at ${draft.expires_at}; ask for changes so the content is rewritten` : null;
+        if (refuse !== null) {
+          const request: PolicyRequest = { ...requestOf(spec, { tool }, action), resource: target, impact: 'external_effect' };
+          recordDecision(tx, { ...base, request, decision: 'deny', reason: refuse, approvalRequired: null });
+          return { decision: 'refuse', reason: refuse };
+        }
+      }
       const entry = spec.allowed_tools.find((t) => t.tool === tool && t.operations.includes(action) && (t.target === undefined || t.target === target));
       if (!entry) {
         const request: PolicyRequest = { ...requestOf(spec, { tool }, action), resource: target, impact: 'external_effect' };
@@ -113,8 +150,9 @@ export function createPolicyGate(options: PolicyGateOptions): TaskPolicyGate {
         recordVerdict(tx, base, request, { ...verdict, reason: `${reason} ${label}` });
         return { decision: 'refuse', reason };
       }
-      if (verdict.decision === 'require_approval') {
-        const approval = verifyTaskApproval(tx, task, spec, policy, now);
+      // 전송 단계는 정책이 승인을 요구하지 않아도 초안 해시에 대한 사람 승인을 다시 확인한다 (beforeRun 과 같은 규칙)
+      if (verdict.decision === 'require_approval' || phase === 'dispatch') {
+        const approval = verifyTaskApproval(tx, task, spec, policy, now, drafts);
         recordVerdict(tx, base, request, { ...verdict, reason: `${verdict.reason}; approval: ${approval.ok ? 'valid' : approval.reason} ${label}` });
         return approval.ok ? { decision: 'allow' } : { decision: 'refuse', reason: approval.reason };
       }

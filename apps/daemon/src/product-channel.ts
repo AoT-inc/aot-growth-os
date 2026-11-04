@@ -83,9 +83,11 @@ class RemoveRefused extends Error {}
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-export function createProductChannel(options: ProductChannelOptions): (request: unknown) => Promise<Record<string, unknown>> {
-  const { db, clock, gate } = options;
-
+/**
+ * 상품 등록 상태의 읽기 전용 조회 (채널 `status`·`decide` 와 읽기 전용 검토 화면이 같이 쓴다). 쓰기 없음.
+ * `awaitingReview` 는 채널의 syncStatus 가 verifying → pending_approval 로 올리는 조건과 같다.
+ */
+export function productReader(db: Db) {
   const productBySlug = (slug: string): ProductRow | undefined => db.get<ProductRow>(
     'SELECT id, slug, name, kind, lifecycle_stage, registration_status, registration_approval_id, registered_at FROM product WHERE slug = ?', [slug],
   );
@@ -119,18 +121,10 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     task: task.id, evaluation: evaluation?.id ?? null, evidence: evidence.map((row) => [row.id, row.content_hash]),
   }));
 
-  /** verifying → pending_approval (검증기): 검증 업무가 평가를 받고 사람 검토(needs_review)에 닿았다 */
-  const syncStatus = (): void => {
-    const waiting = db.all<{ slug: string }>("SELECT slug FROM product WHERE registration_status = 'verifying'");
-    for (const { slug } of waiting) {
-      const task = latestTask(slug);
-      // 사람 검토 중(needs_review)이고 *가장 나중 실행*이 결과를 내서 평가를 받았을 때만. 실행 전 승인 대기·한도/로그인 때문에 멈춘 재시도는 검증 검토가 아니다
-      if (task === undefined || task.status !== 'needs_review' || latestRun(task.id)?.outcome !== 'submitted' || evaluationOf(task.id) === undefined) continue;
-      db.writeTx((tx) => {
-        assertTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'verifying', to: 'pending_approval', by: 'validator' });
-        tx.run("UPDATE product SET registration_status = 'pending_approval', updated_at = ? WHERE slug = ? AND registration_status = 'verifying'", [clock.nowIso(), slug]);
-      });
-    }
+  /** 검증 중(verifying)인 상품이 사람 검토에 닿았는가: 사람 검토 중(needs_review)이고 *가장 나중 실행*이 결과를 내서 평가를 받았을 때만. 실행 전 승인 대기·한도/로그인 때문에 멈춘 재시도는 검증 검토가 아니다 */
+  const awaitingReview = (slug: string): boolean => {
+    const task = latestTask(slug);
+    return task !== undefined && task.status === 'needs_review' && latestRun(task.id)?.outcome === 'submitted' && evaluationOf(task.id) !== undefined;
   };
 
   const view = (product: ProductRow): Record<string, unknown> => {
@@ -159,6 +153,27 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
       decision: decision ?? null,
       registered_at: product.registered_at,
     };
+  };
+
+  return { productBySlug, repoOf, latestTask, latestRun, evaluationOf, evidenceOf, shadowOf, reviewHash, awaitingReview, view };
+}
+
+export function createProductChannel(options: ProductChannelOptions): (request: unknown) => Promise<Record<string, unknown>> {
+  const { db, clock, gate } = options;
+
+  const read = productReader(db);
+  const { productBySlug, repoOf, latestTask, evaluationOf, evidenceOf, reviewHash, view } = read;
+
+  /** verifying → pending_approval (검증기): 검증 업무가 평가를 받고 사람 검토(needs_review)에 닿았다 */
+  const syncStatus = (): void => {
+    const waiting = db.all<{ slug: string }>("SELECT slug FROM product WHERE registration_status = 'verifying'");
+    for (const { slug } of waiting) {
+      if (!read.awaitingReview(slug)) continue;
+      db.writeTx((tx) => {
+        assertTransition(PRODUCT_REGISTRATION_MACHINE, { from: 'verifying', to: 'pending_approval', by: 'validator' });
+        tx.run("UPDATE product SET registration_status = 'pending_approval', updated_at = ? WHERE slug = ? AND registration_status = 'verifying'", [clock.nowIso(), slug]);
+      });
+    }
   };
 
   /** 저장소 루트 검사: 실경로가 디렉터리이고 자기 `.git` 디렉터리가 있고 데몬 디렉터리와 겹치지 않는다. 통과하면 실경로, 아니면 거절 응답 */

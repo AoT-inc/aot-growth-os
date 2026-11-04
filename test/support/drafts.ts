@@ -7,7 +7,7 @@ import { MESSAGE_TARGET, MESSAGE_TOOL, examplePayload } from './message-tool.ts'
 let counter = 0;
 
 /** 기본 메시지 초안 행 (payload_hash·effect_key 는 payload 에서 계산한다) */
-export function draftRowFor(taskId: string, runId: string, over: Partial<EffectDraftRow> & { request?: unknown } = {}): EffectDraftRow {
+export function draftRowFor(taskId: string, runId: string, over: Partial<EffectDraftRow> & { request?: object } = {}): EffectDraftRow {
   counter += 1;
   const { request, ...rest } = over;
   const payload = over.payload ?? canonicalJson(request ?? examplePayload());

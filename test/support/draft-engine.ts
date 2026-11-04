@@ -12,9 +12,15 @@ export function phaseGate(options: { refuseResend?: boolean; refuseAll?: string 
   return {
     beforeCreate: () => ({ decision: 'allow' }),
     beforeRun: (tx, { task }) => ({ decision: 'allow', phase: proposedDraftsOf(tx, task.id).length > 0 ? 'dispatch' : 'draft' }),
-    beforeEffect: (_tx, request) => {
+    beforeEffect: (tx, request) => {
       if (options.refuseAll !== undefined) return { decision: 'refuse', reason: options.refuseAll };
       if (options.refuseResend === true && request.dispatch === 'resend_failed') return { decision: 'refuse', reason: 'resend needs allow' };
+      // 실제 게이트처럼 판정을 남긴다 (정책 준수 검사가 본다)
+      tx.run(
+        `INSERT INTO policy_decision (task_id, task_run_id, subject, action, resource, scope, impact, decision, reason, policy_version_id, at)
+         SELECT ?, ?, 'generalist@v1', ?, ?, 'customer', 'external_effect', 'allow', 'test gate', id, ? FROM policy_version LIMIT 1`,
+        [request.task.id, request.runId, `${request.tool}.${request.action}`, request.target, request.now],
+      );
       return { decision: 'allow' };
     },
   };
@@ -32,10 +38,10 @@ export interface DraftEngine {
   worker(tool: EffectTool, executed: { count: number }, gate?: TaskPolicyGate): TaskWorker;
 }
 
-export function draftEngine(t: Parameters<typeof seededDb>[0]): DraftEngine {
+export function draftEngine(t: Parameters<typeof seededDb>[0], specOverrides: Record<string, unknown> = {}): DraftEngine {
   const { db, clock } = seededDb(t);
   const actorId = addAgent(db, clock);
-  const taskId = queuedTask(db, clock, { allowed_tools: MAIL_TOOLS });
+  const taskId = queuedTask(db, clock, { allowed_tools: MAIL_TOOLS, ...specOverrides });
   const build = (tool: EffectTool, executed: { count: number }, gate: TaskPolicyGate, execute?: (ctx: RunContext) => Promise<unknown>) => new TaskWorker({
     db, clock, workerId: 'w1', actorId, adapter: 'fake-adapter', gate, tools: { [tool.name]: tool }, timers: manualTimers(),
     executor: {

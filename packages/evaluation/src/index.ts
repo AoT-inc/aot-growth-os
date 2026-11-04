@@ -5,6 +5,7 @@ export {
   CALL_COMPLETED_CHECK_ID, CALL_OUTCOME_CHECK_ID, CALL_TRANSCRIPT_CHECK_ID, checkCallCompleted, checkCallOutcome, checkCallTranscript, qualifyingCall,
   type CallCheckInput, type CallCheckOutcome,
 } from './call-checks.ts';
+export { DRAFT_RUN_PASSED_CHECK_ID, DRAFTS_CONFIRMED_CHECK_ID, evaluateDispatchRun } from './dispatch-checks.ts';
 export {
   applyEvidenceVerification, defaultChecks, runDeterministicChecks, SourceReader,
   type CheckContext, type CheckOutcome, type CheckReport, type CheckStatus, type DeterministicCheck, type DeterministicReport, type EvidenceContribution,

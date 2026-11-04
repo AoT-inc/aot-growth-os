@@ -153,7 +153,7 @@ test('checkTaskSpecReferences: seeded roles are usable; unknown/unassignable rol
     );
     tx.run(
       'INSERT INTO role (id, org_unit_id, slug, description, allowed_tools, lifecycle, version, trial_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
-      ['role-t', SEED_IDS.unit, 'trial-role', 'x', '[]', 'trial', '["weekly"]', now],
+      ['role-t', SEED_IDS.unit, 'trial-role', 'x', '[]', 'trial', '{"task_types":["manual"]}', now],
     );
     tx.run(
       'INSERT INTO role (id, org_unit_id, slug, description, allowed_tools, lifecycle, version, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',

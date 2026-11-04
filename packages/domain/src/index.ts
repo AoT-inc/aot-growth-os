@@ -27,7 +27,7 @@ export {
   type TaskSpecVersions, type TaskTrigger, type TaskValidation, type ToolRequest,
 } from './spec/task-spec.ts';
 export { MAX_TIME_LIMIT_MS, parseTimeLimit } from './spec/time-limit.ts';
-export { checkTaskSpecReferences } from './spec/spec-references.ts';
+export { checkTaskSpecReferences, trialTaskTypes } from './spec/spec-references.ts';
 export {
   isMeasurementSignalId, MAX_MEASUREMENT_DESCRIPTION_CHARS, MAX_MEASUREMENT_INPUTS, MAX_MEASUREMENT_SIGNAL_ID_CHARS, MEASUREMENT_INPUT_KIND, MEASUREMENT_PERIODS,
   MEASUREMENT_REF_PREFIX, measurementRef, parseMeasurementRef, validateMeasurementSignal, type MeasurementPeriod, type MeasurementSignal,
@@ -110,3 +110,10 @@ export {
   DENY_ALL_PHONE_CALL_POLICY,
   type PhoneCallGrant, type PhoneCallPolicy, type PhoneCallPolicyRequest, type PhoneCallPolicyVerdict,
 } from './ports/phone-call-policy.ts';
+export {
+  activeOrgVersion, classifyOrgDiff, createOrgProposal, expireOrgProposals, getOrgProposal, latestTrialResult, ORG_DEFAULT_PROPOSAL_TTL_DAYS, ORG_DEFAULT_TRIAL_MIN_DAYS,
+  ORG_EVENT, ORG_MAX_OPS, ORG_MAX_TRIAL_EXTENSIONS, ORG_SIGNAL_THRESHOLDS, orgProposalHash, OrgRuleError, parseEvaluationPlan, parseOrgDiff, parseRollbackPlan,
+  supersedeStaleOrgProposals, taskTypeOf, transitionOrgProposal,
+  type OrgAddRoleOp, type OrgDiff, type OrgEvaluationPlan, type OrgProposalInput, type OrgProposalResult, type OrgRiskAssessment, type OrgRollbackPlan,
+  type OrgRoleTool, type OrgRuleCode, type OrgTransitionRequest, type OrgTransitionResult, type OrgTrialScope,
+} from './org.ts';

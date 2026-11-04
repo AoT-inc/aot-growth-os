@@ -20,6 +20,7 @@
    - `registration_tools`: `git_path`·`gitleaks_path`(절대 경로). 상품 등록 채널(`product` 명령)도 이 설정이 있어야 켜진다.
    - `llm_verifier`: `{"kind": "claude_code_cli", "model": "<더 높은 등급 별칭>", "shadow": true}`. **`shadow: true`가 파일럿 모드다**: 검증기를 부르고 판정을 기록하지만 평가 결과(`pass`/`fail`)에는 반영하지 않는다.
    - 선택: `claude_code_cli.yield_utilization`(사람이 쓰는 구독 몫을 남긴다), `unavailable_backoff_ms`.
+   설정을 고쳤으면 데몬을 띄우기 전에 **사전 점검**을 돌린다: `npm run preflight -- <설정 파일>`. 줄마다 `ok|warn|fail|info`와 사유를 보여 주고 `fail`이 있으면 종료 코드 1이다. 점검하는 것: 설정 파싱, 경로가 절대 경로인지·실행 파일이 실행 가능한지, `claude`·`git`·`gitleaks` 버전(gitleaks 8.30.1이 아니면 `warn`), 검증기가 `claude_code_cli`·`shadow: true`·실행과 다른 모델인지, DB의 마이그레이션 적용과 고지 동의(읽기 전용으로 열며 DB가 없으면 만들지 않는다), 증거·run·로그·TOTP 디렉터리가 0700인지(만들거나 고치지 않는다), `registration_tools`가 있어야 `product` 명령이 켜진다는 것. 모델을 부르지 않고 설정의 환경 값을 출력하지 않는다. **구독 로그인 여부는 점검하지 못한다** — 1번의 확인을 PC에서 직접 한다. 첫 실행처럼 DB가 아직 없으면 `warn`이 나오는 게 정상이고, 데몬을 한 번 띄운 뒤 다시 돌리면 마이그레이션·동의 줄이 채워진다.
 3. 고지 동의: `node apps/daemon/src/approve.ts consent show` 로 문구를 읽고 `consent accept --version <판>`.
 4. 데몬을 띄운다. 승인 CLI는 같은 계정에서 `--actor <사람 actor id>`(또는 `AOT_ACTOR`)로 쓴다.
 
@@ -29,6 +30,7 @@
 
 ```
 approve.ts product add <slug> --name "<이름>" --repo <저장소 루트 절대 경로>
+approve.ts product remove <slug>                    # 잘못 올린 후보 지우기 (start 하기 전의 후보만; 같은 슬러그·경로로 다시 add 가능)
 approve.ts product start <slug>
 # (데몬이 업무를 실행·검증한다. 보통 수 분)
 approve.ts product status <slug>                    # pending_approval 이 될 때까지 되풀이
@@ -80,9 +82,9 @@ approve.ts product pilot                            # 언제든: 지금까지의
 
 ## 7. 알려진 한계
 
-(아래 한계 중 일부는 [준비 마무리 작업](../plans/handoff-pilot-prep.md)이 해소한다: `product remove`, 실행 중 반려, 수집 사실 반영.)
+(아래 한계 중 일부는 [준비 마무리 작업](../plans/handoff-pilot-prep.md)이 해소한다: 실행 중 반려, 수집 사실 반영. `product remove`는 구현됨.)
 
-- **잘못 올린 후보를 채널로 고치거나 지울 수 없다.** 경로를 잘못 적었으면 `start` 전에는 데이터베이스에서 직접 정리해야 한다(후속: `product remove`). `start`는 경로를 다시 검사한다.
+- **후보를 고칠 수는 없고, 지우고 다시 올린다.** 경로를 잘못 적었으면 `start` 전에 `product remove <slug>`로 지우고 다시 `add` 한다(지운 사실은 `registration.candidate_removed` 이벤트로 남는다). `start`한 상품은 지울 수 없다. `start`는 경로를 다시 검사한다.
 - **검증 업무가 실행 중이면 반려할 수 없다**(`task_active`) — 읽기 접근도 그 사이에는 회수되지 않는다. `needs_review`에 닿기를 기다리거나 업무를 취소한다.
 - 일반 `reject task`로 업무만 반려하면 상품은 `pending_approval`·`read`로 남는다. 상품도 `product decide reject`로 마무리한다.
 - 컨테이너 에이전트가 보고한 토큰으로 `token_ratio`의 분모가 정해진다(구독 CLI 어댑터는 호스트가 센다).

@@ -20,6 +20,7 @@
    - `registration_tools`: `git_path`·`gitleaks_path`(절대 경로). 상품 등록 채널(`product` 명령)도 이 설정이 있어야 켜진다.
    - `llm_verifier`: `{"kind": "claude_code_cli", "model": "<더 높은 등급 별칭>", "shadow": true}`. **`shadow: true`가 파일럿 모드다**: 검증기를 부르고 판정을 기록하지만 평가 결과(`pass`/`fail`)에는 반영하지 않는다.
    - 선택: `claude_code_cli.yield_utilization`(사람이 쓰는 구독 몫을 남긴다), `unavailable_backoff_ms`.
+   설정을 고쳤으면 데몬을 띄우기 전에 **사전 점검**을 돌린다: `npm run preflight -- <설정 파일>`. 줄마다 `ok|warn|fail|info`와 사유를 보여 주고 `fail`이 있으면 종료 코드 1이다. 점검하는 것: 설정 파싱, 경로가 절대 경로인지·실행 파일이 실행 가능한지, `claude`·`git`·`gitleaks` 버전(gitleaks 8.30.1이 아니면 `warn`), 검증기가 `claude_code_cli`·`shadow: true`·실행과 다른 모델인지, DB의 마이그레이션 적용과 고지 동의(읽기 전용으로 열며 DB가 없으면 만들지 않는다), 증거·run·로그·TOTP 디렉터리가 0700인지(만들거나 고치지 않는다), `registration_tools`가 있어야 `product` 명령이 켜진다는 것. 모델을 부르지 않고 설정의 환경 값을 출력하지 않는다. **구독 로그인 여부는 점검하지 못한다** — 1번의 확인을 PC에서 직접 한다. 첫 실행처럼 DB가 아직 없으면 `warn`이 나오는 게 정상이고, 데몬을 한 번 띄운 뒤 다시 돌리면 마이그레이션·동의 줄이 채워진다.
 3. 고지 동의: `node apps/daemon/src/approve.ts consent show` 로 문구를 읽고 `consent accept --version <판>`.
 4. 데몬을 띄운다. 승인 CLI는 같은 계정에서 `--actor <사람 actor id>`(또는 `AOT_ACTOR`)로 쓴다.
 

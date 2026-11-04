@@ -19,7 +19,7 @@ const codeOf = (value: unknown): DeclarationErrorCode | 'ok' => {
 
 test('declaration error codes are the closed set the spec names', () => {
   assert.deepEqual([...DECLARATION_ERROR_CODES].sort(), [
-    'action_name_invalid', 'action_undeclared', 'actions_missing', 'carrier_invalid', 'carrier_required', 'carrier_without_lookup',
+    'action_name_invalid', 'action_undeclared', 'actions_missing', 'approval_invalid', 'approval_missing', 'carrier_invalid', 'carrier_required', 'carrier_without_lookup',
     'name_mismatch', 'not_object', 'retention_forbidden', 'retention_invalid', 'retention_required', 'supported_invalid', 'unknown_field',
   ]);
   assert.deepEqual([...EFFECT_KEY_CARRIERS], ['metadata', 'slug', 'property', 'none']);
@@ -66,34 +66,53 @@ test('validateEffectToolDeclaration: actions must be a non-empty plain object wi
   assert.deepEqual(codes(null), ['actions_missing']);
   assert.deepEqual(codes([]), ['actions_missing']);
   assert.deepEqual(codes(undefined), ['actions_missing']);
-  assert.deepEqual(codes({ '': { idempotency: { supported: false } } }), ['action_name_invalid']);
-  assert.deepEqual(codes({ '  ': { idempotency: { supported: false } } }), ['action_name_invalid']);
-  assert.deepEqual(codes({ send: { idempotency: { supported: false } } }), []);
+  assert.deepEqual(codes({ '': { approval: 'scope', idempotency: { supported: false } } }), ['action_name_invalid']);
+  assert.deepEqual(codes({ '  ': { approval: 'scope', idempotency: { supported: false } } }), ['action_name_invalid']);
+  assert.deepEqual(codes({ send: { approval: 'scope', idempotency: { supported: false } } }), []);
 });
 
 test('validateEffectToolDeclaration: the key carrier is required exactly when the tool has lookup', () => {
   const idempotency = { supported: true, retention_ms: 1000 };
   for (const carrier of EFFECT_KEY_CARRIERS) {
-    assert.deepEqual(validateEffectToolDeclaration({ name: 't', lookup, actions: { send: { idempotency, effect_key_carrier: carrier } } }), { ok: true }, carrier);
+    assert.deepEqual(validateEffectToolDeclaration({ name: 't', lookup, actions: { send: { approval: 'scope', idempotency, effect_key_carrier: carrier } } }), { ok: true }, carrier);
   }
   const check = (tool: { lookup?: unknown; actions: unknown }) => {
     const result = validateEffectToolDeclaration({ name: 't', ...tool });
     return result.ok ? [] : result.errors.map((e) => [e.action, e.code]);
   };
-  assert.deepEqual(check({ lookup, actions: { send: { idempotency, effect_key_carrier: 'body' } } }), [['send', 'carrier_invalid']]);
-  assert.deepEqual(check({ lookup, actions: { send: { idempotency } } }), [['send', 'carrier_required']]);
-  assert.deepEqual(check({ actions: { send: { idempotency, effect_key_carrier: 'metadata' } } }), [['send', 'carrier_without_lookup']]);
-  assert.deepEqual(check({ actions: { send: { idempotency } } }), []);
+  assert.deepEqual(check({ lookup, actions: { send: { approval: 'scope', idempotency, effect_key_carrier: 'body' } } }), [['send', 'carrier_invalid']]);
+  assert.deepEqual(check({ lookup, actions: { send: { approval: 'scope', idempotency } } }), [['send', 'carrier_required']]);
+  assert.deepEqual(check({ actions: { send: { approval: 'scope', idempotency, effect_key_carrier: 'metadata' } } }), [['send', 'carrier_without_lookup']]);
+  assert.deepEqual(check({ actions: { send: { approval: 'scope', idempotency } } }), []);
+});
+
+test('validateEffectToolDeclaration: approval is required and must be draft or scope (ADR-0015)', () => {
+  const idempotency = { supported: false };
+  const check = (entry: unknown) => {
+    const result = validateEffectToolDeclaration({ name: 't', actions: { send: entry } });
+    return result.ok ? [] : result.errors.map((e) => e.code);
+  };
+  assert.deepEqual(check({ idempotency }), ['approval_missing']);
+  assert.deepEqual(check({ idempotency, approval: 'always' }), ['approval_invalid']);
+  assert.deepEqual(check({ idempotency, approval: null }), ['approval_invalid']);
+  assert.deepEqual(check({ idempotency, approval: 'draft' }), []);
+  assert.deepEqual(check({ idempotency, approval: 'scope' }), []);
+  const resolved = resolveActionDeclaration({ actions: { send: { idempotency, approval: 'draft' } } }, 'send');
+  assert.ok(resolved.ok);
+  assert.equal(resolved.declaration.approval, 'draft');
+  const missing = resolveActionDeclaration({ actions: { send: { idempotency } } }, 'send');
+  assert.ok(!missing.ok);
+  assert.equal(missing.error.code, 'approval_missing');
 });
 
 test('validateEffectToolDeclaration: reports every bad action, not just the first', () => {
   const result = validateEffectToolDeclaration({
     name: 't',
     actions: {
-      send: { idempotency: { supported: true } },
-      post: { idempotency: { supported: false, retention_ms: 5 } },
-      ok: { idempotency: { supported: false } },
-      '': { idempotency: { supported: false } },
+      send: { approval: 'scope', idempotency: { supported: true } },
+      post: { approval: 'scope', idempotency: { supported: false, retention_ms: 5 } },
+      ok: { approval: 'scope', idempotency: { supported: false } },
+      '': { approval: 'scope', idempotency: { supported: false } },
     },
   });
   assert.ok(!result.ok);
@@ -102,7 +121,7 @@ test('validateEffectToolDeclaration: reports every bad action, not just the firs
 });
 
 test('resolveActionDeclaration: declared actions resolve; anything else is action_undeclared (own keys only)', () => {
-  const tool = { lookup, actions: { send: { idempotency: { supported: true, retention_ms: 1000 }, effect_key_carrier: 'slug' } } };
+  const tool = { lookup, actions: { send: { approval: 'scope', idempotency: { supported: true, retention_ms: 1000 }, effect_key_carrier: 'slug' } } };
   const ok = resolveActionDeclaration(tool, 'send');
   assert.ok(ok.ok);
   assert.deepEqual(ok.declaration, tool.actions.send);
@@ -112,7 +131,7 @@ test('resolveActionDeclaration: declared actions resolve; anything else is actio
     assert.equal(result.error.code, 'action_undeclared', action);
   }
   // 같은 규칙 (carrier vs lookup) 이 런타임 해석에도 적용된다
-  const noCarrier = resolveActionDeclaration({ lookup, actions: { send: { idempotency: { supported: false } } } }, 'send');
+  const noCarrier = resolveActionDeclaration({ lookup, actions: { send: { approval: 'scope', idempotency: { supported: false } } } }, 'send');
   assert.ok(!noCarrier.ok);
   assert.equal(noCarrier.error.code, 'carrier_required');
 });

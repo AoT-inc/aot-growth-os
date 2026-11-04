@@ -65,7 +65,7 @@ test('planned -> dispatched -> confirmed; performing the same step again reuses 
 test('idempotent tool: a lost response leaves the effect unknown; the retry resends with the same key and the tool dedupes', async (t) => {
   const { db, clock, taskId, claim } = setup(t);
   const fake = createIdempotentFakeTool();
-  const withoutLookup: EffectTool = { name: fake.name, actions: { send: { idempotency: { supported: true, retention_ms: RETENTION_MS } } }, send: asEffectTool(fake).send };
+  const withoutLookup: EffectTool = { name: fake.name, actions: { send: { approval: 'scope', idempotency: { supported: true, retention_ms: RETENTION_MS } } }, send: asEffectTool(fake).send };
   const lease = claim();
   fake.loseNextResponses(1);
   assert.equal((await performEffect(db, clock, lease, withoutLookup, STEP, ALLOW_ALL_GATE)).state, 'unknown');
@@ -152,7 +152,7 @@ test('takeover with a dispatched effect, idempotent tool: lookup confirms it, th
 test('takeover with a dispatched effect, idempotent tool without lookup: unknown, requeued, resent once with the same key', async (t) => {
   const { db, clock, taskId, claim, expireAndTakeOver } = setup(t);
   const fake = createIdempotentFakeTool();
-  const tool: EffectTool = { name: fake.name, actions: { send: { idempotency: { supported: true, retention_ms: RETENTION_MS } } }, send: asEffectTool(fake).send };
+  const tool: EffectTool = { name: fake.name, actions: { send: { approval: 'scope', idempotency: { supported: true, retention_ms: RETENTION_MS } } }, send: asEffectTool(fake).send };
   const lease = claim();
   const effect = planEffect(db, clock, lease, tool, STEP);
   beginDispatch(db, clock, lease, effect, ALLOW_ALL_GATE);

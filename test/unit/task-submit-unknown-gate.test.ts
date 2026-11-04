@@ -117,7 +117,7 @@ test('(4) once every unknown is confirmed (resend or lookup) submit still goes t
   // 같은 키 재전송으로 확인
   const env0 = setup(t);
   const fake = createIdempotentFakeTool({ retentionMs: LONG });
-  const noLookup: EffectTool = { name: fake.name, actions: { send: { idempotency: { supported: true, retention_ms: LONG } } }, send: asEffectTool(fake).send };
+  const noLookup: EffectTool = { name: fake.name, actions: { send: { approval: 'scope', idempotency: { supported: true, retention_ms: LONG } } }, send: asEffectTool(fake).send };
   const lease0 = env0.claim();
   await loseResponse(env0, noLookup, fake, lease0);
   assert.equal(env0.expireAndTakeOver()?.taskStatus, 'queued');

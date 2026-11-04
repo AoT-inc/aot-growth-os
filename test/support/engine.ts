@@ -44,7 +44,7 @@ export interface EffectToolHooks {
 /** test/support/fake-tool.ts 의 가짜 도구를 엔진의 EffectTool 계약에 맞춘다. 응답 유실은 예외 → `unknown`. */
 export function asEffectTool(fake: FakeTool, hooks: EffectToolHooks = {}, actionNames: readonly string[] = ['send']): EffectTool {
   const actions: Record<string, EffectActionDeclaration> = Object.fromEntries(actionNames.map((name) => [
-    name, { idempotency: fake.idempotency, ...(fake.lookup ? { effect_key_carrier: 'metadata' as const } : {}) },
+    name, { approval: 'scope' as const, idempotency: fake.idempotency, ...(fake.lookup ? { effect_key_carrier: 'metadata' as const } : {}) },
   ]));
   const tool: EffectTool = {
     name: fake.name,

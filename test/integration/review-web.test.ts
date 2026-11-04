@@ -35,7 +35,7 @@ test('home is a decision inbox: one question per card, three short facts, no ids
   const text = textOf(home.text);
   assert.match(text, /결정할 일 \d+건/);
   for (const question of [
-    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 4통(받는 사람 8명)을 보낼까요?', '예약 확인 메일 1통(받는 사람 1명)을 보낼까요?', '메일 1통이 실제로 나갔는지 먼저 확인해 주세요',
+    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 4통(받는 사람 8명)을 보낼까요?', "'예약 확인 메일'에 가려진 값이 있어요. 다시 쓰게 할까요?", '메일 1통이 실제로 나갔는지 먼저 확인해 주세요',
     "'주간 요약 보고서를 내부 문서함에 정리' — 진행해도 될까요?", "'가을 신제품 안내' 게시물을 누구나 볼 수 있게 공개할까요?", "상품 '예시 상품'을 등록할까요?",
     "'고객 안내 메일 초안 #4 발송' 전송 여부 1건 — 실제로 나갔나요?", '정책 변경을 배포할까요?', '실험을 시작할까요?', '정식 전략으로 올릴까요?', '실험 결과를 판정하지 못했습니다',
     "'분기 검토 자료 담당' 시험은 관측이 부족했습니다. 한 번 더 시험할까요?", "'주간 시장 조사 담당' 시험이 통과했습니다. 정식 확정할까요?", "'invoice-check' 업무 3건이 맡을 역할이 없어 멈췄습니다 — 새 역할 제안서를 만들까요?",
@@ -120,7 +120,7 @@ test('every kind of decision opens on a question with its commands: risky org, t
   const batch = await rig.get(batchPath);
   assert.equal(batch.status, 200);
   assert.equal((batch.text.slice(0, batch.text.indexOf('<details>')).match(/ approve task /g) ?? []).length, 2, 'one joined command above the fold (the expired draft is left out)');
-  assert.ok(batch.text.slice(0, batch.text.indexOf('<details>')).includes('2건 승인') && batch.text.includes('&amp;&amp; node apps/daemon/src/approve.ts approve task') || batch.text.includes('&& node apps/daemon/src/approve.ts approve task'), 'joined with &&');
+  assert.ok(batch.text.slice(0, batch.text.indexOf('<details>')).includes('보낼 수 있는 메일 3통 승인 (업무 2건)') && batch.text.includes('&amp;&amp; node apps/daemon/src/approve.ts approve task') || batch.text.includes('&& node apps/daemon/src/approve.ts approve task'), 'joined with &&');
   assert.ok((batch.text.slice(batch.text.indexOf('<details>')).match(/ approve task /g) ?? []).length >= 2 && (batch.text.slice(batch.text.indexOf('<details>')).match(/ request-changes task /g) ?? []).length >= 3, 'per-item commands inside the details');
   assert.ok(batch.text.includes('고객 안내 메일 초안 #1 발송') && batch.text.includes('<h1>고객 안내 메일 4통(받는 사람 8명)을 보낼까요?</h1>'));
   const publication = await rig.get(`/approvals/publication/${rig.demo.ids.publication}`);
@@ -464,7 +464,7 @@ test('an expired draft has no approve command: the reason and the request-change
   assert.ok(page.text.includes(`${CLI} request-changes task ${id} --comment`) && page.text.includes(`${CLI} reject task ${id}`));
   // 묶음의 한 번에 승인에서도 빠진다
   const batch = await rig.get(`/batch/${/href="\/batch\/([^"]*)"/.exec((await rig.get('/')).text)![1]}`);
-  assert.ok(!batch.text.includes(`approve task ${id}`) && batch.text.includes(`request-changes task ${id}`) && batch.text.includes('2건 승인'));
+  assert.ok(!batch.text.includes(`approve task ${id}`) && batch.text.includes(`request-changes task ${id}`) && batch.text.includes('보낼 수 있는 메일 3통 승인 (업무 2건)') && batch.text.includes('기한 지난 1통은 빠졌습니다') && !batch.text.includes('정책 거부)'));
 });
 
 test('recipient addresses never appear in full, and a secret in a draft body is masked before it is cut', async (t) => {
@@ -510,7 +510,7 @@ test('a draft with a secret-looking value cannot be approved on the screen: badg
   const id = taskOfRun(rig, 'run-demo-draft-4');
   const page = await rig.get(`/approvals/task/${id}`);
   const first = firstLevel(page.text);
-  assert.ok(first.includes('예약 확인 메일 1통(받는 사람 1명)을 보낼까요?') && first.includes('승인 불가 — 가려진 값이 있음'), first);
+  assert.ok(first.includes("'예약 확인 메일'에 가려진 값이 있어요. 다시 쓰게 할까요?") && first.includes('승인 불가 — 가려진 값이 있음'), first);
   assert.ok(first.includes('비밀값처럼 보이는 내용이 있어 사람이 전부 볼 수 없습니다. 변경 요청으로 다시 쓰게 하세요'), first);
   assert.ok(!page.text.includes(`approve task ${id}`), 'no approve command');
   assert.ok(page.text.includes(`${CLI} request-changes task ${id} --comment`) && page.text.includes(`${CLI} reject task ${id}`));
@@ -559,4 +559,22 @@ test('draft cards stay short: at most two risk segments on every draft card', as
   const cards = (await rig.get('/')).text.split('<a class="card"').slice(1).map(textOf).filter((c) => c.includes('확인할 것 받는 사람과 문구가 이대로'));
   assert.equal(cards.length, 3, 'batch, partly sent, masked');
   for (const c of cards) assert.ok(/위험·기한 (.*?)\s*$/.exec(c)![1]!.split(' · ').length <= 2, c);
+});
+
+test('the batch detail shows every mail above the decision box, and asks what the human can actually decide', async (t) => {
+  const rig = await startRig(t);
+  const batch = (await rig.get(/href="(\/batch\/[^"]*)"/.exec((await rig.get('/')).text)![1]!)).text;
+  const above = batch.slice(0, batch.indexOf('결정하기'));
+  assert.ok(above.includes('보낼 내용') && above.indexOf('보낼 내용') < batch.indexOf('결정하기'), 'mails come first');
+  for (const mail of ['k***@example.com', 'example.com 2명, example.org 1명', '가을 신제품 판매 시작 안내', '문의하신 환불 절차 안내', '정기 점검 일정 안내', '이번 달 말부터 새 제품을 판매합니다']) assert.ok(above.includes(mail), mail);
+  assert.ok(above.includes('고객 안내 메일 초안 #1 발송') && above.includes('<span class="badge bad">기한 지남</span>') && above.includes('외부 입력 영향 하에 작성됨'), 'grouped per task, badges inline');
+  for (const address of DRAFT_ADDRESSES) assert.ok(!batch.includes(address), address);
+  const box = textOf(batch.slice(batch.indexOf('결정하기')));
+  assert.ok(box.includes('보낼 수 있는 메일 3통 승인 (업무 2건)') && box.includes('기한 지난 1통은 빠졌습니다') && box.includes('메일 4통 모두 거절') && box.includes('메일 4통 모두 변경 요청'), box);
+  // 전부 기한이 지났으면: 할 수 있는 결정(다시 쓰기)을 묻는다
+  const allExpired = await startRig(t, { before: (db) => db.writeTx((tx) => tx.run("UPDATE effect_draft SET expires_at = '2026-11-01T00:00:00.000Z' WHERE task_run_id IN ('run-demo-draft-0', 'run-demo-draft-1', 'run-demo-draft-2')")) });
+  const home = textOf((await allExpired.get('/')).text);
+  assert.ok(home.includes('기한이 지난 메일 4통 — 다시 쓰게 할까요?'), home);
+  const page = await allExpired.get(/href="(\/batch\/[^"]*)"/.exec((await allExpired.get('/')).text)![1]!);
+  assert.ok(!page.text.includes(' approve task ') && page.text.includes('기한 지남'));
 });

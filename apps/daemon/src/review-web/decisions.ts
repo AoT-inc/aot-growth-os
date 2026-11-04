@@ -289,6 +289,11 @@ function sentSummary(drafts: readonly DraftInfo[], unit: string): string {
     .filter(([count]) => count > 0).map(([count, what]) => `${what} ${count}${unit}`).join(' · ');
 }
 
+function draftNoun(items: readonly TaskInfo[]): string {
+  const base = commonAffixes(items.map((i) => i.objective)).prefix || items[0]!.objective;
+  return /^.*?메일/.exec(base)?.[0] ?? (items[0]!.kind === 'customer' ? '고객 메일' : '메일');
+}
+
 /** 질문: 메일 수(통)와 받는 사람 수로 말한다. 업무 수는 자세히에만 둔다 */
 function draftQuestion(items: readonly TaskInfo[]): string {
   const unsure = allDrafts(items).filter(isUnsure).length;
@@ -299,9 +304,7 @@ function draftQuestion(items: readonly TaskInfo[]): string {
   }
   const mails = allDrafts(items).filter((d) => d.preview !== null);
   if (mails.length === 0) return items.length === 1 ? `'${clip(items[0]!.objective, 30)}' — 이대로 보내도 될까요?` : `${batchName(items)} — 이대로 보내도 될까요?`;
-  const base = commonAffixes(items.map((i) => i.objective)).prefix || items[0]!.objective;
-  const noun = /^.*?메일/.exec(base)?.[0] ?? (items[0]!.kind === 'customer' ? '고객 메일' : '메일');
-  return `${clip(noun, 24)} ${mails.length}통(받는 사람 ${uniqueRecipients(mails).length}명)을 보낼까요?`;
+  return `${clip(draftNoun(items), 24)} ${mails.length}통(받는 사람 ${uniqueRecipients(mails).length}명)을 보낼까요?`;
 }
 
 const countWord = (items: readonly TaskInfo[]): string => (allDrafts(items).every((d) => d.preview !== null) ? '통' : '건');
@@ -335,18 +338,27 @@ function draftBadges(items: readonly TaskInfo[]): BadgeSpec[] {
 }
 
 /** 상세: 초안마다 받는 사람(가림)·도메인별 수·제목·본문 전문. 정확한 주소는 싣지 않는다 */
+const mailBadges = (d: DraftInfo): Raw => h`${d.expired ? h` <span class="badge bad">기한 지남</span>` : ''}${d.maskedPaths.length > 0 ? h` <span class="badge bad">가려진 값이 있음</span>` : ''}${isUnsure(d) ? h` <span class="badge warn">전송 여부 불명</span>` : ''}${d.influenced ? h` <span class="badge warn">${INFLUENCED}</span>` : ''}`;
+
 function draftBody(info: TaskInfo, now: number): Raw {
+  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${mailSections(info, now)}`;
+}
+
+/** 묶음 상세: 업무마다 작은 제목 아래 그 업무의 메일을 모두 보여 준다 */
+const batchBody = (items: readonly TaskInfo[], now: number): Raw => h`<h2>보낼 내용</h2>${items.some(hasUnsure) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${items.map((i) => h`<p><b>${clip(i.objective, 50)}</b> ${i.denied ? h`<span class="badge bad">정책 거부</span>` : ''}</p>${mailSections(i, now)}`)}`;
+
+function mailSections(info: TaskInfo, now: number): Raw {
   const total = info.drafts.length;
-  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${info.drafts.map((d, index) => {
+  return h`${info.drafts.map((d, index) => {
     const heading = total === 1 ? '메일' : `메일 ${index + 1}/${total}`;
     const status = sendWord(d);
     const statusRows: [string, unknown][] = [...(status === null ? [] : [['전송 상태', status] as [string, unknown]]), ...(d.maskedPaths.length === 0 ? [] : [['가려진 값 위치', d.maskedPaths.join(', ')] as [string, unknown]])];
-    if (d.preview === null) return h`<h3>${heading}</h3>${statusRows.length === 0 ? '' : kv(statusRows)}<p class="mute">메일 모양이 아닌 초안입니다. 원문을 그대로 보여 줍니다.</p><pre>${full(prettyJson(d.payload))}</pre>`;
+    if (d.preview === null) return h`<h3>${heading}${mailBadges(d)}</h3>${statusRows.length === 0 ? '' : kv(statusRows)}<p class="mute">메일 모양이 아닌 초안입니다. 원문을 그대로 보여 줍니다.</p><pre>${full(prettyJson(d.payload))}</pre>`;
     const domains = new Map<string, number>();
     for (const r of d.preview.recipients) domains.set(addressDomain(r), (domains.get(addressDomain(r)) ?? 0) + 1);
     const shownMax = 20;
     const masked = d.preview.recipients.slice(0, shownMax).map(maskAddress);
-    return h`<h3>${heading}${d.influenced ? h` <span class="badge warn">${INFLUENCED}</span>` : ''}</h3>${kv([
+    return h`<h3>${heading}${mailBadges(d)}</h3>${kv([
       ...statusRows,
       ['받는 사람', `${d.preview.recipients.length}명 — ${masked.join(', ')}${d.preview.recipients.length > shownMax ? ` 외 ${d.preview.recipients.length - shownMax}명` : ''}`],
       ['도메인별', [...domains].map(([domain, n]) => `${domain} ${n}명`).join(', ')],
@@ -366,28 +378,37 @@ function draftDecision(items: TaskInfo[], now: number): Decision {
   const joined = (parts: string[]): string => parts.join(' && ');
   const approvable = items.filter((i) => !i.denied && !isExpired(i) && !isMasked(i) && !hasUnsure(i));
   const revisable = items.filter((i) => !isSent(i));
+  const unit = countWord(items);
+  const mailsIn = (list: readonly TaskInfo[]): number => allDrafts(list).length;
+  const reasonNote = (): string => {
+    const out = items.filter((i) => !approvable.includes(i));
+    const part = (list: readonly TaskInfo[], what: string): string => (list.length === 0 ? '' : `${what} ${mailsIn(list)}${unit}`);
+    const parts = [part(out.filter(isExpired), '기한 지난'), part(out.filter((i) => !isExpired(i) && isMasked(i)), '가려진 값이 있는'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && hasUnsure(i)), '전송 여부 불명인'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && !hasUnsure(i)), '정책이 거부한')].filter((x) => x !== '');
+    return `${parts.join(', ')}은 빠졌습니다`;
+  };
   const approve: NonNullable<Parameters<typeof choices>[0]['approve']> = approvable.length === 0
     ? { blocked: items.some(isMasked) ? MASKED_HINT : items.some(isExpired) ? EXPIRED_HINT : items.some(hasUnsure) ? UNSURE_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.' }
     : {
-      label: single ? '승인' : approvable.length === items.length ? `${approvable.length}건 모두 승인` : `${approvable.length}건 승인`,
+      label: single ? '승인' : approvable.length === items.length ? `메일 ${mailsIn(approvable)}${unit} 모두 승인 (업무 ${approvable.length}건)` : `보낼 수 있는 메일 ${mailsIn(approvable)}${unit} 승인 (업무 ${approvable.length}건)`,
       command: joined(approvable.map((i) => approveCmd('task', i.id, i.shown))),
-      note: !single && approvable.length < items.length ? `승인할 수 없는 ${items.length - approvable.length}건(기한 지남·가려진 값·전송 여부 불명·정책 거부)은 빠졌습니다` : items.some(isSent) ? '승인하면 남은 초안이 그대로 나갑니다' : '승인하면 위 내용이 그대로 나갑니다',
+      note: !single && approvable.length < items.length ? reasonNote() : items.some(isSent) ? '승인하면 남은 초안이 그대로 나갑니다' : '승인하면 위 내용이 그대로 나갑니다',
     };
   const actions = choices({
     approve,
-    reject: revisable.length === 0 ? { blocked: SENT_HINT } : { label: single ? '거절' : `${revisable.length}건 모두 거절`, command: joined(revisable.map((i) => rejectCmd('task', i.id))) },
-    changes: revisable.length === 0 ? { blocked: SENT_HINT } : { label: single ? '변경 요청' : `${revisable.length}건 모두 변경 요청`, command: joined(revisable.map((i) => changesCmd(i.id))), note: '초안을 버리고 다시 쓰게 합니다' },
+    reject: revisable.length === 0 ? { blocked: SENT_HINT } : { label: single ? '거절' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 거절` : `메일 ${mailsIn(revisable)}${unit} 거절 (이미 나간 업무는 제외)`, command: joined(revisable.map((i) => rejectCmd('task', i.id))) },
+    changes: revisable.length === 0 ? { blocked: SENT_HINT } : { label: single ? '변경 요청' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 변경 요청` : `메일 ${mailsIn(revisable)}${unit} 변경 요청 (이미 나간 업무는 제외)`, command: joined(revisable.map((i) => changesCmd(i.id))), note: '초안을 버리고 다시 쓰게 합니다' },
   });
   const waiting = waitingText(items, now);
   const mailsOnly = allDrafts(items).filter((d) => d.preview !== null).length;
   return {
     key: single ? `task:${first.id}` : `batch:${gid}`, category: 'outside', first: true,
     href: single ? `/approvals/task/${encodeURIComponent(first.id)}` : `/batch/${gid}`,
-    question: draftQuestion(items),
+    question: approvable.length === 0 && revisable.length > 0 && items.some(isMasked) ? `'${clip(draftNoun(items), 24)}'에 가려진 값이 있어요. 다시 쓰게 할까요?`
+      : approvable.length === 0 && revisable.length > 0 && items.some(isExpired) ? `기한이 지난 메일 ${mailsIn(items.filter(isExpired))}${unit} — 다시 쓰게 할까요?` : draftQuestion(items),
     facts: [['무엇', items.some(hasUnsure) || (items.some(isSent) && allDrafts(items).every((d) => !isPending(d))) ? sentSummary(allDrafts(items), countWord(items)) : draftSummary(items.some(isSent) ? allDrafts(items).filter(isPending) : allDrafts(items))], ['확인할 것', DRAFT_CHECK], ['위험·기한', draftRisk(items, now)]],
     ...(first.denied && single ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
     badges: draftBadges(items),
-    ...(single ? { body: draftBody(first, now) } : {}),
+    body: single ? draftBody(first, now) : batchBody(items, now),
     urgency: Date.parse(allDrafts(items).map((d) => d.expiresAt).sort()[0]!), actions,
     details: single
       ? h`${kv([['목표', first.objective], ['대기', waiting], ['엔진 원문(전이 사유)', first.reason], ['업무 id', first.id]])}${draftDetails(items)}${specDetails(items)}

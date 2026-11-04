@@ -250,6 +250,7 @@ const MASKED_HINT = '비밀값처럼 보이는 내용이 있어 사람이 전부
 const SENT_HINT = '이미 나갔거나 전송 여부가 불명인 메일이 있어 변경 요청·거절을 할 수 없습니다. 전송 여부 카드에서 먼저 확인하세요';
 const NO_PREVIEW = '내용 미리보기 없음 — 자세히에서 원문 확인';
 const DRAFT_CHECK = '받는 사람과 문구가 이대로 나가도 되는지';
+const UNSURE_HINT = '전송 여부가 불명인 메일이 있어 승인할 수 없습니다. 전송 여부 카드(/effects)에서 먼저 확인하세요';
 const IRREVERSIBLE = '보내면 되돌릴 수 없음';
 
 const isMasked = (info: TaskInfo): boolean => info.drafts.some((d) => d.maskedPaths.length > 0);
@@ -266,8 +267,7 @@ const allDrafts = (items: readonly TaskInfo[]): DraftInfo[] => items.flatMap((i)
 const uniqueRecipients = (drafts: readonly DraftInfo[]): string[] => [...new Set(drafts.flatMap((d) => d.preview?.recipients ?? []).map((r) => r.trim().toLowerCase()))];
 
 /** 카드 「무엇」: 메일 모양 초안은 받는 사람 수·제목·첫 줄, 아니면 미리보기 없음 */
-function draftSummary(items: readonly TaskInfo[]): string {
-  const drafts = allDrafts(items);
+function draftSummary(drafts: readonly DraftInfo[]): string {
   const mails = drafts.filter((d) => d.preview !== null);
   const others = drafts.length - mails.length;
   if (mails.length === 0) return NO_PREVIEW;
@@ -278,8 +278,25 @@ function draftSummary(items: readonly TaskInfo[]): string {
   return `메일 ${mails.length}통 · 받는 사람 모두 ${recipients}명 · 첫 제목 '${clip(subject ?? '(제목 없음)', 30)}'${tail}`;
 }
 
+const isUnsure = (d: DraftInfo): boolean => d.sendState === 'unknown' || d.sendState === 'dispatched';
+const isPending = (d: DraftInfo): boolean => d.sendState === 'none' || d.sendState === 'planned';
+const hasUnsure = (info: TaskInfo): boolean => info.drafts.some(isUnsure);
+
+/** 이미 일부가 나간 업무의 「무엇」: 0 이 아닌 부분만 */
+function sentSummary(drafts: readonly DraftInfo[], unit: string): string {
+  const n = (f: (d: DraftInfo) => boolean): number => drafts.filter(f).length;
+  return ([[n((d) => d.sendState === 'confirmed' || d.sendState === 'compensated'), '이미 나감'], [n(isUnsure), '전송 여부 불명'], [n((d) => d.sendState === 'failed'), '보내지 못함'], [n(isPending), '남은 초안']] as const)
+    .filter(([count]) => count > 0).map(([count, what]) => `${what} ${count}${unit}`).join(' · ');
+}
+
 /** 질문: 메일 수(통)와 받는 사람 수로 말한다. 업무 수는 자세히에만 둔다 */
 function draftQuestion(items: readonly TaskInfo[]): string {
+  const unsure = allDrafts(items).filter(isUnsure).length;
+  if (unsure > 0) return `메일 ${unsure}${countWord(items)}이 실제로 나갔는지 먼저 확인해 주세요`;
+  if (items.some(isSent)) {
+    const left = allDrafts(items).filter((d) => isPending(d) && d.preview !== null);
+    return left.length === 0 ? '남은 메일이 없습니다 — 전송 결과를 확인해 주세요' : `남은 메일 ${left.length}통(받는 사람 ${uniqueRecipients(left).length}명)을 보낼까요?`;
+  }
   const mails = allDrafts(items).filter((d) => d.preview !== null);
   if (mails.length === 0) return items.length === 1 ? `'${clip(items[0]!.objective, 30)}' — 이대로 보내도 될까요?` : `${batchName(items)} — 이대로 보내도 될까요?`;
   const base = commonAffixes(items.map((i) => i.objective)).prefix || items[0]!.objective;
@@ -320,7 +337,7 @@ function draftBadges(items: readonly TaskInfo[]): BadgeSpec[] {
 /** 상세: 초안마다 받는 사람(가림)·도메인별 수·제목·본문 전문. 정확한 주소는 싣지 않는다 */
 function draftBody(info: TaskInfo, now: number): Raw {
   const total = info.drafts.length;
-  return h`<h2>보낼 내용</h2><p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${info.drafts.map((d, index) => {
+  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${info.drafts.map((d, index) => {
     const heading = total === 1 ? '메일' : `메일 ${index + 1}/${total}`;
     const status = sendWord(d);
     const statusRows: [string, unknown][] = [...(status === null ? [] : [['전송 상태', status] as [string, unknown]]), ...(d.maskedPaths.length === 0 ? [] : [['가려진 값 위치', d.maskedPaths.join(', ')] as [string, unknown]])];
@@ -347,14 +364,14 @@ function draftDecision(items: TaskInfo[], now: number): Decision {
   const single = items.length === 1;
   const gid = groupId(first);
   const joined = (parts: string[]): string => parts.join(' && ');
-  const approvable = items.filter((i) => !i.denied && !isExpired(i) && !isMasked(i));
+  const approvable = items.filter((i) => !i.denied && !isExpired(i) && !isMasked(i) && !hasUnsure(i));
   const revisable = items.filter((i) => !isSent(i));
   const approve: NonNullable<Parameters<typeof choices>[0]['approve']> = approvable.length === 0
-    ? { blocked: items.some(isMasked) ? MASKED_HINT : items.some(isExpired) ? EXPIRED_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.' }
+    ? { blocked: items.some(isMasked) ? MASKED_HINT : items.some(isExpired) ? EXPIRED_HINT : items.some(hasUnsure) ? UNSURE_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.' }
     : {
       label: single ? '승인' : approvable.length === items.length ? `${approvable.length}건 모두 승인` : `${approvable.length}건 승인`,
       command: joined(approvable.map((i) => approveCmd('task', i.id, i.shown))),
-      note: !single && approvable.length < items.length ? `승인할 수 없는 ${items.length - approvable.length}건(기한 지남·가려진 값·정책 거부)은 빠졌습니다` : items.some(isSent) ? '승인하면 위 내용이 그대로 나갑니다. 전송 여부 불명 건은 먼저 전송 여부 카드에서 확인하세요' : '승인하면 위 내용이 그대로 나갑니다',
+      note: !single && approvable.length < items.length ? `승인할 수 없는 ${items.length - approvable.length}건(기한 지남·가려진 값·전송 여부 불명·정책 거부)은 빠졌습니다` : items.some(isSent) ? '승인하면 남은 초안이 그대로 나갑니다' : '승인하면 위 내용이 그대로 나갑니다',
     };
   const actions = choices({
     approve,
@@ -367,7 +384,7 @@ function draftDecision(items: TaskInfo[], now: number): Decision {
     key: single ? `task:${first.id}` : `batch:${gid}`, category: 'outside', first: true,
     href: single ? `/approvals/task/${encodeURIComponent(first.id)}` : `/batch/${gid}`,
     question: draftQuestion(items),
-    facts: [['무엇', draftSummary(items)], ['확인할 것', DRAFT_CHECK], ['위험·기한', draftRisk(items, now)]],
+    facts: [['무엇', items.some(hasUnsure) || (items.some(isSent) && allDrafts(items).every((d) => !isPending(d))) ? sentSummary(allDrafts(items), countWord(items)) : draftSummary(items.some(isSent) ? allDrafts(items).filter(isPending) : allDrafts(items))], ['확인할 것', DRAFT_CHECK], ['위험·기한', draftRisk(items, now)]],
     ...(first.denied && single ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
     badges: draftBadges(items),
     ...(single ? { body: draftBody(first, now) } : {}),

@@ -15,6 +15,7 @@ import { startReviewServer } from '../../apps/daemon/src/review-web/server.ts';
 import { createReviewContext } from '../../apps/daemon/src/review-web/context.ts';
 import { demoPng } from '../../scripts/review-web-demo.ts';
 import { NOW_MS, rawRequest, startRig } from '../support/review-web.ts';
+import { draftRowFor, insertDraftRow } from '../support/drafts.ts';
 import { makeTempDir } from '../support/temp.ts';
 
 const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -34,7 +35,7 @@ test('home is a decision inbox: one question per card, three short facts, no ids
   const text = textOf(home.text);
   assert.match(text, /결정할 일 \d+건/);
   for (const question of [
-    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 4통(받는 사람 8명)을 보낼까요?', '예약 확인 메일 1통(받는 사람 1명)을 보낼까요?', '고객 안내 메일 2통(받는 사람 3명)을 보낼까요?',
+    "'support-triage 업무 담당' 역할을 시험 투입할까요?", "'고객 후속 연락 기록 담당' 역할을 시험 투입할까요?", '고객 안내 메일 4통(받는 사람 8명)을 보낼까요?', '예약 확인 메일 1통(받는 사람 1명)을 보낼까요?', '메일 1통이 실제로 나갔는지 먼저 확인해 주세요',
     "'주간 요약 보고서를 내부 문서함에 정리' — 진행해도 될까요?", "'가을 신제품 안내' 게시물을 누구나 볼 수 있게 공개할까요?", "상품 '예시 상품'을 등록할까요?",
     "'고객 안내 메일 초안 #4 발송' 전송 여부 1건 — 실제로 나갔나요?", '정책 변경을 배포할까요?', '실험을 시작할까요?', '정식 전략으로 올릴까요?', '실험 결과를 판정하지 못했습니다',
     "'분기 검토 자료 담당' 시험은 관측이 부족했습니다. 한 번 더 시험할까요?", "'주간 시장 조사 담당' 시험이 통과했습니다. 정식 확정할까요?", "'invoice-check' 업무 3건이 맡을 역할이 없어 멈췄습니다 — 새 역할 제안서를 만들까요?",
@@ -527,14 +528,30 @@ test('a partly sent draft task shows what went out, and offers neither reject no
   const id = taskOfRun(rig, 'run-demo-effect');
   const page = await rig.get(`/approvals/task/${id}`);
   const first = firstLevel(page.text);
+  assert.ok(first.includes('메일 1통이 실제로 나갔는지 먼저 확인해 주세요') && first.includes('이미 나감 1통 · 전송 여부 불명 1통') && !first.includes('보낼까요'), first);
+  assert.ok(!page.text.includes(`approve task ${id}`) && first.includes('승인 불가') && page.text.includes('href="/effects"'), 'no approve while an effect is unknown');
   assert.ok(first.includes('이미 나간 1통, 전송 여부 불명 1통 · 전송 여부 카드에서 확인') && first.includes('보냄') && first.includes('전송 여부 불명'), first);
   assert.ok(first.includes('거절 불가') && first.includes('변경 요청 불가'), first);
   assert.ok(!page.text.includes(`request-changes task ${id}`) && !page.text.includes(`reject task ${id}`), 'neither command is offered');
-  assert.ok(page.text.includes(`approve task ${id}`), 'approving (after the unknown effect is resolved) is still the engine\'s call');
   assert.ok((await rig.get('/effects')).text.includes('전송 여부 1건'), 'the effects card still owns the unknown effect');
   // 보내지 못함
   const failed = await startRig(t, { before: (db) => db.writeTx((tx) => tx.run("UPDATE external_effect SET state = 'failed' WHERE id = 'effect-demo-sent'")) });
-  assert.ok(textOf((await failed.get(`/approvals/task/${taskOfRun(failed, 'run-demo-effect')}`)).text).includes('보내지 못함'));
+  const failedText = firstLevel((await failed.get(`/approvals/task/${taskOfRun(failed, 'run-demo-effect')}`)).text);
+  assert.ok(failedText.includes('보내지 못함'));
+  // 불명이 없고 일부만 나갔으면 남은 것만 묻는다 (받는 사람도 남은 초안 기준)
+  const rest = await startRig(t, { before: (db) => db.writeTx((tx) => { tx.run("UPDATE external_effect SET state = 'confirmed' WHERE id = 'effect-demo-1'"); }) });
+  const restText = firstLevel((await rest.get(`/approvals/task/${taskOfRun(rest, 'run-demo-effect')}`)).text);
+  assert.ok(restText.includes('남은 메일이 없습니다') && !restText.includes('먼저 확인해 주세요'), restText);
+  const more = await startRig(t, {
+    before: (db) => {
+      db.writeTx((tx) => tx.run("UPDATE external_effect SET state = 'confirmed' WHERE id = 'effect-demo-1'"));
+      const taskId = db.get<{ task_id: string }>("SELECT task_id FROM effect_draft WHERE task_run_id = 'run-demo-effect' LIMIT 1")!.task_id;
+      insertDraftRow(db, draftRowFor(taskId, 'run-demo-effect', { seq: 3, request: { to: ['a.one@example.com', 'b.two@example.com'], subject: '남은 안내', text: '남은 메일 본문입니다.' }, expires_at: '2026-11-07T00:00:00.000Z' }));
+    },
+  });
+  const moreText = firstLevel((await more.get(`/approvals/task/${taskOfRun(more, 'run-demo-effect')}`)).text);
+  assert.ok(moreText.includes('남은 메일 1통(받는 사람 2명)을 보낼까요?') && moreText.includes('이미 나감') === false, moreText);
+  assert.ok((await more.get(`/approvals/task/${taskOfRun(more, 'run-demo-effect')}`)).text.includes('approve task '), 'approve is back once nothing is unknown');
 });
 
 test('draft cards stay short: at most two risk segments on every draft card', async (t) => {

@@ -121,6 +121,27 @@ approved ──► trial ──► active ──► retired
 - (A6-U16) `experiment` 에서 나가는 길: ① 결과 검토 평가가 `pass`이면 사람이 `promote`(`experiment → active`, 위 표) ② 평가가 `fail`이면 시스템(평가기)이 `rejected` + 종료 ③ `inconclusive`·활성화 거부 등은 사람이 사유와 함께 `reject`(`experiment → rejected`). 에이전트는 어느 것도 못 한다. 전이와 결정 기록(event `experiment-decision:<id>`: 주체·사유·이전 `active` 목록)과 실험 종료(루틴 끄기)는 한 쓰기 트랜잭션이다(domain `promoteExperiment`·`rejectExperiment`, task-engine `endExperimentInTx`). 결과 기록·평가 절차는 [evaluation §8](../operations/evaluation.md), [memory-item](memory-item.md).
 - (A6-U16, 남은 문제) 활성화 전에 `cancel`된 `experiment`(승인 취소)는 여전히 `experiment`로 남지만 진행 중으로 세지 않는다. 사람이 `reject`로 정리할 수 있다. 검토 업무가 아직 도는 실험을 사람이 거절하면 그 업무는 취소되지 않고 끝까지 돈다.
 
+## 외부 부작용 초안 (`effect_draft.state`, ADR-0015)
+
+```
+pending ──► proposed ──► rejected     (사람 거절)
+   │            └──────► superseded   (사람 변경 요청, 새 초안 run 시작)
+   └──► superseded  (검증 미통과, run이 submit 못 하고 끝남, 새 초안 run 시작)
+```
+
+| From | To | 주체 | 조건 |
+|---|---|---|---|
+| (none) | pending | 스케줄러(원장 입구) | `draft` 단계 run, lease 보유 |
+| pending | proposed | 검증기 | 그 run의 평가 `pass` AND `safety='pass'` |
+| pending | superseded | 스케줄러/검증기 | 평가 미통과, run이 submit하지 못함, 새 초안 run 시작 |
+| proposed | superseded | 사람/스케줄러 | `request-changes`, 새 초안 run 시작 |
+| proposed | rejected | 사람 | `reject task` |
+
+규칙
+- 에이전트는 어떤 전이도 일으키지 못한다. 초안 행은 호스트(lease 펜싱 트랜잭션, 검증기, 승인 엔진)만 쓴다.
+- `superseded`·`rejected`는 되돌아가지 않는다. 한 업무에 `proposed` 초안은 한 run의 것만 있다.
+- 업무(`task.status`) 전이는 새로 생기지 않는다. 조건 문구만 넓어진다(아래 표의 `queued → running`, `validating → needs_review`, `needs_review → queued`, `running → needs_review`).
+
 ## 전화 통화 (`call.status`, ADR-0014)
 
 ```

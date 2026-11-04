@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { openDb } from '@aot/domain';
-import type { OrgVersionRow, OrgProposalRow, OrgTrialResultRow, OrgUnitRow, RoleRow, ActorRow, RoleAssignmentRow, ProductRow, ProductRepoRow, ProductEnvironmentRow, PolicyVersionRow, StrategyVersionRow, EventRow, RoutineRow, RoutineFiringRow, TaskRow, TaskDependencyRow, TaskTransitionRow, TaskRunRow, ExternalEffectRow, PolicyDecisionRow, EvidenceRow, CostEntryRow, ApprovalRow, HumanReauthRow, EvaluationRow, MemoryItemRow, PublicationRow, CallRow, CallArtifactRow } from '@aot/domain';
+import type { OrgVersionRow, OrgProposalRow, OrgTrialResultRow, OrgUnitRow, RoleRow, ActorRow, RoleAssignmentRow, ProductRow, ProductRepoRow, ProductEnvironmentRow, PolicyVersionRow, StrategyVersionRow, EventRow, RoutineRow, RoutineFiringRow, TaskRow, TaskDependencyRow, TaskTransitionRow, TaskRunRow, ExternalEffectRow, EffectDraftRow, PolicyDecisionRow, EvidenceRow, CostEntryRow, ApprovalRow, HumanReauthRow, EvaluationRow, MemoryItemRow, PublicationRow, CallRow, CallArtifactRow } from '@aot/domain';
 
 import { SCHEMA_SQL } from '../support/schema-snapshot.ts';
 
@@ -30,6 +30,7 @@ const COLUMNS = {
   task_transition: { id: true, task_id: true, from_status: true, to_status: true, reason: true, caused_by: true, at: true } satisfies Record<keyof TaskTransitionRow, true>,
   task_run: { id: true, task_id: true, attempt: true, actor_id: true, adapter: true, started_at: true, ended_at: true, lease_owner: true, lease_expires_at: true, heartbeat_at: true, checkpoint: true, outcome: true, result: true, run_log_ref: true } satisfies Record<keyof TaskRunRow, true>,
   external_effect: { id: true, effect_key: true, task_id: true, task_run_id: true, tool: true, action: true, target: true, request_hash: true, state: true, supports_idempotency: true, idempotency_retention_ms: true, response_ref: true, compensation_ref: true, planned_at: true, at: true } satisfies Record<keyof ExternalEffectRow, true>,
+  effect_draft: { id: true, task_id: true, task_run_id: true, seq: true, tool: true, action: true, target: true, step_id: true, payload: true, payload_hash: true, effect_key: true, influenced_by_external_input: true, state: true, created_at: true, expires_at: true, at: true } satisfies Record<keyof EffectDraftRow, true>,
   policy_decision: { id: true, task_id: true, task_run_id: true, subject: true, action: true, resource: true, scope: true, impact: true, constraints: true, approval_required: true, decision: true, reason: true, policy_version_id: true, at: true } satisfies Record<keyof PolicyDecisionRow, true>,
   evidence: { id: true, task_id: true, task_run_id: true, kind: true, ref: true, content_hash: true, trust_origin: true, captured_at: true, verified: true, verification_note: true } satisfies Record<keyof EvidenceRow, true>,
   cost_entry: { id: true, task_id: true, task_run_id: true, product_id: true, category: true, amount_usd: true, units: true, at: true } satisfies Record<keyof CostEntryRow, true>,

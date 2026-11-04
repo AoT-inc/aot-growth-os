@@ -54,6 +54,18 @@ export type TaskRunOutcome = (typeof TASK_RUN_OUTCOMES)[number];
 export const EXTERNAL_EFFECT_STATES = ['planned', 'dispatched', 'confirmed', 'failed', 'unknown', 'compensated'] as const;
 export type ExternalEffectState = (typeof EXTERNAL_EFFECT_STATES)[number];
 
+/** 외부 부작용 초안 상태 (effect_draft.state, ADR-0015) */
+export const EFFECT_DRAFT_STATES = ['pending', 'proposed', 'superseded', 'rejected'] as const;
+export type EffectDraftState = (typeof EFFECT_DRAFT_STATES)[number];
+
+/** run 단계 (ADR-0015): 지금 방식 / 보내지 않고 초안만 / 호스트가 승인된 초안을 그대로 전송 */
+export const RUN_PHASES = ['execute', 'draft', 'dispatch'] as const;
+export type RunPhase = (typeof RUN_PHASES)[number];
+
+/** (도구, action) 선언의 승인 방식: draft = 보낼 내용을 미리 확정해 그 초안을 승인, scope = 명세 범위를 승인 (ADR-0015) */
+export const EFFECT_APPROVAL_MODES = ['draft', 'scope'] as const;
+export type EffectApprovalMode = (typeof EFFECT_APPROVAL_MODES)[number];
+
 /** 정책 판정의 범위(scope)와 publication.audience 공통 */
 export const SCOPES = ['internal', 'customer', 'public'] as const;
 export type Scope = (typeof SCOPES)[number];

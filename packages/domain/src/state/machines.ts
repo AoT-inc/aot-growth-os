@@ -2,7 +2,7 @@
 // `terminal` 은 문서가 "종료 상태" 로 명시한 업무(task)에만 채운다. 다른 기계는 나가는 전이가 없는 상태가 곧 끝이다.
 // 시험(test/unit/state-machines.test.ts)이 문서의 "금지된 전이" 절을 그대로 고정한다.
 import type {
-  CallStatus, ExternalEffectState, OrgProposalStatus, ProductLifecycleStage, ProductRegistrationStatus, PublicationStatus, Lifecycle,
+  CallStatus, EffectDraftState, ExternalEffectState, OrgProposalStatus, ProductLifecycleStage, ProductRegistrationStatus, PublicationStatus, Lifecycle,
   StrategyStatus, TaskStatus,
 } from '../entities/enums.ts';
 import {
@@ -157,6 +157,21 @@ export const EXTERNAL_EFFECT_MACHINE: StateMachine<ExternalEffectState> = {
   ],
 };
 
+// ===== 외부 부작용 초안 (effect_draft.state, ADR-0015) =====
+// 초안은 호스트(스케줄러·검증기)와 사람만 바꾼다. 에이전트는 초안을 만들 요청을 할 뿐 상태는 바꾸지 못한다.
+export const EFFECT_DRAFT_MACHINE: StateMachine<EffectDraftState> = {
+  name: 'effect_draft',
+  states: ['pending', 'proposed', 'superseded', 'rejected'],
+  terminal: ['superseded', 'rejected'],
+  rules: [
+    rule<EffectDraftState>(null, 'pending', ['scheduler'], { preconditions: "초안 단계(draft) run, lease 보유" }),
+    rule<EffectDraftState>('pending', 'proposed', ['validator'], { preconditions: "그 run 의 평가 pass AND safety='pass'" }),
+    rule<EffectDraftState>('pending', 'superseded', ['scheduler', 'validator'], { preconditions: '평가 미통과, run 이 submit 하지 못함, 새 초안 run 시작' }),
+    rule<EffectDraftState>('proposed', 'superseded', ['human', 'scheduler'], { preconditions: '변경 요청(request-changes), 새 초안 run 시작' }),
+    rule<EffectDraftState>('proposed', 'rejected', ['human'], { preconditions: 'reject task' }),
+  ],
+};
+
 // ===== 전화 통화 (call.status, ADR-0014) =====
 // 전이는 시스템이 provider 이벤트를 canonical 이벤트로 바꿔 적용한다(applyPhoneEvent). 에이전트는 통화 상태를 바꾸지 못한다.
 // provider 이벤트는 중복·역순·누락으로 올 수 있으므로 앞으로 가는 건너뛰기(예: queued → connected)를 허용하고, 뒤로 가는 이벤트는 적용기가 `stale` 로 흡수한다.
@@ -196,4 +211,5 @@ export const STATE_MACHINES = {
   product_registration: PRODUCT_REGISTRATION_MACHINE,
   product_lifecycle: PRODUCT_LIFECYCLE_MACHINE,
   external_effect: EXTERNAL_EFFECT_MACHINE,
+  effect_draft: EFFECT_DRAFT_MACHINE,
 } as const;

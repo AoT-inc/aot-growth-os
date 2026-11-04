@@ -274,6 +274,30 @@ CREATE TABLE external_effect (
       OR (supports_idempotency = 1 AND idempotency_retention_ms IS NOT NULL AND idempotency_retention_ms > 0))
 );
 
+-- 외부 부작용 초안 (ADR-0015). 초안 run 의 에이전트가 원장에 넘기려던 요청을 보내지 않고 남긴다. 사람은 이 내용을 승인하고,
+-- 호스트 전송 run 이 payload 를 그대로 보낸다. 에이전트 출력이므로 내용은 항상 신뢰하지 않는 데이터다(trust_origin 은 external_untrusted 로 고정, 컬럼 없음).
+CREATE TABLE effect_draft (
+  id           TEXT PRIMARY KEY,
+  task_id      TEXT NOT NULL REFERENCES task(id),
+  task_run_id  TEXT NOT NULL REFERENCES task_run(id),  -- 초안을 만든 run
+  seq          INTEGER NOT NULL,              -- run 안 순서 (전송 순서)
+  tool         TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  target       TEXT NOT NULL,
+  step_id      TEXT NOT NULL,
+  payload      TEXT NOT NULL,                 -- canonicalJson(EffectStep.request). 보낼 바이트 그대로
+  payload_hash TEXT NOT NULL,                 -- sha256(payload) = 전송 때 external_effect.request_hash
+  effect_key   TEXT NOT NULL,                 -- effectKeyOf(task_id, step_id, request) = 전송 때 external_effect.effect_key
+  influenced_by_external_input INTEGER NOT NULL CHECK (influenced_by_external_input IN (0, 1)),
+  state        TEXT NOT NULL CHECK (state IN ('pending','proposed','superseded','rejected')),
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,                 -- 이 시각부터 승인·전송 불가 (기본 created_at + 72h)
+  at           TEXT NOT NULL,                 -- 마지막 전이 시각
+  UNIQUE (task_run_id, seq),
+  UNIQUE (task_run_id, effect_key)
+);
+CREATE INDEX effect_draft_task ON effect_draft(task_id, state);
+
 -- 정책 판정 기록 (append-only). 권한은 도구 이름이 아니라 7요소로 판정한다 (ADR-0006).
 CREATE TABLE policy_decision (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

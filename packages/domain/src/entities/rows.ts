@@ -2,7 +2,7 @@
 // 불리언 열은 0/1 정수다. 열 이름은 SQL 과 같다. (열거형 값은 enums.ts, 열 이름의 일치는 test/unit/entity-rows.test.ts 가 확인한다.)
 import type {
   AbortReason, ActorKind, ApprovalDecision, ApprovalSubjectKind, CallArtifactKind, CallArtifactSource, CallDirection, CallStatus, CatchUpMode, ChangeClass, CostCategory,
-  EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
+  EffectDraftState, EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
   OrgProposalStatus, OrgVersionStatus, PolicyDecisionValue, ReauthMethod, ProductKind, ProductLifecycleStage,
   ProductRegistrationStatus, PublicationStatus, SafetyResult, Scope, Sensitivity, StrategyStatus,
   TaskRunOutcome, TaskStatus, TriggerKind, TrustOrigin, VerificationStatus,
@@ -99,6 +99,12 @@ export type ExternalEffectRow = {
   id: string; effect_key: string; task_id: string; task_run_id: string; tool: string; action: string; target: string;
   request_hash: string; state: ExternalEffectState; supports_idempotency: number;
   idempotency_retention_ms: number | null; response_ref: string | null; compensation_ref: string | null; planned_at: Iso; at: Iso;
+}
+
+export type EffectDraftRow = {
+  id: string; task_id: string; task_run_id: string; seq: number; tool: string; action: string; target: string; step_id: string;
+  payload: string; payload_hash: string; effect_key: string; influenced_by_external_input: number; state: EffectDraftState;
+  created_at: Iso; expires_at: Iso; at: Iso;
 }
 
 export type PolicyDecisionRow = {

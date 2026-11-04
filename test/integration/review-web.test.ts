@@ -1,11 +1,12 @@
 // 읽기 전용 검토 화면 (docs/operations/review-web.md): 화면 내용·명령 모양·보안 규칙을 실제 서버(127.0.0.1, 임시 포트)와 데모 시나리오 DB 로 확인한다.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { copyFileSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, linkSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { FakeClock, openDb } from '@aot/domain';
+import { createEvidenceStore } from '../../apps/daemon/src/evidence-store.ts';
 import { ApprovalEngine, PolicyStore, TotpSecretStore } from '@aot/policy';
 
 import { DEFAULT_POLICY_TEMPLATE } from '../../apps/daemon/src/assemble.ts';
@@ -176,6 +177,8 @@ test('evidence files: --evidence-root allows another folder; symlinks out of the
       };
       add('evidence-link', `file:${join(demo.evidenceDir, 'link.png')}`, sha(png));
       add('evidence-big', `file:${join(demo.evidenceDir, 'big.png')}`, sha(big));
+      linkSync(join(demo.outsideDir, 'outside.png'), join(demo.evidenceDir, 'hard.png'));
+      add('evidence-hardlink', `file:${join(demo.evidenceDir, 'hard.png')}`, sha(png));
       add('evidence-nohash', `file:${join(demo.evidenceDir, 'screenshot.png')}`, null);
       add('evidence-etc', 'file:/etc/hosts', null);
       add('evidence-relative', 'file:relative/path.png', null);
@@ -192,8 +195,10 @@ test('evidence files: --evidence-root allows another folder; symlinks out of the
   const tampered = await rig.get(`/evidence/${rig.demo.ids.evidence.text}`);
   assert.ok(tampered.text.includes('해시가 파일 이름과 다르다') && !tampered.text.includes('바뀐 내용'), 'a changed blob is not shown');
   // 해시가 없는 행은 허용 폴더 안이면 보이되 "미확인" 으로 표시
-  assert.equal((await rig.get('/evidence/evidence-nohash/file')).status, 200);
-  assert.ok((await rig.get('/evidence/evidence-nohash')).text.includes('해시 없음(미확인)'));
+  assert.equal((await rig.get('/evidence/evidence-nohash/file')).status, 404, 'an image without a recorded hash is not served');
+  assert.ok((await rig.get('/evidence/evidence-nohash')).text.includes('해시 없음 — 표시하지 않음') && !(await rig.get('/evidence/evidence-nohash')).text.includes('<img'));
+  assert.equal((await rig.get('/evidence/evidence-hardlink/file')).status, 404, 'a hard link into the root is refused');
+  assert.ok((await rig.get('/evidence/evidence-hardlink')).text.includes('하드 링크'));
 
   const extra = await startRig(t, { extraRoots: (demo) => [demo.outsideDir] });
   const allowed = await extra.get(`/evidence/${extra.demo.ids.evidence.outside}/file`);
@@ -274,4 +279,73 @@ test('a wrong Host never reaches the data layer even for the file route', async 
   assert.ok(!reply.body.equals(demoPng()));
   const noHost = await rawRequest(rig.server.port, '/', { host: null }).catch(() => ({ status: 400 }));
   assert.ok([400, 421].includes(noHost.status));
+});
+
+test('long evidence is never cut silently, and a secret straddling a cut is masked before cutting', async (t) => {
+  const key = `${'sk'}-${'QzK7'.repeat(8)}`;
+  const rig = await startRig(t, {
+    before: (db, demo) => {
+      const store = createEvidenceStore({ dir: demo.evidenceDir });
+      const task = String(db.get<{ task_id: string }>('SELECT task_id FROM evidence LIMIT 1')!.task_id);
+      const add = (id: string, body: string): void => {
+        const stored = store.put(body);
+        db.writeTx((tx) => tx.run("INSERT INTO evidence (id, task_id, task_run_id, kind, ref, content_hash, trust_origin, captured_at, verified) VALUES (?, ?, NULL, 'document', ?, ?, 'internal', ?, 0)", [id, task, stored.ref, stored.sha256, '2026-11-04T00:00:00.000Z']));
+      };
+      add('evidence-5k', `${'가'.repeat(4990)}끝-꼬리`);
+      add('evidence-25k', `${'a'.repeat(30_000)}`);
+      add('evidence-straddle', `${'b'.repeat(19_995)} ${key} ${'d'.repeat(100)}`);
+      db.writeTx((tx) => tx.run("UPDATE event SET payload = json_set(payload, '$.password', 'PW-visible-check') WHERE id = 'event-demo-shadow'"));
+      db.writeTx((tx) => tx.run("UPDATE strategy_version SET experiment_scope = json_set(experiment_scope, '$.api_token', 'TOK-visible-check')"));
+    },
+  });
+  const five = await rig.get('/evidence/evidence-5k');
+  assert.ok(five.text.includes('끝-꼬리'), 'a 5000-char body keeps its tail');
+  assert.ok(!five.text.includes('이하 생략'));
+  const big = await rig.get('/evidence/evidence-25k');
+  assert.ok(big.text.includes('이하 생략') && big.text.includes('전체 30000자'), 'cut text says so');
+  const straddle = await rig.get('/evidence/evidence-straddle');
+  assert.ok(!straddle.text.includes('sk-QzK') && !straddle.text.includes('QzK7QzK7'), 'no secret prefix at the cut');
+  // 키 이름 기반 비밀 가리기: DB 의 JSON 에서 password·api_token 값은 보이지 않는다
+  const product = await rig.get(`/products/${rig.demo.ids.productSlug}`);
+  assert.ok(!product.text.includes('PW-visible-check') && product.text.includes('[REDACTED]'));
+  const strategy = await rig.get(`/approvals/strategy_version/${rig.demo.ids.strategy}`);
+  assert.ok(!strategy.text.includes('TOK-visible-check') && strategy.text.includes('[REDACTED]'));
+});
+
+test('access token: no cookie → 401, the token URL sets an HttpOnly SameSite=Strict cookie and redirects without the token', async (t) => {
+  const rig = await startRig(t);
+  assert.ok(rig.server.tokenUrl.endsWith(`/?token=${rig.server.token}`) && /^[0-9a-f]{64}$/.test(rig.server.token));
+  const csp = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  for (const cookie of [null, 'aot_review=wrong', 'aot_review=', 'other=' + rig.server.token]) {
+    const denied = await rig.get('/approvals', { cookie });
+    assert.equal(denied.status, 401, String(cookie));
+    assert.ok(denied.text.includes('서버를 시작한 사람만') && !denied.text.includes('조직 변경 제안'));
+    assert.equal(denied.headers['content-security-policy'], csp);
+  }
+  assert.equal((await rig.get(`/evidence/${rig.demo.ids.evidence.png}/file`, { cookie: null })).status, 401, 'images need the cookie too');
+  assert.equal((await rig.get('/approvals?token=wrong', { cookie: null })).status, 401);
+  const entered = await rig.get(`/approvals?task=x&token=${rig.server.token}`, { cookie: null });
+  assert.equal(entered.status, 303);
+  assert.equal(entered.headers['location'], '/approvals?task=x');
+  const setCookie = String(entered.headers['set-cookie']);
+  assert.ok(setCookie.startsWith(`aot_review=${rig.server.token}`) && /HttpOnly/.test(setCookie) && /SameSite=Strict/.test(setCookie) && /Path=\//.test(setCookie));
+  assert.ok(!entered.text.includes(rig.server.token), 'the body does not echo the token');
+  assert.equal((await rig.get('/approvals', { cookie: setCookie.split(';')[0]! })).status, 200);
+  assert.equal((await rig.get(`/?token=${rig.server.token}`, { cookie: null })).headers['location'], '/');
+  assert.ok([400, 414].includes((await rig.get(`//evil.example/?token=${rig.server.token}`, { cookie: null })).status), 'no protocol-relative redirect');
+});
+
+test('the screen does not offer commands the engine would refuse (expired proposal, failed evaluation, no verified evidence)', async (t) => {
+  const expired = await startRig(t, { clockMs: NOW_MS + 60 * 86_400_000 });
+  const page = await expired.get(`/approvals/org_proposal/${expired.demo.ids.orgNormal}`);
+  assert.ok(page.text.includes('만료됨') && !page.text.includes(`approve org ${expired.demo.ids.orgNormal} --hash`), 'expired: reason, no approve command');
+  assert.ok(page.text.includes('reject org'), 'reject stays available');
+  const failed = await startRig(t, { before: (db) => db.writeTx((tx) => tx.run("UPDATE evaluation SET outcome = 'fail' WHERE id = 'evaluation-demo-verify'")) });
+  const noPass = await failed.get(`/products/${failed.demo.ids.productSlug}`);
+  assert.ok(noPass.text.includes('평가 미통과') && !/product decide example-product approve/.test(noPass.text) && noPass.text.includes('product decide example-product reject'));
+  const unverified = await startRig(t, { before: (db) => db.writeTx((tx) => tx.run("UPDATE evidence SET verified = 0")) });
+  const noEvidence = await unverified.get(`/products/${unverified.demo.ids.productSlug}`);
+  assert.ok(noEvidence.text.includes('확인된 증거 없음') && !/product decide example-product approve/.test(noEvidence.text));
+  const ok = await (await startRig(t)).get(`/products/${'example-product'}`);
+  assert.ok(/product decide example-product approve --hash/.test(ok.text), 'still offered when the engine would accept');
 });

@@ -1,6 +1,6 @@
 // 읽기 전용 검토 화면의 HTML 조립 (docs/operations/review-web.md). 모든 동적 값은 태그드 템플릿 `h` 가 *기본으로* 비밀 가리기 → HTML 이스케이프를 거친다.
 // DB 의 값(에이전트 출력·증거·외부 입력)은 모두 신뢰하지 않는다(trust-boundaries). HTML 로 넣으려면 `raw()` 를 명시해야 하고, `raw()` 는 이 디렉터리의 고정 마크업에만 쓴다.
-import { maskString } from '@aot/agent-runtime';
+import { maskSecrets, maskString, type JsonValue } from '@aot/agent-runtime';
 
 /** 이미 안전한 마크업 (이 모듈의 조립 결과만). 문자열을 직접 `raw()` 로 감싸지 않는다 */
 export class Raw {
@@ -18,11 +18,19 @@ export const raw = (html: string): Raw => new Raw(html);
 const ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (ch) => ESCAPES[ch] ?? ch);
 
-/** 화면에 보이는 텍스트: 비밀 모양을 가리고 이스케이프하고 길이를 자른다 */
-export function text(value: unknown, max = 4000): string {
-  let s = value === null || value === undefined ? '' : String(value);
-  if (s.length > max) s = `${s.slice(0, max)}…`;
-  return escapeHtml(maskString(s));
+/** 화면에 보이는 텍스트: 먼저 비밀 모양을 가리고(자르기 전에 — 잘린 비밀 앞부분이 남지 않게), 그다음 길이를 자르고, 이스케이프한다. 잘리면 보이게 표시한다 */
+export function text(value: unknown, max = 4000, note = true): string {
+  const masked = maskString(value === null || value === undefined ? '' : String(value));
+  if (masked.length <= max) return escapeHtml(masked);
+  return escapeHtml(masked.slice(0, max)) + (note ? escapeHtml(` …(이하 생략: 전체 ${masked.length}자 중 ${max}자만 보인다)`) : '…');
+}
+
+/** 긴 본문(증거 텍스트·JSON)용: 보여 주는 상한을 크게 잡는다. 그래도 넘으면 생략 표시가 붙는다 */
+export const full = (value: unknown, max = 60_000): Raw => new Raw(text(value, max));
+
+/** DB 에서 읽은 JSON 값을 화면용 문자열로: 키 이름 기반 비밀 가리기(maskSecrets)를 먼저 하고 들여쓴다 */
+export function prettyJson(value: unknown): string {
+  return JSON.stringify(maskSecrets(value as JsonValue), null, 2) ?? '';
 }
 
 function part(value: unknown): string {

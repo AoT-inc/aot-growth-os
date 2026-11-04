@@ -5,7 +5,7 @@ import { BASELINE_TOLERANCE, evaluateOrgTrial } from '@aot/evaluation';
 
 import { orgSignals } from '../org-channel.ts';
 import type { ReviewContext } from './context.ts';
-import { APPROVE_CLI, badge, command, h, kv, link, list, num, shellArg, table, type Raw } from './html.ts';
+import { APPROVE_CLI, badge, command, h, kv, link, list, num, prettyJson, shellArg, table, type Raw } from './html.ts';
 import { barChart, lineChart } from './svg.ts';
 
 export function json(text: string): unknown {
@@ -18,7 +18,7 @@ export function json(text: string): unknown {
 
 const rec = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 const arr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
-const str = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : JSON.stringify(value));
+const str = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : prettyJson(value));
 const numOrNull = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
 export const ORG_STATUS_LABEL: Readonly<Record<string, string>> = {
@@ -107,11 +107,13 @@ export function orgProposalSummary(ctx: ReviewContext, row: OrgProposalRow): Raw
 }
 
 /** 승인 CLI 명령 모음 (org_proposal). 해시는 엔진 `show` 가 계산한 값 — 명령 안에서만 보인다 */
-export function orgApprovalCommands(id: string, hash: string | null, status: string, approvalState: string | null, risky: boolean): Raw {
+export function orgApprovalCommands(id: string, hash: string | null, status: string, approvalState: string | null, risky: boolean, stale: string | null = null): Raw {
   if (status !== 'proposed') return h`<p class="mute">이 제안은 지금 승인 대기 상태가 아니다 (${ORG_STATUS_LABEL[status] ?? status}).</p>`;
   const kind = 'org';
   const out: Raw[] = [];
-  if (approvalState === 'cooldown') {
+  if (stale !== null) {
+    out.push(h`<p class="card">${badge('승인할 수 없음', 'bad')} ${stale}. 엔진이 승인·해제를 거절하고 이 제안을 무효로 기록한다. 새로 제안한다.</p>`, command(`${APPROVE_CLI} reject ${kind} ${shellArg(id)} --comment "사유"`, '거절(정리)'));
+  } else if (approvalState === 'cooldown') {
     out.push(h`<p>승인은 기록됐고 대기 시간 중이다. 대기 중에는 취소할 수 있다.</p>`, command(`${APPROVE_CLI} cancel ${kind} ${shellArg(id)} --comment "사유"`, '대기 중 취소'));
   } else if (approvalState === 'reauth_required') {
     out.push(h`<p>대기가 끝났다. 위험 변경은 TOTP 재인증으로 해제한다 (코드는 표준 입력으로).</p>`, command(`${APPROVE_CLI} release ${kind} ${shellArg(id)} --totp-stdin`, '해제 (TOTP 코드 한 줄을 입력)'), command(`${APPROVE_CLI} cancel ${kind} ${shellArg(id)} --comment "사유"`, '취소'));
@@ -196,7 +198,7 @@ export function trialsPage(ctx: ReviewContext): Raw {
     cmds.push(command(`${APPROVE_CLI} org status ${shellArg(row.id)}`, '시험 판정 기록 전체'));
     return h`<section class="card"><h2>${orgHeadline(row)} ${badge(ORG_STATUS_LABEL[row.status] ?? row.status, 'info')}</h2>
       <p class="mute">제안 ${link(['approvals', 'org_proposal', row.id], row.id)}</p>
-      ${live === null ? '' : h`<p><b>현재 판정</b> ${badge(VERDICT[live.verdict]?.[0] ?? live.verdict, VERDICT[live.verdict]?.[1] ?? 'mute')} ${live.reason}</p>`}
+      ${live === null ? '' : h`<p><b>현재 판정</b> ${badge(VERDICT[live.verdict]?.[0] ?? live.verdict, VERDICT[live.verdict]?.[1] ?? 'mute')} <span class="mute">평가기 원문:</span> ${live.reason}</p>`}
       ${shown === null ? h`<p class="empty">아직 시험 결과가 없다</p>` : metricsCharts(shown, '시험 vs 기준선')}
       ${points.length >= 2 ? lineChart('판정 기록별 통과율 추이', points, { max: 1 }) : ''}
       <h3>판정 기록</h3>${table(['시각', '판정', '관측', '중단 사유'], results.map((result) => [result.at, badge(VERDICT[result.outcome]?.[0] ?? result.outcome, VERDICT[result.outcome]?.[1] ?? 'mute'), result.observations, result.abort_reason ?? '-']), '아직 기록된 판정이 없다')}

@@ -361,17 +361,10 @@ export class ApprovalEngine {
 
   /** 승인·해제 직전 점검: 만료·기준 버전 충돌이면 전이를 기록하고 그 결과를 돌려준다 (null 이면 계속) */
   #orgStale(tx: Db, row: OrgProposalRow): Record<string, unknown> | null {
-    const now = this.#now();
-    if (now >= row.expires_at) {
-      transitionOrgProposal(tx, this.#o.clock, { proposalId: row.id, to: 'expired', by: 'system', reason: 'expires_at passed' });
-      return { state: 'expired', note: 'the proposal expired before it was approved; propose again' };
-    }
-    const current = activeOrgVersion(tx);
-    if (!current || current.id !== row.base_org_version_id) {
-      transitionOrgProposal(tx, this.#o.clock, { proposalId: row.id, to: 'superseded', by: 'system', reason: `base org_version is no longer active (now ${current?.id ?? 'none'})` });
-      return { state: 'superseded', note: 'the organization changed since this proposal was made; propose again on the latest org_version' };
-    }
-    return null;
+    const stale = orgProposalStaleness(tx, row, this.#now());
+    if (stale === null) return null;
+    transitionOrgProposal(tx, this.#o.clock, { proposalId: row.id, to: stale.to, by: 'system', reason: stale.reason });
+    return { state: stale.to, note: stale.note };
   }
 
   #approveOrg(actor: string, id: string, hash: string, comment?: string): Record<string, unknown> {
@@ -590,6 +583,16 @@ export class ApprovalEngine {
     const orgProposals = db.all<{ id: string; change_class: string; created_at: string }>("SELECT id, change_class, created_at FROM org_proposal WHERE status = 'proposed' ORDER BY created_at, id");
     return { tasks, publications, policy_proposals: policies.map((p) => p.subject_id), strategy_proposals: strategies, strategy_reviews: reviews, experiments, org_proposals: orgProposals };
   }
+}
+
+/** 승인·해제 직전 점검의 판단만 (읽기 전용): 만료됐거나 기준 버전이 더 이상 active 가 아니면 그 사유. 전이 기록은 엔진이 한다. 읽기 전용 검토 화면도 쓴다 */
+export function orgProposalStaleness(db: Db, row: OrgProposalRow, now: string): { to: 'expired' | 'superseded'; reason: string; note: string } | null {
+  if (now >= row.expires_at) return { to: 'expired', reason: 'expires_at passed', note: 'the proposal expired before it was approved; propose again' };
+  const current = activeOrgVersion(db);
+  if (!current || current.id !== row.base_org_version_id) {
+    return { to: 'superseded', reason: `base org_version is no longer active (now ${current?.id ?? 'none'})`, note: 'the organization changed since this proposal was made; propose again on the latest org_version' };
+  }
+  return null;
 }
 
 function requireHuman(db: Db, actorId: unknown): void {

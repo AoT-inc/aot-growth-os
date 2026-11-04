@@ -3,10 +3,10 @@ import { listStrategyReviews } from '@aot/domain';
 import { listUnresolvedEffects } from '@aot/task-engine';
 
 import { listExperimentReviews } from '../cycle.ts';
-import { productReader } from '../product-channel.ts';
+import { productReader, registrationApproveBlocker } from '../product-channel.ts';
 import type { ReviewContext } from './context.ts';
-import { readEvidence } from './evidence-file.ts';
-import { APPROVE_CLI, back, badge, command, h, kv, link, num, shellArg, table, type Raw } from './html.ts';
+import { MAX_TEXT_CHARS, readEvidence } from './evidence-file.ts';
+import { APPROVE_CLI, back, badge, command, full, h, kv, link, num, prettyJson, shellArg, table, type Raw } from './html.ts';
 import { APPROVAL_KINDS, KIND_LABEL, pendingLists } from './pages-approvals.ts';
 import { ORG_STATUS_LABEL } from './pages-org.ts';
 
@@ -49,6 +49,10 @@ export function productDetailPage(ctx: ReviewContext, slug: string): { title: st
   };
   const waiting = product.registration_status === 'pending_approval' || (product.registration_status === 'verifying' && reader.awaitingReview(slug));
   const shadow = view.shadow_verdict;
+  // 엔진(`decide approve`)이 거절할 조건을 같은 함수로 미리 본다 (verifying 이라도 검토 대기면 채널이 먼저 pending_approval 로 올린다)
+  const task = reader.latestTask(slug);
+  const blocked = !waiting || task === undefined ? null : registrationApproveBlocker({ registration_status: 'pending_approval' }, task, reader.evaluationOf(task.id), reader.evidenceOf(task.id));
+  const BLOCK_LABEL: Readonly<Record<string, string>> = { evaluation_not_passed: '평가 미통과', no_evidence: '확인된 증거 없음' };
   const evidenceRows = view.evidence.map((e) => [link(['evidence', e.id], e.id), e.kind, e.verified ? badge('검증됨', 'ok') : badge('미검증', 'mute'), trustBadge(e.trust_origin)]);
   return {
     title: `상품 등록 검토: ${product.name}`, status: 200,
@@ -63,10 +67,12 @@ export function productDetailPage(ctx: ReviewContext, slug: string): { title: st
       <div class="card"><h2>독립 평가 결과</h2>${view.evaluation === null ? h`<p class="empty">아직 평가가 없다</p>` : kv([
         ['판정', badge(view.evaluation.outcome, view.evaluation.outcome === 'pass' ? 'ok' : view.evaluation.outcome === 'fail' ? 'bad' : 'warn')], ['안전성', view.evaluation.safety], ['메모', view.evaluation.note ?? '-'], ['평가 시각', view.evaluation.at],
       ])}</div>
-      <div class="card"><h2>섀도 판정 (검증기)</h2>${shadow === null ? h`<p class="empty">기록 없음</p>` : h`<pre>${JSON.stringify(shadow, null, 2)}</pre>`}</div>
+      <div class="card"><h2>섀도 판정 (검증기)</h2>${shadow === null ? h`<p class="empty">기록 없음</p>` : h`<pre>${full(prettyJson(shadow))}</pre>`}</div>
       <div class="card"><h2>증거 (${view.evidence.length})</h2>${table(['증거', '종류', '검증', '출처'], evidenceRows, '증거가 아직 없다')}</div>
       <div class="card"><h2>결정하려면 (승인 CLI)</h2>${waiting
-    ? h`${command(`${APPROVE_CLI} product decide ${shellArg(slug)} approve --hash ${view.review_hash === null ? '<해시를 확인할 수 없다>' : shellArg(view.review_hash)} --comment "사유"`, '등록 승인 (위 증거를 읽은 뒤)')}
+    ? h`${blocked === null
+      ? command(`${APPROVE_CLI} product decide ${shellArg(slug)} approve --hash ${view.review_hash === null ? '<해시를 확인할 수 없다>' : shellArg(view.review_hash)} --comment "사유"`, '등록 승인 (위 증거를 읽은 뒤)')
+      : h`<p class="card">${badge('승인할 수 없음', 'bad')} ${BLOCK_LABEL[blocked.code] ?? '지금은 승인 단계가 아니다'} — 엔진 메시지: ${blocked.error}. 반려하거나 다시 검증한다.</p>`}
         ${command(`${APPROVE_CLI} product decide ${shellArg(slug)} reject --comment "사유"`, '반려 (사유 필수)')}
         ${command(`${APPROVE_CLI} product restart ${shellArg(slug)} --comment "사유"`, '수정한 코드로 다시 검증')}`
     : h`<p class="mute">지금은 결정할 단계가 아니다 (${REGISTRATION_LABEL[product.registration_status] ?? product.registration_status}).</p>`}
@@ -136,15 +142,15 @@ export function evidenceDetail(ctx: ReviewContext, id: string): { title: string;
   const view = row.ref.startsWith('blob:') || row.ref.startsWith('file:') ? readEvidence(row, { evidenceDir: ctx.evidenceDir, roots: ctx.roots }) : null;
   let content: Raw;
   if (view === null) {
-    content = h`<p>참조 (텍스트로만 보인다. 서버는 이 주소를 가져오지 않는다):</p><pre>${row.ref}</pre>`;
+    content = h`<p>참조 (텍스트로만 보인다. 서버는 이 주소를 가져오지 않는다):</p><pre>${full(row.ref, 5000)}</pre>`;
   } else if (view.kind === 'refused') {
     content = h`<p class="card">${badge('보여 주지 않음', 'bad')} ${view.reason}</p>`;
   } else if (view.kind === 'text') {
-    content = h`<pre>${view.text}</pre>${view.truncated ? h`<p class="mute">길어서 앞부분만 보인다.</p>` : ''}${kv([['크기', `${view.size} 바이트`], ['sha256', view.sha256], ['DB 해시와 대조', view.hashChecked ? '일치' : '해시 없음(미확인)']])}`;
+    content = h`<pre>${full(view.text, MAX_TEXT_CHARS)}</pre>${kv([['크기', `${view.size} 바이트`], ['sha256', view.sha256], ['DB 해시와 대조', view.hashChecked ? '일치' : '해시 없음(미확인)']])}`;
   } else if (view.kind === 'image') {
     content = h`<p><img class="evidence" alt="증거 그림 ${row.id}" src="/evidence/${encodeURIComponent(row.id)}/file"></p>${kv([['파일', view.name], ['형식', view.mime], ['크기', `${view.size} 바이트`], ['sha256', view.sha256], ['DB 해시와 대조', view.hashChecked ? '일치' : '해시 없음(미확인)']])}`;
   } else {
-    content = h`<p class="mute">그림이 아닌 파일은 목록만 보이고 내보내지 않는다.</p>${kv([['파일', view.name], ['크기', `${view.size} 바이트`], ['sha256', view.sha256], ['DB 해시와 대조', view.hashChecked ? '일치' : '해시 없음(미확인)']])}`;
+    content = h`<p class="mute">${view.note ?? '그림이 아닌 파일은 목록만 보이고 내보내지 않는다.'}</p>${kv([['파일', view.name], ['크기', `${view.size} 바이트`], ['sha256', view.sha256], ['DB 해시와 대조', view.hashChecked ? '일치' : '해시 없음(미확인)']])}`;
   }
   return {
     title: `증거 ${row.id}`, status: 200,

@@ -15,7 +15,7 @@ export {
   type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits, type PolicyRule, type RiskyChangeParams,
 } from './document.ts';
 export {
-  ApprovalEngine, ApprovalRefusedError, ReauthRefusedError, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions, type ApprovalResponse,
+  ApprovalEngine, ApprovalRefusedError, orgProposalStaleness, ReauthRefusedError, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions, type ApprovalResponse,
   type ApprovalSubject, type ReauthRefusalCode,
 } from './engine.ts';
 export {

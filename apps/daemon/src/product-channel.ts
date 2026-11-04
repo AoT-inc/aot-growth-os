@@ -83,6 +83,19 @@ class RemoveRefused extends Error {}
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
+/** 등록 승인(`decide approve`)의 전제 조건 중 증거·평가에 관한 것. 막히면 거절 코드와 메시지, 아니면 null (채널과 읽기 전용 검토 화면이 같이 쓴다) */
+export function registrationApproveBlocker(
+  product: { registration_status: string }, task: { status: string }, evaluation: EvaluationRow | undefined, evidence: readonly EvidenceRow[],
+): { code: string; error: string } | null {
+  if (product.registration_status !== 'pending_approval') return { code: 'wrong_state', error: `the product is '${product.registration_status}'; only a pending_approval product can be registered` };
+  if (task.status !== 'needs_review') return { code: 'wrong_state', error: `the verification task is '${task.status}', not needs_review` };
+  if (evaluation === undefined || evaluation.outcome !== 'pass' || evaluation.safety !== 'pass') {
+    return { code: 'evaluation_not_passed', error: `the evaluation is ${evaluation === undefined ? 'missing' : `outcome '${evaluation.outcome}', safety '${evaluation.safety}'`}; only a passed evaluation can be approved (reject it, or let the task retry)` };
+  }
+  if (!evidence.some((row) => row.ref.startsWith('blob:') && Number(row.verified) === 1)) return { code: 'no_evidence', error: 'the verification task has no host-stored, verified evidence linked' };
+  return null;
+}
+
 /**
  * 상품 등록 상태의 읽기 전용 조회 (채널 `status`·`decide` 와 읽기 전용 검토 화면이 같이 쓴다). 쓰기 없음.
  * `awaitingReview` 는 채널의 syncStatus 가 verifying → pending_approval 로 올리는 조건과 같다.
@@ -427,12 +440,8 @@ export function createProductChannel(options: ProductChannelOptions): (request: 
     const evidenceRows = evidenceOf(task.id);
 
     if (decision === 'approve') {
-      if (product.registration_status !== 'pending_approval') return refused('wrong_state', `the product is '${product.registration_status}'; only a pending_approval product can be registered`);
-      if (task.status !== 'needs_review') return refused('wrong_state', `the verification task is '${task.status}', not needs_review`);
-      if (evaluation === undefined || evaluation.outcome !== 'pass' || evaluation.safety !== 'pass') {
-        return refused('evaluation_not_passed', `the evaluation is ${evaluation === undefined ? 'missing' : `outcome '${evaluation.outcome}', safety '${evaluation.safety}'`}; only a passed evaluation can be approved (reject it, or let the task retry)`);
-      }
-      if (!evidenceRows.some((row) => row.ref.startsWith('blob:') && Number(row.verified) === 1)) return refused('no_evidence', 'the verification task has no host-stored, verified evidence linked');
+      const blocked = registrationApproveBlocker(product, task, evaluation, evidenceRows);
+      if (blocked !== null) return refused(blocked.code, blocked.error);
       if (hash === undefined) return refused('hash_required', 'approve needs the review_hash that `product status` shows for the evidence you read');
       if (hash !== reviewHash(task, evaluation, evidenceRows)) return refused('hash_mismatch', 'the task, evaluation or evidence changed since you looked; run `product status` again');
     } else if (product.registration_status !== 'verifying' && product.registration_status !== 'pending_approval') {

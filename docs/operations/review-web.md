@@ -11,7 +11,7 @@ npm run review-web -- --config instance/daemon.config.json       # 데몬 설정
 npm run review-web -- --db instance/aot.db --port 8787 --evidence-root ~/Pictures/evidence
 ```
 
-시작하면 `검토 화면(읽기 전용): http://127.0.0.1:<포트>/` 를 찍는다. 브라우저로 그 주소를 연다. 기본 포트 8787, `--port 0` 이면 빈 포트.
+시작하면 `검토 화면(읽기 전용): http://127.0.0.1:<포트>/?token=…` 를 **한 번만** 찍는다(토큰은 시작할 때마다 새로 만들고 다른 곳에 기록하지 않는다). 브라우저로 그 주소를 처음 한 번 열면 쿠키가 설정되고 토큰 없는 주소로 옮겨 가며, 이후 그 브라우저는 계속 본다. 기본 포트 8787, `--port 0` 이면 빈 포트.
 
 | 인자 | 뜻 |
 |---|---|
@@ -46,15 +46,19 @@ npm run review-web -- --db instance/aot.db --port 8787 --evidence-root ~/Picture
 신뢰 경계는 [trust-boundaries](../security/trust-boundaries.md) 를 따른다: DB 의 에이전트 출력·증거·외부 입력은 모두 신뢰하지 않는다.
 
 - **쓰기 없음.** DB 는 `openDb({ readOnly: true })` 로 열어 SQLite 가 쓰기를 거부하고, 그 위에 쓰기 메서드(`run`·`exec`·`writeTx`)를 던지게 하는 껍질을 한 번 더 씌운다. 서버는 GET·HEAD 만 받는다(나머지 405). 승인 엔진은 `list`·`show` 만 부른다.
+- **접근 토큰.** 127.0.0.1 이라도 같은 PC 의 다른 프로세스·사용자가 읽을 수 있으므로(DB 0600·소켓 0700 과 같은 수준을 맞추려고) 시작할 때 무작위 32바이트 토큰을 만든다. 토큰이 맞는 요청(상수 시간 비교)은 `HttpOnly; SameSite=Strict; Path=/` 쿠키를 받고 토큰 없는 같은 주소로 303 이동한다. 유효한 쿠키가 없는 그 밖의 요청(그림 파일 포함)은 401 안내 페이지다.
 - **127.0.0.1 에만 묶는다.** 다른 주소는 시작할 때 거부한다. Host 헤더가 `127.0.0.1:<포트>` 또는 `localhost:<포트>` 가 아니면 421(DNS 리바인딩 방어). 포트 없는 Host 도 거부.
 - **모든 DB 값은 이스케이프 + 비밀 가리기.** HTML 조립(`review-web/html.ts`)의 보간은 기본으로 `maskString`(`@aot/agent-runtime`)을 거친 뒤 이스케이프한다. 마크업으로 넣으려면 `raw()` 를 명시해야 하고 고정 마크업에만 쓴다.
 - **응답 헤더**: `Content-Security-Policy: default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `Cross-Origin-Resource-Policy: same-origin`. 스크립트·폼·외부 CDN·외부 글꼴이 없다(오프라인에서 동작).
+- **잘림은 늘 보인다.** 긴 값은 비밀 가리기를 먼저 한 뒤 자르고(잘린 비밀 앞부분이 남지 않게) `…(이하 생략: 전체 N자 중 M자만 보인다)` 를 붙인다. DB 의 JSON 은 키 이름 기반 가리기(`maskSecrets`)를 거친 뒤 보인다.
+- **엔진이 거절할 명령은 보이지 않는다.** 만료됐거나 기준 버전이 바뀐 조직 제안, 평가 미통과·확인된 증거 없는 상품은 승인 명령 대신 이유("만료됨", "평가 미통과", "확인된 증거 없음")를 보인다. 판단은 엔진·채널과 같은 함수(`orgProposalStaleness`, `registrationApproveBlocker`)를 쓴다.
 - **외부 URL 은 글자로만 표시**한다. 링크로 만들지 않고 서버도 가져오지 않는다.
 - **SQL**: 요청의 경로·질의는 바인딩 파라미터로만 쓴다(문자열 이어 붙이기 없음).
 - **증거 파일 읽기**: 경로가 아니라 **증거 행 id** 로만 찾는다(`/evidence/<id>/file`).
   - 참조 모양: `file:<절대 경로>`(`measure --attach`) 또는 `blob:sha256:<hex>`(근거 저장소).
   - 실경로(심볼릭 링크를 따라간 뒤)가 허용 폴더(근거 저장소 + `--evidence-root`) 안이어야 한다. 파일 시스템 루트는 허용 폴더로 줄 수 없다.
-  - 읽은 바이트의 sha256 이 행의 `content_hash` 와 같아야 한다(다르면 거부; 행에 해시가 없으면 "미확인" 표시). blob 은 파일 이름(=해시)과도 같아야 한다.
+  - 읽은 바이트의 sha256 이 행의 `content_hash` 와 같아야 한다(다르면 거부). **해시가 없는 `file:` 행은 "해시 없음 — 표시하지 않음"** 으로 이름·크기·해시만 알린다. blob 은 파일 이름(=해시)과도 같아야 한다.
+  - 파일은 `O_NOFOLLOW` 로 열고(심볼릭 링크 거부), 열린 기술자의 dev/ino 가 먼저 본 값과 같아야 하며, **하드 링크(nlink > 1)는 거부**한다(허용 폴더 안의 이름이 폴더 밖 파일의 다른 이름일 수 있다). 읽기는 기술자로만 한다.
   - 그림만 내보낸다: 앞부분 바이트로 png·jpeg·gif·webp 를 판정해 **그 형식의 Content-Type** 으로 낸다(최대 10 MB). SVG·HTML·그 밖의 파일은 이름·크기·해시만 보이고 내보내지 않는다. blob 텍스트는 이미지 길로 나가지 않는다.
   - 한 번 읽은 바이트로 해시 확인·형식 판정·응답을 모두 한다(검사 뒤 파일이 바뀌는 틈 없음).
 
@@ -62,7 +66,7 @@ npm run review-web -- --db instance/aot.db --port 8787 --evidence-root ~/Picture
 
 ```
 node scripts/review-web-demo.ts            # instance/demo/review.db (gitignore 대상) 를 새로 만든다. 가상 데이터
-npm run review-web -- --db instance/demo/review.db
+npm run review-web -- --db instance/demo/review.db     # 터미널에 찍힌 ?token=… 주소를 브라우저로 연다
 ```
 
 모든 화면에 보일 거리가 있다: 일반·위험 조직 제안, 시험 중(3/6)·평가 통과(확인 대기)·판정 불충분, 신호, 검토 필요 업무·게시·실험 전략, 응답을 잃은 효과, 상품 등록 검토(그림·`<script>` 가 든 외부 입력·해시가 다른 파일·허용 폴더 밖 파일 포함). 모든 이름·경로는 가상이고 비밀값은 가짜다.

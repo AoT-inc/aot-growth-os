@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 import { parseReviewWebArgs, UsageError, type ConfigDeps } from '../../apps/daemon/src/review-web/config.ts';
 import { sniffImage } from '../../apps/daemon/src/review-web/evidence-file.ts';
-import { command, h, raw, shellArg, table } from '../../apps/daemon/src/review-web/html.ts';
+import { command, full, h, prettyJson, raw, shellArg, table, text } from '../../apps/daemon/src/review-web/html.ts';
 import { hostAllowed } from '../../apps/daemon/src/review-web/server.ts';
 import { barChart, lineChart } from '../../apps/daemon/src/review-web/svg.ts';
 import { demoPng } from '../../scripts/review-web-demo.ts';
@@ -87,4 +87,21 @@ test('review-web args: --db alone puts the instance folder next to the database;
   bad(['--db', 'a.db', '--db', 'b.db'], /once/);
   bad(['--config', '/missing.json'], /not found/);
   bad(['--config', '/c.json'], /not an object|Unexpected|JSON/, { '/c.json': '[1]' });
+});
+
+test('text masks before it cuts, and says when it cut', () => {
+  const key = `${'sk'}-${'b'.repeat(30)}`;
+  const straddle = text(`${'a'.repeat(3_995)} ${key}`, 4_000);
+  assert.ok(!straddle.includes('sk-b') && !straddle.includes('bbbb'), 'no secret prefix survives the cut');
+  assert.ok(text('x'.repeat(5_000)).includes('이하 생략: 전체 5000자 중 4000자만 보인다'));
+  assert.ok(!text('short').includes('생략'));
+  assert.ok(full('y'.repeat(30_000)).html.length > 29_000 && !full('y'.repeat(30_000)).html.includes('생략'));
+  assert.ok(text('z'.repeat(50), 10, false).endsWith('…') && !text('z'.repeat(50), 10, false).includes('생략'));
+  const label = barChart('t', [{ label: `${'q'.repeat(8)} ${key}`, value: 1 }], { max: 1 }).html;
+  assert.ok(!label.includes('sk-b') && !label.includes('bbbb'), 'svg labels are masked before they are cut');
+});
+
+test('prettyJson masks by key name (maskSecrets) before printing', () => {
+  const out = prettyJson({ verdict: 'ok', password: 'hunter2-value', nested: [{ api_token: 'abc-value', count: 3 }] });
+  assert.ok(!out.includes('hunter2-value') && !out.includes('abc-value') && out.includes('"count": 3') && out.includes('[REDACTED]'));
 });

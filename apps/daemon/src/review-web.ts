@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const db = openReadOnlyDb(config.dbPath);
   const ctx = createReviewContext({ db, policyStoreDir: config.policyStoreDir, evidenceDir: config.evidenceDir, evidenceRoots: config.evidenceRoots });
   const server = await startReviewServer(ctx, { port: config.port, host: config.host });
-  process.stdout.write(`검토 화면(읽기 전용): ${server.url}\n`);
+  process.stdout.write(`검토 화면(읽기 전용): ${server.tokenUrl}\n(이 주소로 처음 한 번 들어온다. 토큰은 다시 찍지 않는다)\n`);
   const stop = (): void => {
     void server.close().then(() => {
       db.close();

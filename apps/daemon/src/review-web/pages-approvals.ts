@@ -1,8 +1,9 @@
 // 승인 대기 목록·상세. 해시와 판정은 승인 엔진의 `list`·`show` (읽기 전용 명령)를 그대로 쓴다 — 승인 CLI 가 보여 주는 값과 같다.
 import { getOrgProposal } from '@aot/domain';
+import { orgProposalStaleness } from '@aot/policy';
 
 import type { ReviewContext } from './context.ts';
-import { APPROVE_CLI, back, badge, command, h, kv, link, list, shellArg, table, type Raw } from './html.ts';
+import { APPROVE_CLI, back, badge, command, full, h, kv, link, list, prettyJson, shellArg, table, type Raw } from './html.ts';
 import { json, orgApprovalCommands, orgHeadline, orgProposalSummary } from './pages-org.ts';
 
 export type ApprovalKind = 'task' | 'publication' | 'policy_version' | 'strategy_version' | 'org_proposal';
@@ -55,13 +56,13 @@ export function approvalsPage(ctx: ReviewContext): Raw {
 type Shown = Record<string, unknown>;
 const obj = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
-function commandsFor(kind: ApprovalKind, id: string, shown: Shown): Raw {
+function commandsFor(kind: ApprovalKind, id: string, shown: Shown, stale: string | null): Raw {
   const approval = obj(shown['approval']);
   const state = typeof approval['state'] === 'string' ? approval['state'] : null;
   const hash = typeof shown['hash'] === 'string' ? shown['hash'] : null;
   const alias = CLI_KIND[kind];
   const status = String(shown['status'] ?? '');
-  if (kind === 'org_proposal') return orgApprovalCommands(id, hash, status, state, shown['change_class'] === 'risky');
+  if (kind === 'org_proposal') return orgApprovalCommands(id, hash, status, state, shown['change_class'] === 'risky', stale);
   const out: Raw[] = [];
   if (state === 'cooldown') {
     out.push(h`<p>승인은 기록됐고 대기 시간 중이다 (${String(approval['cooldown_ends_at'] ?? '')} 까지). 대기 중에는 취소할 수 있다.</p>`, command(`${APPROVE_CLI} cancel ${alias} ${shellArg(id)} --comment "사유"`, '대기 중 취소'));
@@ -104,6 +105,9 @@ export function approvalDetailPage(ctx: ReviewContext, kind: ApprovalKind, id: s
   const approval = obj(shown['approval']);
   const head = h`${back('/approvals', '승인 대기 목록')}<p>${badge(KIND_LABEL[kind], 'info')} <code>${id}</code> ${badge(String(shown['status'] ?? '-'), 'mute')}
     ${approval['state'] === undefined ? '' : h`<span class="mute">승인 단계: ${String(approval['state'])} — ${String(approval['reason'] ?? '')}</span>`}</p>`;
+  const orgRow = kind === 'org_proposal' ? getOrgProposal(ctx.db, id) : undefined;
+  const staleness = orgRow === undefined ? null : orgProposalStaleness(ctx.db, orgRow, ctx.clock.nowIso());
+  const stale = staleness === null ? null : (staleness.to === 'expired' ? '만료됨 (만료 시각이 지났다)' : '기준 조직 버전이 바뀌었다 (다른 변경이 확정됐다)');
   let detail: Raw;
   if (kind === 'org_proposal') {
     const row = getOrgProposal(ctx.db, id);
@@ -117,9 +121,9 @@ export function approvalDetailPage(ctx: ReviewContext, kind: ApprovalKind, id: s
     const row = ctx.db.get<{ title: string; body: string; experiment_scope: string | null; created_at: string; created_by: string }>('SELECT title, body, experiment_scope, created_at, created_by FROM strategy_version WHERE id = ?', [id]);
     const scope = row?.experiment_scope == null ? null : json(row.experiment_scope);
     detail = h`<div class="card"><h2>${row?.title ?? '-'}</h2><p>${row?.body ?? ''}</p>${kv([['제안자', row?.created_by ?? '-'], ['만든 시각', row?.created_at ?? '-'], ['진행 중인 다른 실험', list(Array.isArray(shown['experiments_in_progress']) ? (shown['experiments_in_progress'] as unknown[]) : [], '없음')]])}</div>
-      <div class="card"><h2>실험 범위</h2>${scope === null ? h`<p class="empty">없음</p>` : h`<pre>${JSON.stringify(scope, null, 2)}</pre>`}</div>`;
+      <div class="card"><h2>실험 범위</h2>${scope === null ? h`<p class="empty">없음</p>` : h`<pre>${full(prettyJson(scope))}</pre>`}</div>`;
   } else {
     detail = h`<div class="card">${kv([['변경 등급', shown['change_class']], ['사유', Array.isArray(shown['reasons']) ? (shown['reasons'] as unknown[]).join(' / ') : '-']])}</div>`;
   }
-  return { title, status: 200, body: h`${head}${detail}<div class="card"><h2>결정하려면 (승인 CLI)</h2>${commandsFor(kind, id, shown)}</div>` };
+  return { title, status: 200, body: h`${head}${detail}<div class="card"><h2>결정하려면 (승인 CLI)</h2>${commandsFor(kind, id, shown, stale)}</div>` };
 }

@@ -25,13 +25,14 @@ export interface ReviewRig {
   /** 서버가 쓰는 읽기 전용 DB 핸들 */
   db: Db;
   /** 기본 Host 헤더(`127.0.0.1:<포트>`)로 요청 */
-  get(path: string, extra?: { method?: string; host?: string | null }): Promise<Reply>;
+  get(path: string, extra?: { method?: string; host?: string | null; cookie?: string | null }): Promise<Reply>;
 }
 
-export function rawRequest(port: number, path: string, options: { method?: string; host?: string | null } = {}): Promise<Reply> {
+export function rawRequest(port: number, path: string, options: { method?: string; host?: string | null; cookie?: string | null } = {}): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {};
     if (options.host !== null) headers['Host'] = options.host ?? `127.0.0.1:${port}`;
+    if (options.cookie !== undefined && options.cookie !== null) headers['Cookie'] = options.cookie;
     const req = request({ host: '127.0.0.1', port, path, method: options.method ?? 'GET', headers, setHost: false }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -46,7 +47,7 @@ export function rawRequest(port: number, path: string, options: { method?: strin
 }
 
 /** 데모 DB 를 만들고(선택: `before` 로 쓰기 연결에서 행을 더한 뒤) 서버를 띄운다 */
-export async function startRig(t: TestContext, options: { before?: (db: Db, demo: DemoResult) => void; extraRoots?: (demo: DemoResult) => string[] } = {}): Promise<ReviewRig> {
+export async function startRig(t: TestContext, options: { clockMs?: number; before?: (db: Db, demo: DemoResult) => void; extraRoots?: (demo: DemoResult) => string[] } = {}): Promise<ReviewRig> {
   const dir = makeTempDir(t, 'aot-review-web-');
   const demo = seedDemo({ dir: `${dir}/demo`, nowMs: NOW_MS });
   if (options.before !== undefined) {
@@ -60,9 +61,9 @@ export async function startRig(t: TestContext, options: { before?: (db: Db, demo
   const db = openReadOnlyDb(demo.dbPath);
   t.after(() => db.close());
   const ctx = createReviewContext({
-    db, clock: new FakeClock(NOW_MS), policyStoreDir: `${dir}/demo/policies`, evidenceDir: demo.evidenceDir, evidenceRoots: options.extraRoots?.(demo) ?? [],
+    db, clock: new FakeClock(options.clockMs ?? NOW_MS), policyStoreDir: `${dir}/demo/policies`, evidenceDir: demo.evidenceDir, evidenceRoots: options.extraRoots?.(demo) ?? [],
   });
   const server = await startReviewServer(ctx, { port: 0 });
   t.after(() => server.close());
-  return { demo, server, db, get: (path, extra) => rawRequest(server.port, path, extra) };
+  return { demo, server, db, get: (path, extra) => rawRequest(server.port, path, { cookie: `aot_review=${server.token}`, ...extra }) };
 }

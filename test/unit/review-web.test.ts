@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { parseReviewWebArgs, UsageError, type ConfigDeps } from '../../apps/daemon/src/review-web/config.ts';
 import { sniffImage } from '../../apps/daemon/src/review-web/evidence-file.ts';
 import { addressDomain, ago, clip, commonAffixes, draftExpiry, eulReul, maskAddress, monthDay, percent, until } from '../../apps/daemon/src/review-web/format.ts';
-import { choices, command, full, h, prettyJson, raw, shellArg, table, text } from '../../apps/daemon/src/review-web/html.ts';
+import { full, h, prettyJson, raw, table, text } from '../../apps/daemon/src/review-web/html.ts';
 import { hostAllowed } from '../../apps/daemon/src/review-web/server.ts';
 import { barChart, lineChart } from '../../apps/daemon/src/review-web/svg.ts';
 import { demoPng } from '../../scripts/review-web-demo.ts';
@@ -19,15 +19,7 @@ test('h escapes and masks every interpolated value unless it is already markup',
   assert.equal(h`${[h`<i>1</i>`, '<2>', null, false, undefined]}`.html, '<i>1</i>&lt;2&gt;');
   assert.equal(h`${raw('<hr>')}`.html, '<hr>');
   assert.equal(table(['a'], [['<x>']]).html.includes('&lt;x&gt;'), true);
-  assert.ok(command('echo "<b>"').html.includes('echo &quot;&lt;b&gt;&quot;'));
   assert.ok(h`${'x'.repeat(10_000)}`.html.length < 4_100, 'long text is cut');
-});
-
-test('shellArg leaves plain values and quotes everything else', () => {
-  assert.equal(shellArg('org-proposal-abc123'), 'org-proposal-abc123');
-  assert.equal(shellArg('a b'), "'a b'");
-  assert.equal(shellArg("it's; rm -rf /"), `'it'\\''s; rm -rf /'`);
-  assert.equal(shellArg('$(whoami)'), "'$(whoami)'");
 });
 
 test('charts never print non-finite numbers and escape labels', () => {
@@ -62,14 +54,14 @@ const deps = (files: Record<string, string>, env: Record<string, string> = {}): 
 test('review-web args: the daemon config supplies db, policy and evidence locations; flags win', () => {
   const config = JSON.stringify({ db_path: '/data/aot.db', instance_dir: '/data/inst', policy_store_dir: '/data/pol', registration_tools: { evidence_dir: '/data/ev' } });
   const fromConfig = parseReviewWebArgs(['--config', '/c.json'], deps({ '/c.json': config }));
-  assert.deepEqual(fromConfig, { dbPath: '/data/aot.db', port: 8787, host: '127.0.0.1', policyStoreDir: '/data/pol', evidenceDir: '/data/ev', evidenceRoots: [] });
+  assert.deepEqual(fromConfig, { dbPath: '/data/aot.db', port: 8787, host: '127.0.0.1', policyStoreDir: '/data/pol', evidenceDir: '/data/ev', evidenceRoots: [], actor: null, socketPath: '/data/inst/run/approval.sock' });
   const env = parseReviewWebArgs([], deps({ '/env/daemon.config.json': JSON.stringify({ db_path: '/e.db' }) }, { AOT_INSTANCE_DIR: '/env' }));
   assert.equal(env.evidenceDir, '/env/evidence');
   assert.equal(env.policyStoreDir, '/env/policies');
   const viaEnvConfig = parseReviewWebArgs([], deps({ '/x.json': config }, { AOT_DAEMON_CONFIG: '/x.json' }));
   assert.equal(viaEnvConfig.dbPath, '/data/aot.db');
   const flags = parseReviewWebArgs(['--config', '/c.json', '--db', '/o.db', '--port', '0', '--evidence-dir', '/ed', '--policy-dir', '/pd', '--evidence-root', '/r1', '--evidence-root', '/r2'], deps({ '/c.json': config }));
-  assert.deepEqual(flags, { dbPath: '/o.db', port: 0, host: '127.0.0.1', policyStoreDir: '/pd', evidenceDir: '/ed', evidenceRoots: ['/r1', '/r2'] });
+  assert.deepEqual(flags, { dbPath: '/o.db', port: 0, host: '127.0.0.1', policyStoreDir: '/pd', evidenceDir: '/ed', evidenceRoots: ['/r1', '/r2'], actor: null, socketPath: '/data/inst/run/approval.sock' });
 });
 
 test('review-web args: --db alone puts the instance folder next to the database; bad input is a usage error', () => {
@@ -125,14 +117,6 @@ test('format: relative Korean dates, short text and percentages', () => {
   assert.equal(until('not a date', now), '-');
 });
 
-test('choices: approve and reject boxes, or the reason when approval is not possible', () => {
-  const both = choices({ approve: { command: 'cmd-a' }, reject: { command: 'cmd-r' } }).html;
-  assert.ok(both.indexOf('승인') < both.indexOf('cmd-a') && both.indexOf('cmd-a') < both.indexOf('거절') && both.indexOf('거절') < both.indexOf('cmd-r'));
-  const blocked = choices({ approve: { blocked: '<b>만료됨</b>' }, reject: { command: 'cmd-r' } }).html;
-  assert.ok(blocked.includes('승인 불가') && blocked.includes('&lt;b&gt;만료됨') && !blocked.includes('<code>cmd-a'));
-  assert.ok(!choices({ reject: { command: 'x' } }).html.includes('승인'));
-});
-
 test('eulReul picks 을/를 by the final consonant; commonAffixes names a batch from its objectives', () => {
   assert.equal(eulReul('발송'), '발송을');
   assert.equal(eulReul('보고서'), '보고서를');
@@ -154,4 +138,18 @@ test('maskAddress keeps only the first letter and the domain; draftExpiry reads 
   assert.equal(draftExpiry('2026-11-08T00:00:00.000Z', now), '초안 3일 뒤 만료');
   assert.equal(draftExpiry('2026-11-04T23:59:59.000Z', now), '초안 기한 지남');
   assert.equal(draftExpiry('not a date', now), '초안 기한 확인 불가');
+});
+
+test('review-web args: the deciding actor and the approval socket follow the approval CLI defaults; no actor means view-only', () => {
+  const config = JSON.stringify({ db_path: '/d/aot.db', instance_dir: '/d', approval_socket: '/s/cfg.sock' });
+  const base = parseReviewWebArgs(['--config', '/c.json'], deps({ '/c.json': config }));
+  assert.equal(base.actor, null);
+  assert.equal(base.socketPath, '/s/cfg.sock', 'the daemon config says where its socket is');
+  const none = parseReviewWebArgs(['--db', '/d/aot.db'], deps({}));
+  assert.equal(none.socketPath, '/d/run/approval.sock');
+  const env = parseReviewWebArgs(['--db', '/d/aot.db'], deps({}, { AOT_ACTOR: 'actor-env', AOT_APPROVAL_SOCKET: '/e.sock' }));
+  assert.deepEqual([env.actor, env.socketPath], ['actor-env', '/e.sock']);
+  const flags = parseReviewWebArgs(['--db', '/d/aot.db', '--actor', 'actor-flag', '--socket', '/f.sock'], deps({}, { AOT_ACTOR: 'actor-env', AOT_APPROVAL_SOCKET: '/e.sock' }));
+  assert.deepEqual([flags.actor, flags.socketPath], ['actor-flag', '/f.sock'], 'flags win');
+  assert.throws(() => parseReviewWebArgs(['--db', 'a.db', '--actor'], deps({})), UsageError);
 });

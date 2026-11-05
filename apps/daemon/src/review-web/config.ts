@@ -3,6 +3,7 @@
 //   인스턴스 폴더: `--instance-dir` > 설정의 `instance_dir` > $AOT_INSTANCE_DIR > (`--db` 만 줬으면 그 DB 가 있는 폴더) > `instance`
 //   근거 저장소: `--evidence-dir` > 설정의 `registration_tools.evidence_dir` > <인스턴스>/evidence
 //   정책 보관소: `--policy-dir` > 설정의 `policy_store_dir` > <인스턴스>/policies
+//   결정하는 사람: `--actor` > $AOT_ACTOR (사람 행위자 id). 없으면 보기 전용. 승인 소켓: `--socket` > $AOT_APPROVAL_SOCKET > 설정의 `approval_socket` > <인스턴스>/run/approval.sock
 //   추가로 증거 파일을 읽어도 되는 폴더: `--evidence-root <폴더>` (여러 번). 이 목록 밖의 파일은 보여 주지 않는다.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -14,12 +15,16 @@ export interface ReviewWebConfig {
   policyStoreDir: string;
   evidenceDir: string;
   evidenceRoots: string[];
+  /** 화면에서 결정할 사람 행위자. null 이면 보기 전용 */
+  actor: string | null;
+  /** 승인 엔진 소켓 (승인 CLI 와 같은 기본값) */
+  socketPath: string;
 }
 
 export class UsageError extends Error {}
 
-export const USAGE = 'usage: node apps/daemon/src/review-web.ts [--config <daemon.config.json>] [--db <path>] [--instance-dir <dir>] [--port <N>] [--evidence-dir <dir>] [--policy-dir <dir>] [--evidence-root <dir> ...]';
-const VALUE_FLAGS = ['config', 'db', 'instance-dir', 'port', 'host', 'evidence-dir', 'policy-dir', 'evidence-root'];
+export const USAGE = 'usage: node apps/daemon/src/review-web.ts [--config <daemon.config.json>] [--db <path>] [--instance-dir <dir>] [--port <N>] [--evidence-dir <dir>] [--policy-dir <dir>] [--evidence-root <dir> ...] [--actor <human actor id>] [--socket <approval socket>]';
+const VALUE_FLAGS = ['config', 'db', 'instance-dir', 'port', 'host', 'evidence-dir', 'policy-dir', 'evidence-root', 'actor', 'socket'];
 
 export interface ConfigDeps {
   env: Readonly<Record<string, string | undefined>>;
@@ -81,5 +86,7 @@ export function parseReviewWebArgs(argv: readonly string[], deps: ConfigDeps = r
     policyStoreDir: one('policy-dir') ?? str(config['policy_store_dir']) ?? join(instanceDir, 'policies'),
     evidenceDir: one('evidence-dir') ?? str(registration['evidence_dir']) ?? join(instanceDir, 'evidence'),
     evidenceRoots: flags.get('evidence-root') ?? [],
+    actor: one('actor') ?? str(deps.env['AOT_ACTOR']) ?? null,
+    socketPath: one('socket') ?? str(deps.env['AOT_APPROVAL_SOCKET']) ?? str(config['approval_socket']) ?? join(instanceDir, 'run', 'approval.sock'),
   };
 }

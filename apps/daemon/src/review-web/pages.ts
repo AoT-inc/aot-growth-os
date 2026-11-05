@@ -8,6 +8,8 @@ import {
 } from './decisions.ts';
 import { MAX_TEXT_CHARS, readEvidence } from './evidence-file.ts';
 import { ago, clip } from './format.ts';
+import { renderActions } from './actions.ts';
+import { historyList } from './history.ts';
 import { back, badge, badgeRow, details, facts, full, h, kv, link, type Raw } from './html.ts';
 
 export interface Rendered {
@@ -54,30 +56,30 @@ export function watchPage(ctx: ReviewContext): Rendered {
   return { title: '지켜보는 중', status: 200, body: lines.length === 0 ? h`<p class="empty">지금 지켜보는 항목이 없습니다.</p>` : watchSection(ctx, null) };
 }
 
-/** 결정 상세 한 틀: 질문(제목) → 한 문장 → 배지 → 사실 → 선택 → 자세히 */
-export function decisionPage(d: Decision): Rendered {
+/** 결정 상세 한 틀: 질문(제목) → 한 문장 → 배지 → 사실 → 이력 → 본문 → 결정 버튼 → 자세히 */
+export function decisionPage(ctx: ReviewContext, d: Decision): Rendered {
   return {
     title: d.question, status: 200,
-    body: h`${back('/', '결정할 일')}${d.lead === undefined ? '' : h`<p class="lead">${d.lead}</p>`}${badgeRow(badgesOf(d))}${facts(d.facts)}${d.body ?? ''}${d.actions}${details(d.details)}`,
+    body: h`${back('/', '결정할 일')}${d.lead === undefined ? '' : h`<p class="lead">${d.lead}</p>`}${badgeRow(badgesOf(d))}${facts(d.facts)}${historyList(d.history)}${d.body ?? ''}${renderActions(ctx, d.key, d.actions)}${details(d.details)}`,
   };
 }
 
 const notFound = (what: string): Rendered => ({ title: '찾을 수 없습니다', status: 404, body: h`${back('/', '결정할 일')}<p class="card">${what}</p>` });
-const found = (d: Decision | null | undefined, what = '해당 결정이 없거나 이미 처리됐습니다.'): Rendered => (d === null || d === undefined ? notFound(what) : decisionPage(d));
+const found = (ctx: ReviewContext, d: Decision | null | undefined, what = '해당 결정이 없거나 이미 처리됐습니다.'): Rendered => (d === null || d === undefined ? notFound(what) : decisionPage(ctx, d));
 
 export function approvalDetail(ctx: ReviewContext, kind: string, id: string): Rendered {
   switch (kind) {
     case 'org_proposal': {
       const row = getOrgProposal(ctx.db, id);
-      return row === undefined ? notFound('그런 제안이 없습니다.') : decisionPage(orgDecision(ctx, row));
+      return row === undefined ? notFound('그런 제안이 없습니다.') : decisionPage(ctx, orgDecision(ctx, row));
     }
     case 'task': {
       const group = taskGroupsOf(ctx).flat().find((i) => i.id === id);
-      return found(group === undefined ? null : taskDecision(ctx, group));
+      return found(ctx, group === undefined ? null : taskDecision(ctx, group));
     }
-    case 'publication': return found(publicationDecision(ctx, id));
-    case 'policy_version': return found(policyDecision(ctx, id));
-    case 'strategy_version': return found(strategyDecision(ctx, id));
+    case 'publication': return found(ctx, publicationDecision(ctx, id));
+    case 'policy_version': return found(ctx, policyDecision(ctx, id));
+    case 'strategy_version': return found(ctx, strategyDecision(ctx, id));
     default: return notFound('알 수 없는 종류입니다.');
   }
 }
@@ -85,16 +87,16 @@ export function approvalDetail(ctx: ReviewContext, kind: string, id: string): Re
 
 export function batchDetail(ctx: ReviewContext, gid: string): Rendered {
   const group = taskGroupsOf(ctx).find((items) => items.length > 1 && batchDecision(ctx, items).href === `/batch/${gid}`);
-  return found(group === undefined ? null : batchDecision(ctx, group));
+  return found(ctx, group === undefined ? null : batchDecision(ctx, group));
 }
 
-export const productDetail = (ctx: ReviewContext, slug: string): Rendered => found(productDecision(ctx, slug), '그런 상품이 없습니다.');
+export const productDetail = (ctx: ReviewContext, slug: string): Rendered => found(ctx, productDecision(ctx, slug), '그런 상품이 없습니다.');
 export const effectsDetail = (ctx: ReviewContext): Rendered => {
   const d = effectsDecision(ctx);
-  return d === null ? { title: '전송 여부 불명 건이 없습니다', status: 200, body: h`${back('/', '결정할 일')}<p class="empty">확인이 필요한 외부 효과가 없습니다.</p>` } : decisionPage(d);
+  return d === null ? { title: '전송 여부 불명 건이 없습니다', status: 200, body: h`${back('/', '결정할 일')}<p class="empty">확인이 필요한 외부 효과가 없습니다.</p>` } : decisionPage(ctx, d);
 };
-export const experimentDetail = (ctx: ReviewContext, id: string): Rendered => found(experimentDecisions(ctx).find((d) => d.href === `/experiments/${encodeURIComponent(id)}`));
-export const signalDetail = (ctx: ReviewContext, type: string): Rendered => found(signalDecisions(ctx).find((d) => d.key === `signal:${type}`), '지금은 이 업무 유형에 대한 제안이 필요하지 않습니다.');
+export const experimentDetail = (ctx: ReviewContext, id: string): Rendered => found(ctx, experimentDecisions(ctx).find((d) => d.href === `/experiments/${encodeURIComponent(id)}`));
+export const signalDetail = (ctx: ReviewContext, type: string): Rendered => found(ctx, signalDecisions(ctx).find((d) => d.key === `signal:${type}`), '지금은 이 업무 유형에 대한 제안이 필요하지 않습니다.');
 
 export function trialDetail(ctx: ReviewContext, id: string): Rendered {
   const row = getOrgProposal(ctx.db, id);

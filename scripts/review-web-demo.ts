@@ -1,7 +1,7 @@
-// 검토 화면(읽기 전용)의 데모 DB 를 만든다. 모든 데이터는 가상이다(예시 이름·가짜 비밀값). 모든 화면에 보일 거리가 있도록 시나리오를 한 번에 심는다.
+// 검토 화면의 데모 DB 를 만든다. 모든 데이터는 가상이다(예시 이름·가짜 비밀값). 모든 화면에 보일 거리가 있도록 시나리오를 한 번에 심는다.
 //   node scripts/review-web-demo.ts [폴더]            (기본 instance/demo, gitignore 대상. 이미 있는 데모 DB 는 지우고 새로 만든다)
-//   npm run review-web -- --db instance/demo/review.db
-// 시각은 FakeClock 으로 45일 전부터 흘려 현재까지 오게 한다(시험 기간·기준선이 실제처럼 보이게). 시험(test/integration/review-web.test.ts)이 같은 데이터를 쓴다.
+//   npm run review-web -- --db instance/demo/review.db      (보기 전용. 버튼으로 결정하려면 데몬의 승인 소켓과 --actor 가 필요하다: docs/operations/review-web.md)
+// 시각은 FakeClock 으로 45일 전부터 흘려 현재까지 오게 한다(시험 기간·기준선이 실제처럼 보이게). 시험(test/integration/review-web*.test.ts)이 같은 데이터를 쓴다.
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -377,5 +377,5 @@ if (import.meta.main) {
   const target = process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'instance', 'demo');
   const result = seedDemo({ dir: target });
   console.log(`데모 DB 를 만들었다: ${result.dbPath}`);
-  console.log(`실행: npm run review-web -- --db ${join(target, 'review.db')}`);
+  console.log(`실행(보기 전용): npm run review-web -- --db ${join(target, 'review.db')}`);
 }

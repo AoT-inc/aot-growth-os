@@ -1,7 +1,7 @@
-// "결정할 일" 모델: 사람이 짧은 시간에 판단할 수 있도록 각 결정을 질문 한 줄 + 핵심 사실 3줄 + 판정 배지 + 선택(승인/거절 명령)으로 만든다.
+// "결정할 일" 모델: 사람이 짧은 시간에 판단할 수 있도록 각 결정을 질문 한 줄 + 핵심 사실 3줄 + 판정 배지 + 이력 + 결정 버튼(actions.ts)으로 만든다.
 // 업무 규칙은 새로 만들지 않는다: 해시·승인 단계는 승인 엔진 `show`, 만료·기준 버전은 `orgProposalStaleness`, 상품 승인 조건은 `registrationApproveBlocker`,
 // 신호는 `orgSignals`, 시험 판정은 `evaluateOrgTrial`, 효과는 `listUnresolvedEffects` — 모두 읽기 전용이다. 이 파일은 그 결과를 사람 말로 옮긴다.
-// 첫 화면에는 id·해시·ISO 시각·엔진 상태 문구·JSON 을 내지 않는다(명령 상자와 "자세히" 안에만).
+// 첫 화면에는 id·해시·ISO 시각·엔진 상태 문구·JSON 을 내지 않는다("자세히" 안에만). 명령어는 어디에도 찍지 않는다: 결정은 버튼이고, 버튼이 보낼 요청은 여기서 데이터로만 만든다.
 import { createHash } from 'node:crypto';
 
 import { draftSendStates, getOrgProposal, maskedPathsOf, messagePreviewOf, proposedDraftsOf, type DraftSendState, type OrgProposalRow } from '@aot/domain';
@@ -16,7 +16,9 @@ import { REGISTRATION_TRIGGER_PREFIX } from '../registration-task.ts';
 import { maskMessagePayload, type ReviewContext } from './context.ts';
 import { readEvidence } from './evidence-file.ts';
 import { addressDomain, ago, clip, commonAffixes, draftExpiry, eulReul, maskAddress, monthDay, percent, until } from './format.ts';
-import { APPROVE_CLI, choices, command, full, h, kv, link, list, num, prettyJson, shellArg, table, type Raw } from './html.ts';
+import { renderActions, type Actions, type Blocked, type Button, type Step } from './actions.ts';
+import { full, h, kv, link, list, num, prettyJson, table, type Raw } from './html.ts';
+import { historyList, productLinks, subjectHistory, taskHistory } from './history.ts';
 import { arr, json, metricsCharts, metricsOf, orgProposalSummary, rec, str, type Metrics } from './org-summary.ts';
 import { barChart } from './svg.ts';
 
@@ -43,8 +45,10 @@ export interface Decision {
   body?: Raw;
   /** 작을수록 급하다 (기한 시각 또는 우선순위) */
   urgency: number;
-  /** 승인/거절 선택 (상세에서만) */
-  actions: Raw;
+  /** 결정 버튼 (상세에서만 그려진다) */
+  actions: Actions;
+  /** 이력 요약 최대 3줄 + 링크 (상세에서만) */
+  history?: Raw[];
   /** "자세히" 안 */
   details: Raw;
 }
@@ -63,10 +67,40 @@ const stateOf = (shown: Shown | null): string | null => {
   const state = obj(shown?.['approval'])['state'];
   return typeof state === 'string' ? state : null;
 };
-const hashArg = (shown: Shown | null): string => (shown !== null && typeof shown['hash'] === 'string' ? shellArg(shown['hash']) : '<해시를 확인할 수 없다>');
-const changesCmd = (id: string): string => `${APPROVE_CLI} request-changes task ${shellArg(id)} --comment "사유"`;
-const rejectCmd = (alias: string, id: string): string => `${APPROVE_CLI} reject ${alias} ${shellArg(id)} --comment "사유"`;
-const approveCmd = (alias: string, id: string, shown: Shown | null): string => `${APPROVE_CLI} approve ${alias} ${shellArg(id)} --hash ${hashArg(shown)} --comment "사유"`;
+
+// ----- 결정 버튼을 만드는 작은 부품 -----
+// 한 단계 = 엔진에 보낼 요청 하나. `hash` 는 사람이 본 내용의 엔진 해시(`show`)다. 엔진은 approve 의 hash 와 reject·cancel·request_changes·release 의 expected_hash(트랙 B)로 낡은 화면을 막는다.
+const hashOf = (shown: Shown | null): string | null => (shown !== null && typeof shown['hash'] === 'string' ? shown['hash'] : null);
+const approveStep = (kind: string, id: string, shown: Shown | null, label: string): Step | null => {
+  const hash = hashOf(shown);
+  return hash === null ? null : { label, request: { cmd: 'approve', kind, id, hash }, hash };
+};
+const plainStep = (cmd: 'reject' | 'cancel' | 'release', kind: string, id: string, shown: Shown | null, label: string): Step => ({ label, request: { cmd, kind, id }, hash: hashOf(shown) });
+const changesStep = (id: string, shown: Shown | null, label: string): Step => ({ label, request: { cmd: 'request_changes', kind: 'task', id }, hash: hashOf(shown) });
+
+type Part = { buttons?: Button[]; blocked?: Blocked[] };
+const actionsOf = (extra: Raw | undefined, ...parts: Part[]): Actions => ({ buttons: parts.flatMap((p) => p.buttons ?? []), blocked: parts.flatMap((p) => p.blocked ?? []), extra });
+const blockedPart = (label: string, why: string): Part => ({ blocked: [{ label, why }] });
+
+const NO_HASH = '내용을 확인할 수 없어 승인할 수 없습니다. 화면을 새로 고쳐 보세요.';
+/** 승인 버튼. 단계 중 해시를 읽지 못한 것이 있으면(엔진이 보여 주지 못함) 승인하지 않는다 */
+function approvePart(steps: (Step | null)[], o: { label?: string; note?: string; done?: string; reason?: Button['reason'] } = {}): Part {
+  if (steps.length === 0 || steps.some((s) => s === null)) return blockedPart('승인', NO_HASH);
+  return { buttons: [{ verb: 'approve', label: o.label ?? '승인', tone: 'yes', steps: steps as Step[], reason: o.reason ?? 'none', ...(o.note === undefined ? {} : { note: o.note }), done: o.done ?? '승인했습니다.' }] };
+}
+/** 거절(이유는 선택, 접혀 있다) */
+const rejectPart = (steps: Step[], o: { label?: string; note?: string; done?: string; reason?: Button['reason']; reasonLabel?: string } = {}): Part => ({
+  buttons: [{ verb: 'reject', label: o.label ?? '거절', tone: 'no', steps, reason: o.reason ?? 'optional', ...(o.reasonLabel === undefined ? {} : { reasonLabel: o.reasonLabel }), ...(o.note === undefined ? {} : { note: o.note }), done: o.done ?? '거절했습니다.' }],
+});
+/** 다시 쓰게: 이유는 필수 (엔진 규칙 1~500자) */
+const changesPart = (steps: Step[], label = '다시 쓰게'): Part => ({
+  buttons: [{ verb: 'changes', label, tone: 'ch', steps, reason: 'required', reasonLabel: '다시 쓰게 하기 — 무엇을 고칠지 (필수)', collapse: true, note: '초안을 버리고 에이전트가 다시 쓰게 합니다', done: '다시 쓰라고 요청했습니다. 새 초안이 올라오면 결정할 일에 나타납니다.' }],
+});
+const cancelPart = (steps: Step[], note?: string): Part => ({ buttons: [{ verb: 'cancel', label: '취소', tone: 'no', steps, reason: 'none', ...(note === undefined ? {} : { note }), done: '취소했습니다.' }] });
+const otpPart = (steps: Step[], note?: string): Part => ({ buttons: [{ verb: 'otp', label: 'OTP 확인', tone: 'yes', steps, reason: 'none', otp: true, ...(note === undefined ? {} : { note }), done: 'OTP 확인을 마쳤습니다. 곧 진행됩니다.' }] });
+
+/** 화면에서 할 수 없는 결정(파일이 필요한 것): 버튼 대신 한 줄 안내 */
+const NOT_HERE = (why: string): Raw => h`<p class="mute">이 결정은 화면에서 할 수 없습니다. ${why} 방법은 운영 문서(docs/operations/review-web.md)에 있습니다.</p>`;
 
 // ----- 승인 엔진의 대기 목록 -----
 interface PendingLists {
@@ -120,16 +154,19 @@ export function orgDecision(ctx: ReviewContext, row: OrgProposalRow): Decision {
   if (staleText !== null) badgeOut = { label: `승인 불가 — ${staleText}`, tone: 'bad' };
   else if (state === 'cooldown') badgeOut = { label: '승인됨 — 대기 시간 중', tone: 'info' };
   else if (state === 'reauth_required') badgeOut = { label: `${OTP_AGAIN} 필요`, tone: 'warn' };
-  const alias = 'org';
-  let actions: Raw;
+  const kind = 'org_proposal';
+  const name = `'${labels.join(', ')}' 역할`;
+  let actions: Actions;
   if (staleText !== null) {
-    actions = choices({ approve: { blocked: `${staleText}라서 승인해도 엔진이 거절합니다. 새로 제안해야 합니다.` }, reject: { command: rejectCmd(alias, row.id), note: '정리하려면 거절로 닫습니다' } });
+    actions = actionsOf(undefined, blockedPart('승인', `${staleText}라서 승인할 수 없습니다. 새로 제안해야 합니다.`), rejectPart([plainStep('reject', kind, row.id, shown, name)], { note: '정리하려면 거절로 닫습니다' }));
   } else if (state === 'cooldown') {
-    actions = choices({ approve: { blocked: '이미 승인했고 대기 시간 중입니다.' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(row.id)} --comment "사유"`, note: '대기 중에는 취소할 수 있습니다' } });
+    actions = actionsOf(undefined, blockedPart('승인', '이미 승인했고 대기 시간 중입니다.'), cancelPart([plainStep('cancel', kind, row.id, shown, name)], '대기 중에는 취소할 수 있습니다'));
   } else if (state === 'reauth_required') {
-    actions = choices({ approve: { label: 'OTP 확인', command: `${APPROVE_CLI} release ${alias} ${shellArg(row.id)} --totp-stdin`, note: 'OTP 코드 한 줄을 표준 입력으로 넣습니다' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(row.id)} --comment "사유"` } });
+    actions = actionsOf(undefined, otpPart([plainStep('release', kind, row.id, shown, name)]), cancelPart([plainStep('cancel', kind, row.id, shown, name)]));
   } else {
-    actions = choices({ approve: { command: approveCmd(alias, row.id, shown), ...(risky ? { note: `승인 뒤 대기 시간이 지나면 ${OTP_AGAIN}해야 합니다 (release)` } : {}) }, reject: { command: rejectCmd(alias, row.id) } });
+    actions = actionsOf(undefined,
+      approvePart([approveStep(kind, row.id, shown, name)], { ...(risky ? { note: `승인 뒤 대기 시간이 지나면 ${OTP_AGAIN}해야 합니다`, done: `승인했습니다. 대기 시간이 지나면 ${OTP_AGAIN}해야 진행됩니다.` } : {}) }),
+      rejectPart([plainStep('reject', kind, row.id, shown, name)]));
   }
   const original = obj(shown?.['approval']);
   const expiry = Date.parse(row.expires_at);
@@ -142,7 +179,7 @@ export function orgDecision(ctx: ReviewContext, row: OrgProposalRow): Decision {
       ['위험·기한', `${risky ? `위험 변경 — 승인 후 ${OTP_AGAIN}해야 함` : '일반 변경 — 문제가 생기면 자동으로 되돌림'} · ${until(row.expires_at, now)}`],
     ],
     ...(badgeOut === undefined ? {} : { badge: badgeOut }),
-    urgency: expiry, actions,
+    urgency: expiry, actions, history: subjectHistory(ctx, 'org_proposal', row.id),
     details: h`${orgProposalSummary(ctx, row)}<h2>엔진 원문</h2>${kv([['승인 단계', str(original['state'])], ['설명', str(original['reason'])], ['제안 id', row.id]])}`,
   };
 }
@@ -244,10 +281,10 @@ const specDetails = (items: readonly TaskInfo[]): Raw => h`${items.map((i) => h`
 
 // ----- 초안 승인 업무 (ADR-0015): 화면에는 받는 사람 수·가린 주소·제목·본문만, 정확한 주소는 CLI show 에서 -----
 const INFLUENCED = '외부 입력 영향 하에 작성됨';
-const EXPIRED_HINT = '초안 기한이 지났습니다 — 다시 쓰게 하려면 변경 요청';
+const EXPIRED_HINT = '초안 기한이 지났습니다 — 다시 쓰게 해 주세요';
 const MASKED_BADGE = '승인 불가 — 가려진 값이 있음';
-const MASKED_HINT = '비밀값처럼 보이는 내용이 있어 사람이 전부 볼 수 없습니다. 변경 요청으로 다시 쓰게 하세요';
-const SENT_HINT = '이미 나갔거나 전송 여부가 불명인 메일이 있어 변경 요청·거절을 할 수 없습니다. 전송 여부 카드에서 먼저 확인하세요';
+const MASKED_HINT = '비밀값처럼 보이는 내용이 있어 사람이 전부 볼 수 없습니다. 다시 쓰게 해 주세요';
+const SENT_HINT = '이미 나갔거나 전송 여부가 불명인 메일이 있어 거절·다시 쓰게를 할 수 없습니다. 전송 여부 카드에서 먼저 확인하세요';
 const NO_PREVIEW = '내용 미리보기 없음 — 자세히에서 원문 확인';
 const DRAFT_CHECK = '받는 사람과 문구가 이대로 나가도 되는지';
 const UNSURE_HINT = '전송 여부가 불명인 메일이 있어 승인할 수 없습니다. 전송 여부 카드(/effects)에서 먼저 확인하세요';
@@ -341,11 +378,11 @@ function draftBadges(items: readonly TaskInfo[]): BadgeSpec[] {
 const mailBadges = (d: DraftInfo): Raw => h`${d.expired ? h` <span class="badge bad">기한 지남</span>` : ''}${d.maskedPaths.length > 0 ? h` <span class="badge bad">가려진 값이 있음</span>` : ''}${isUnsure(d) ? h` <span class="badge warn">전송 여부 불명</span>` : ''}${d.influenced ? h` <span class="badge warn">${INFLUENCED}</span>` : ''}`;
 
 function draftBody(info: TaskInfo, now: number): Raw {
-  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${mailSections(info, now)}`;
+  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 화면에 내지 않습니다.</p>${mailSections(info, now)}`;
 }
 
 /** 묶음 상세: 업무마다 작은 제목 아래 그 업무의 메일을 모두 보여 준다 */
-const batchBody = (items: readonly TaskInfo[], now: number): Raw => h`<h2>보낼 내용</h2>${items.some(hasUnsure) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 CLI show 에서 확인하세요.</p>${items.map((i) => h`<p><b>${clip(i.objective, 50)}</b> ${i.denied ? h`<span class="badge bad">정책 거부</span>` : ''}</p>${mailSections(i, now)}`)}`;
+const batchBody = (items: readonly TaskInfo[], now: number): Raw => h`<h2>보낼 내용</h2>${items.some(hasUnsure) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 화면에 내지 않습니다.</p>${items.map((i) => h`<p><b>${clip(i.objective, 50)}</b> ${i.denied ? h`<span class="badge bad">정책 거부</span>` : ''}</p>${mailSections(i, now)}`)}`;
 
 function mailSections(info: TaskInfo, now: number): Raw {
   const total = info.drafts.length;
@@ -371,11 +408,11 @@ function mailSections(info: TaskInfo, now: number): Raw {
 const draftDetails = (items: readonly TaskInfo[]): Raw => h`${allDrafts(items).length === 0 ? '' : h`<h2>초안 상세 (원문)</h2>${table(['업무', '순번', '도구', '작업', '내용 해시(앞 12자)', '기한(원문)'], items.flatMap((i) => i.drafts.map((d) => [clip(i.objective, 30), d.seq, d.tool, d.action, d.payloadHash.slice(0, 12), d.expiresAt])))}`}`;
 
 /** 초안 업무 한 건 또는 묶음의 결정. 같은 문구 규칙을 쓴다 */
-function draftDecision(items: TaskInfo[], now: number): Decision {
+function draftDecision(ctx: ReviewContext, items: TaskInfo[], now: number): Decision {
   const first = items[0]!;
   const single = items.length === 1;
   const gid = groupId(first);
-  const joined = (parts: string[]): string => parts.join(' && ');
+  const stepLabel = (i: TaskInfo): string => clip(i.objective, 30);
   const approvable = items.filter((i) => !i.denied && !isExpired(i) && !isMasked(i) && !hasUnsure(i));
   const revisable = items.filter((i) => !isSent(i));
   const unit = countWord(items);
@@ -386,18 +423,20 @@ function draftDecision(items: TaskInfo[], now: number): Decision {
     const parts = [part(out.filter(isExpired), '기한 지난'), part(out.filter((i) => !isExpired(i) && isMasked(i)), '가려진 값이 있는'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && hasUnsure(i)), '전송 여부 불명인'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && !hasUnsure(i)), '정책이 거부한')].filter((x) => x !== '');
     return `${parts.join(', ')}은 빠졌습니다`;
   };
-  const approve: NonNullable<Parameters<typeof choices>[0]['approve']> = approvable.length === 0
-    ? { blocked: items.some(isMasked) ? MASKED_HINT : items.some(isExpired) ? EXPIRED_HINT : items.some(hasUnsure) ? UNSURE_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.' }
-    : {
+  const approve: Part = approvable.length === 0
+    ? blockedPart('승인', items.some(isMasked) ? MASKED_HINT : items.some(isExpired) ? EXPIRED_HINT : items.some(hasUnsure) ? UNSURE_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.')
+    : approvePart(approvable.map((i) => approveStep('task', i.id, i.shown, stepLabel(i))), {
       label: single ? '승인' : approvable.length === items.length ? `메일 ${mailsIn(approvable)}${unit} 모두 승인 (업무 ${approvable.length}건)` : `보낼 수 있는 메일 ${mailsIn(approvable)}${unit} 승인 (업무 ${approvable.length}건)`,
-      command: joined(approvable.map((i) => approveCmd('task', i.id, i.shown))),
       note: !single && approvable.length < items.length ? reasonNote() : items.some(isSent) ? '승인하면 남은 초안이 그대로 나갑니다' : '승인하면 위 내용이 그대로 나갑니다',
-    };
-  const actions = choices({
+      done: '승인했습니다. 내용 그대로 나갑니다.',
+    });
+  const revisionSteps = (): Step[] => revisable.map((i) => ({ ...plainStep('reject', 'task', i.id, i.shown, stepLabel(i)) }));
+  const rejectLabel = single ? '거절' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 거절` : `메일 ${mailsIn(revisable)}${unit} 거절 (이미 나간 업무는 제외)`;
+  const changesLabel = single ? '다시 쓰게' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 다시 쓰게` : `메일 ${mailsIn(revisable)}${unit} 다시 쓰게 (이미 나간 업무는 제외)`;
+  const actions = actionsOf(undefined,
     approve,
-    reject: revisable.length === 0 ? { blocked: SENT_HINT } : { label: single ? '거절' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 거절` : `메일 ${mailsIn(revisable)}${unit} 거절 (이미 나간 업무는 제외)`, command: joined(revisable.map((i) => rejectCmd('task', i.id))) },
-    changes: revisable.length === 0 ? { blocked: SENT_HINT } : { label: single ? '변경 요청' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 변경 요청` : `메일 ${mailsIn(revisable)}${unit} 변경 요청 (이미 나간 업무는 제외)`, command: joined(revisable.map((i) => changesCmd(i.id))), note: '초안을 버리고 다시 쓰게 합니다' },
-  });
+    revisable.length === 0 ? blockedPart('거절', SENT_HINT) : rejectPart(revisionSteps(), { label: rejectLabel }),
+    revisable.length === 0 ? blockedPart('다시 쓰게', SENT_HINT) : changesPart(revisable.map((i) => changesStep(i.id, i.shown, stepLabel(i))), changesLabel));
   const waiting = waitingText(items, now);
   const mailsOnly = allDrafts(items).filter((d) => d.preview !== null).length;
   return {
@@ -409,20 +448,22 @@ function draftDecision(items: TaskInfo[], now: number): Decision {
     ...(first.denied && single ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
     badges: draftBadges(items),
     body: single ? draftBody(first, now) : batchBody(items, now),
+    history: single ? taskHistory(ctx, first.id) : [],
     urgency: Date.parse(allDrafts(items).map((d) => d.expiresAt).sort()[0]!), actions,
     details: single
       ? h`${kv([['목표', first.objective], ['대기', waiting], ['엔진 원문(전이 사유)', first.reason], ['업무 id', first.id]])}${draftDetails(items)}${specDetails(items)}
       <h2>정책 판정 (원문)</h2>${table(['작업', '자원', '범위', '영향', '판정', '이유'], arr(first.shown?.['decisions']).map(rec).map((d) => [d['action'], d['resource'], d['scope'], d['impact'], d['decision'], d['reason']]))}`
-      : h`${kv([['묶인 업무', `${items.length}건 (메일 ${mailsOnly}통)`], ['대기', waiting], ['엔진 원문(전이 사유)', first.reason]])}<h2>건별 내용과 명령</h2>${items.map((i) => h`<h3>${clip(i.objective, 50)}</h3>${link(['approvals', 'task', i.id], '이 업무의 메일 내용 보기')}${i.denied ? h`<p class="mute">정책이 거부해 승인할 수 없습니다.</p>` : isMasked(i) ? h`<p class="mute">${MASKED_HINT}</p>` : isExpired(i) ? h`<p class="mute">${EXPIRED_HINT}</p>` : command(approveCmd('task', i.id, i.shown), '승인')}${isSent(i) ? h`<p class="mute">${SENT_HINT}</p>` : h`${command(rejectCmd('task', i.id), '거절')}${command(changesCmd(i.id), '변경 요청')}`}`)}${draftDetails(items)}${specDetails(items)}`,
+      : h`${kv([['묶인 업무', `${items.length}건 (메일 ${mailsOnly}통)`], ['대기', waiting], ['엔진 원문(전이 사유)', first.reason]])}<h2>건별 내용</h2>${items.map((i) => h`<h3>${clip(i.objective, 50)}</h3>${link(['approvals', 'task', i.id], '이 업무의 메일 내용을 보고 따로 결정하기')}${i.denied ? h`<p class="mute">정책이 거부해 승인할 수 없습니다.</p>` : isMasked(i) ? h`<p class="mute">${MASKED_HINT}</p>` : isExpired(i) ? h`<p class="mute">${EXPIRED_HINT}</p>` : ''}${isSent(i) ? h`<p class="mute">${SENT_HINT}</p>` : ''}`)}${draftDetails(items)}${specDetails(items)}`,
   };
 }
 
 export function taskDecision(ctx: ReviewContext, info: TaskInfo): Decision {
   const now = ctx.clock.nowMs();
-  if (info.drafts.length > 0) return draftDecision([info], now);
+  if (info.drafts.length > 0) return draftDecision(ctx, [info], now);
+  const label = clip(info.objective, 30);
   const actions = info.denied
-    ? choices({ approve: { blocked: '현재 정책이 거부하는 작업이라 승인해도 실행되지 않습니다.' }, reject: { command: rejectCmd('task', info.id) } })
-    : choices({ approve: { command: approveCmd('task', info.id, info.shown) }, reject: { command: rejectCmd('task', info.id) } });
+    ? actionsOf(undefined, blockedPart('승인', '현재 정책이 거부하는 작업이라 승인해도 실행되지 않습니다.'), rejectPart([plainStep('reject', 'task', info.id, info.shown, label)]))
+    : actionsOf(undefined, approvePart([approveStep('task', info.id, info.shown, label)]), rejectPart([plainStep('reject', 'task', info.id, info.shown, label)]));
   const where = info.targets.length === 0 ? '' : ` → ${info.targets.join(', ')}`;
   return {
     key: `task:${info.id}`, category: OUTSIDE(info.kind) ? 'outside' : 'other', first: OUTSIDE(info.kind) || waitDays([info], now) >= 1,
@@ -434,7 +475,7 @@ export function taskDecision(ctx: ReviewContext, info: TaskInfo): Decision {
       ['위험·기한', `${TASK_RISK[info.kind]} · ${waitingText([info], now)}`],
     ],
     ...(info.denied ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
-    urgency: now, actions,
+    urgency: now, actions, history: taskHistory(ctx, info.id),
     details: h`${kv([['목표', info.objective], ['엔진 원문(전이 사유)', info.reason], ['업무 id', info.id]])}${specDetails([info])}
       <h2>정책 판정 (원문)</h2>${table(['작업', '자원', '범위', '영향', '판정', '이유'], arr(info.shown?.['decisions']).map(rec).map((d) => [d['action'], d['resource'], d['scope'], d['impact'], d['decision'], d['reason']]))}`,
   };
@@ -451,10 +492,10 @@ const batchTitle = (items: readonly TaskInfo[]): string => `${eulReul(batchName(
 export function batchDecision(ctx: ReviewContext, items: TaskInfo[]): Decision {
   const now = ctx.clock.nowMs();
   const first = items[0]!;
-  if (first.drafts.length > 0) return draftDecision(items, now);
+  if (first.drafts.length > 0) return draftDecision(ctx, items, now);
   const gid = groupId(first);
   const allowed = items.filter((i) => !i.denied);
-  const joined = (parts: string[]): string => parts.join(' && ');
+  const stepLabel = (i: TaskInfo): string => clip(i.objective, 30);
   const targets = [...new Set(items.flatMap((i) => i.targets))];
   return {
     key: `batch:${gid}`, category: OUTSIDE(first.kind) ? 'outside' : 'other', first: OUTSIDE(first.kind) || waitDays(items, now) >= 1, href: `/batch/${gid}`,
@@ -466,11 +507,10 @@ export function batchDecision(ctx: ReviewContext, items: TaskInfo[]): Decision {
       ['위험·기한', `${TASK_RISK[first.kind]} · ${waitingText(items, now)}`],
     ],
     urgency: now,
-    actions: choices({
-      approve: allowed.length === 0 ? { blocked: '현재 정책이 모두 거부합니다.' } : { label: `${allowed.length}건 모두 승인`, command: joined(allowed.map((i) => approveCmd('task', i.id, i.shown))) },
-      reject: { label: `${items.length}건 모두 거절`, command: joined(items.map((i) => rejectCmd('task', i.id))) },
-    }),
-    details: h`${kv([['엔진 원문(전이 사유)', first.reason]])}<h2>건별 명령</h2>${items.map((i) => h`<h3>${clip(i.objective, 50)}</h3>${i.denied ? h`<p class="mute">정책이 거부해 승인할 수 없습니다.</p>` : command(approveCmd('task', i.id, i.shown), '승인')}${command(rejectCmd('task', i.id), '거절')}`)}${specDetails(items)}`,
+    actions: actionsOf(undefined,
+      allowed.length === 0 ? blockedPart('승인', '현재 정책이 모두 거부합니다.') : approvePart(allowed.map((i) => approveStep('task', i.id, i.shown, stepLabel(i))), { label: `${allowed.length}건 모두 승인` }),
+      rejectPart(items.map((i) => plainStep('reject', 'task', i.id, i.shown, stepLabel(i))), { label: `${items.length}건 모두 거절` })),
+    details: h`${kv([['엔진 원문(전이 사유)', first.reason]])}<h2>건별 내용</h2>${items.map((i) => h`<h3>${clip(i.objective, 50)}</h3>${link(['approvals', 'task', i.id], '이 업무만 따로 결정하기')}${i.denied ? h`<p class="mute">정책이 거부해 승인할 수 없습니다.</p>` : ''}`)}${specDetails(items)}`,
   };
 }
 
@@ -496,7 +536,8 @@ export function publicationDecision(ctx: ReviewContext, id: string): Decision | 
       ['확인할 것', outside ? '공개해도 되는 내용인지' : '게시할 내용이 맞는지'],
       ['위험·기한', outside ? `${who} 공개되면 되돌리기 어렵습니다` : '내부용이라 영향이 작습니다'],
     ],
-    urgency: ctx.clock.nowMs(), actions: choices({ approve: { command: approveCmd('publication', id, shown) }, reject: { command: rejectCmd('publication', id) } }),
+    urgency: ctx.clock.nowMs(), history: subjectHistory(ctx, 'publication', id),
+    actions: actionsOf(undefined, approvePart([approveStep('publication', id, shown, '게시물')], { done: '승인했습니다. 게시됩니다.' }), rejectPart([plainStep('reject', 'publication', id, shown, '게시물')])),
     details: h`${view?.kind === 'text' ? h`<h2>본문 (원문)</h2><pre>${view.text}</pre>` : ''}${kv([['채널', row.channel], ['대상', row.audience], ['내용 위치', row.content_ref], ['게시 id', id]])}`,
   };
 }
@@ -535,17 +576,17 @@ export function policyDecision(ctx: ReviewContext, id: string): Decision | null 
   if (shown === null) return null;
   const risky = shown['change_class'] === 'risky';
   const state = stateOf(shown);
-  const alias = 'policy';
   const changes = policyChanges(ctx, id);
+  const cancelStep = plainStep('cancel', 'policy_version', id, shown, '정책 변경');
   const actions = state === 'cooldown'
-    ? choices({ approve: { blocked: '이미 승인했고 대기 시간 중입니다.' }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(id)} --comment "사유"` } })
-    : choices({ approve: { label: 'OTP 확인', command: `${APPROVE_CLI} release ${alias} ${shellArg(id)} --totp-stdin`, note: `대기가 끝난 위험 변경만 ${OTP_AGAIN}하면 배포됩니다` }, reject: { label: '취소', command: `${APPROVE_CLI} cancel ${alias} ${shellArg(id)} --comment "사유"` } });
+    ? actionsOf(undefined, blockedPart('OTP 확인', '이미 승인했고 대기 시간 중입니다.'), cancelPart([cancelStep]))
+    : actionsOf(undefined, otpPart([plainStep('release', 'policy_version', id, shown, '정책 변경')], `대기가 끝난 위험 변경만 ${OTP_AGAIN}하면 배포됩니다`), cancelPart([cancelStep]));
   const summary = changes === null ? '바뀌는 내용을 읽을 수 없음 — 자세히에서 원문 확인' : changes.length === 0 ? '현재 정책과 같은 내용' : changes.slice(0, 3).join(' · ');
   return {
     key: `policy:${id}`, category: 'other', first: false, href: `/approvals/policy_version/${encodeURIComponent(id)}`,
     question: '정책 변경을 배포할까요?', ...(changes === null || changes.length === 0 ? {} : { lead: `정책이 이렇게 바뀝니다: ${changes.slice(0, 2).join(', ')}${changes.length > 2 ? ` 외 ${changes.length - 2}건` : ''}.` }),
     facts: [['무엇', summary], ['확인할 것', '바뀌는 규칙이 의도한 것인지'], ['위험·기한', risky ? `위험 변경 — 대기 시간 뒤 ${OTP_AGAIN}해야 합니다` : '일반 변경']],
-    urgency: ctx.clock.nowMs() + 20 * DAY, actions,
+    urgency: ctx.clock.nowMs() + 20 * DAY, actions, history: subjectHistory(ctx, 'policy_version', id),
     details: h`${changes === null ? '' : h`<h2>바뀌는 내용</h2>${list(changes)}`}${kv([['변경 등급(원문)', str(shown['change_class'])], ['사유(원문)', arr(shown['reasons']).map(str).join(' / ')], ['승인 단계(원문)', str(obj(shown['approval'])['reason'])], ['제안 id', id]])}`,
   };
 }
@@ -566,7 +607,10 @@ export function strategyDecision(ctx: ReviewContext, id: string): Decision | nul
     ],
     ...(running.length > 0 ? { badge: { label: '승인 불가 — 진행 중인 실험 있음', tone: 'bad' as const } } : {}),
     urgency: ctx.clock.nowMs() + 20 * DAY,
-    actions: choices({ approve: running.length > 0 ? { blocked: '이미 진행 중인 실험이 있어 한 번에 하나만 승인할 수 있습니다.' } : { command: approveCmd('strategy', id, shown) }, reject: { command: rejectCmd('strategy', id) } }),
+    history: subjectHistory(ctx, 'strategy_version', id),
+    actions: actionsOf(undefined,
+      running.length > 0 ? blockedPart('승인', '이미 진행 중인 실험이 있어 한 번에 하나만 승인할 수 있습니다.') : approvePart([approveStep('strategy_version', id, shown, `'${clip(row.title, 24)}' 실험`)], { done: '승인했습니다. 실험이 시작됩니다.' }),
+      rejectPart([plainStep('reject', 'strategy_version', id, shown, `'${clip(row.title, 24)}' 실험`)])),
     details: h`${scope === null ? '' : h`<h2>실험 범위</h2><pre>${prettyJson(scope)}</pre>`}${kv([['전략 id', id]])}`,
   };
 }
@@ -609,12 +653,13 @@ export function productDecision(ctx: ReviewContext, slug: string): Decision | nu
     ],
     badge: blocked !== null || !passed ? { label: '검증 실패 — 승인 불가', tone: 'bad' } : { label: '검증 통과', tone: 'ok' },
     urgency: ctx.clock.nowMs(),
-    actions: choices({
-      approve: blocked !== null ? { blocked: `${BLOCK[blocked.code] ?? '엔진이 승인을 거절합니다'}. 반려하거나 다시 검증하세요.` }
-        : { command: `${APPROVE_CLI} product decide ${shellArg(slug)} approve --hash ${view.review_hash === null ? '<해시를 확인할 수 없다>' : shellArg(view.review_hash)} --comment "사유"`, note: '아래 증거를 읽은 뒤' },
-      reject: { command: `${APPROVE_CLI} product decide ${shellArg(slug)} reject --comment "사유"`, note: '사유가 필수입니다' },
-      extra: command(`${APPROVE_CLI} product restart ${shellArg(slug)} --comment "사유"`, '수정한 코드로 다시 검증하려면'),
-    }),
+    history: subjectHistory(ctx, 'product', product.id, productLinks(ctx, product.id)),
+    actions: actionsOf(undefined,
+      blocked !== null ? blockedPart('승인', `${BLOCK[blocked.code] ?? '승인할 수 없는 상태입니다'}. 반려하거나 다시 검증해 주세요.`)
+        : view.review_hash === null ? blockedPart('승인', NO_HASH)
+          : approvePart([{ label: `상품 '${clip(product.name, 24)}'`, request: { cmd: 'product', op: 'decide', slug, decision: 'approve', hash: view.review_hash }, hash: view.review_hash }], { note: '아래 증거를 읽은 뒤', done: '상품 등록을 승인했습니다.' }),
+      rejectPart([{ label: `상품 '${clip(product.name, 24)}'`, request: { cmd: 'product', op: 'decide', slug, decision: 'reject' }, hash: null }], { label: '반려', reason: 'required', reasonLabel: '반려 이유 (필수)', done: '반려했습니다.' }),
+      { buttons: [{ verb: 'restart', label: '다시 검증', tone: 'ch', steps: [{ label: `상품 '${clip(product.name, 24)}'`, request: { cmd: 'product', op: 'restart', slug }, hash: null }], reason: 'required', reasonLabel: '다시 검증하는 이유 (필수)', collapse: true, note: '수정한 코드로 다시 검증하려면', done: '다시 검증을 시작했습니다.' }] }),
     details: h`${kv([['종류', product.kind], ['단계', product.lifecycle_stage], ['저장소', view.repo_path ?? '-']])}
       <h2>독립 평가 (원문)</h2>${evaluation === null ? h`<p class="empty">없음</p>` : kv([['판정', evaluation.outcome], ['안전성', evaluation.safety], ['메모', evaluation.note ?? '-']])}
       <h2>검증기 판정 (원문)</h2>${view.shadow_verdict === null ? h`<p class="empty">없음</p>` : h`<pre>${prettyJson(view.shadow_verdict)}</pre>`}
@@ -633,8 +678,7 @@ export function effectsDecision(ctx: ReviewContext): Decision | null {
   const name = objectives.length === 1 ? `'${clip(objectives[0]!, 28)}'` : `'${clip(objectives[0]!, 22)}' 외 ${objectives.length - 1}개 작업`;
   const targets = [...new Set(effects.map((e) => e.target))];
   const usable = effects.filter((e) => !e.runActive && !e.resolvedBefore);
-  const confirmCmd = (id: string): string => `${APPROVE_CLI} resolve-effect ${shellArg(id)} --outcome confirmed --note "확인한 내용"`;
-  const failCmd = (id: string): string => `${APPROVE_CLI} resolve-effect ${shellArg(id)} --outcome failed --note "확인한 내용" --totp-stdin`;
+  const effectStep = (e: (typeof effects)[number], outcome: 'confirmed' | 'failed'): Step => ({ label: `${clip(e.target, 40)}`, request: { cmd: 'resolve-effect', effect_id: e.effectId, outcome }, hash: null, textField: 'note' });
   return {
     key: 'effects', category: 'outside', first: true, href: '/effects',
     question: `${name} 전송 여부 ${effects.length}건 — 실제로 나갔나요?`,
@@ -644,11 +688,11 @@ export function effectsDecision(ctx: ReviewContext): Decision | null {
       ['위험·기한', `잘못 답하면 같은 내용이 두 번 나가거나 아예 안 나갑니다 · ${ago(oldest, now)}부터 대기`],
     ],
     urgency: now,
-    actions: usable.length === 0 ? choices({ approve: { blocked: '지금은 확인할 수 없습니다 (실행 중이거나 이미 한 번 확인됨).' } }) : choices({
-      approve: { label: usable.length > 1 ? `${usable.length}건 모두 나갔다고 확인` : '나갔다고 확인', command: usable.map((e) => confirmCmd(e.effectId)).join(' && '), note: '받는 쪽을 직접 확인한 뒤' },
-      reject: usable.length > 1 ? { blocked: '"나가지 않았다"는 OTP 코드가 필요해 건별로 자세히에서 처리합니다.' } : { label: '나가지 않았다고 확인', command: failCmd(usable[0]!.effectId), note: 'OTP 코드 한 줄을 입력합니다. 이후 재전송은 정책 판정을 거칩니다' },
-    }),
-    details: h`<h2>건별 명령</h2>${effects.map((e) => h`<h3>${e.tool} · ${e.action} → ${clip(e.target, 50)}</h3>${e.runActive || e.resolvedBefore ? h`<p class="mute">${e.runActive ? '실행 중인 작업이 있어 지금은 확인할 수 없습니다.' : '이미 한 번 확인된 건이라 다시 확인할 수 없습니다.'}</p>` : h`${command(confirmCmd(e.effectId), '나갔다고 확인')}${command(failCmd(e.effectId), '나가지 않았다고 확인 (OTP 코드 입력)')}`}`)}
+    actions: usable.length === 0 ? actionsOf(undefined, blockedPart('확인', '지금은 확인할 수 없습니다 (실행 중이거나 이미 한 번 확인됨).')) : actionsOf(undefined,
+      { buttons: [{ verb: 'confirmed', label: usable.length > 1 ? `${usable.length}건 모두 나갔다고 확인` : '나갔다고 확인', tone: 'yes', steps: usable.map((e) => effectStep(e, 'confirmed')), reason: 'required', reasonLabel: '확인한 내용 (필수)', note: '받는 쪽을 직접 확인한 뒤', done: '나갔다고 기록했습니다.' }] },
+      usable.length > 1 ? blockedPart('나가지 않았다고 확인', '"나가지 않았다"는 OTP 코드가 필요해 한 건씩 처리합니다. 하나씩 보려면 자세히를 여세요.')
+        : { buttons: [{ verb: 'failed', label: '나가지 않았다고 확인', tone: 'no', steps: [effectStep(usable[0]!, 'failed')], reason: 'required', reasonLabel: '확인한 내용 (필수)', otp: true, note: '이후 재전송은 정책 판정을 거칩니다', done: '나가지 않았다고 기록했습니다.' }] }),
+    details: h`<h2>건별 상태</h2>${effects.map((e) => h`<h3>${e.tool} · ${e.action} → ${clip(e.target, 50)}</h3>${e.runActive || e.resolvedBefore ? h`<p class="mute">${e.runActive ? '실행 중인 작업이 있어 지금은 확인할 수 없습니다.' : '이미 한 번 확인된 건이라 다시 확인할 수 없습니다.'}</p>` : h`<p class="mute">확인할 수 있습니다.</p>`}`)}
       <h2>효과 목록 (원문)</h2>${table(['효과', '도구', '대상', '업무 상태', '재전송 허가'], effects.map((e) => [e.effectId, `${e.tool} ${e.action}`, e.target, e.taskStatus, e.supportsIdempotency ? (e.resendWindowOpen ? '가능' : '불가(보존 기간 지남)') : '지원 안 함']))}`,
   };
 }
@@ -664,7 +708,10 @@ export function experimentDecisions(ctx: ReviewContext): Decision[] {
       question: `'${clip(title(e.strategyVersionId))}' 실험이 목표를 넘겼습니다. 정식 전략으로 올릴까요?`,
       facts: [['무엇', '이 실험을 정식 전략으로 올립니다 (이전 정식 전략은 보관 처리)'], ['확인할 것', '실험 결과가 목표를 넘겼는지'], ['위험·기한', `실험 비용 $${num(e.totalCostUsd)} · 승격 뒤에도 되돌릴 수 있습니다`]],
       badge: { label: '검증 통과', tone: 'ok' }, urgency: ctx.clock.nowMs(),
-      actions: choices({ approve: { label: '정식 전략으로 올리기', command: `${APPROVE_CLI} promote strategy ${shellArg(e.strategyVersionId)} --comment "사유"` }, reject: { command: rejectCmd('strategy', e.strategyVersionId) } }),
+      actions: actionsOf(undefined,
+        { buttons: [{ verb: 'promote', label: '정식 전략으로 올리기', tone: 'yes', steps: [{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'promote', kind: 'strategy_version', id: e.strategyVersionId }, hash: null }], reason: 'required', reasonLabel: '올리는 이유 (필수)', done: '정식 전략으로 올렸습니다.' }] },
+        rejectPart([{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'reject', kind: 'strategy_version', id: e.strategyVersionId }, hash: null }], { label: '올리지 않기', reason: 'required', reasonLabel: '올리지 않는 이유 (필수)', done: '정식 전략으로 올리지 않았습니다.' })),
+      history: subjectHistory(ctx, 'strategy_version', e.strategyVersionId),
       details: kv([['실험 비용(USD)', num(e.totalCostUsd)], ['평가 id', e.evaluationId], ['전략 id', e.strategyVersionId]]),
     });
   }
@@ -674,7 +721,8 @@ export function experimentDecisions(ctx: ReviewContext): Decision[] {
       question: `'${clip(title(e.strategyVersionId))}' 실험 결과를 판정하지 못했습니다. 이 실험을 끝낼까요?`,
       facts: [['무엇', '이 실험을 끝냅니다 (결과 기록은 남기지 않음)'], ['확인할 것', '증거가 부족해 결과를 가릴 수 없다는 판단에 동의하는지'], ['위험·기한', '끝내면 같은 실험을 다시 승인받아야 합니다']],
       badge: { label: '판정 보류', tone: 'warn' }, urgency: ctx.clock.nowMs() + DAY,
-      actions: choices({ reject: { label: '실험 끝내기', command: rejectCmd('strategy', e.strategyVersionId), note: '사유가 필수입니다. 그대로 두면 계속 대기합니다' } }),
+      actions: actionsOf(undefined, rejectPart([{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'reject', kind: 'strategy_version', id: e.strategyVersionId }, hash: null }], { label: '실험 끝내기', reason: 'required', reasonLabel: '끝내는 이유 (필수)', note: '그대로 두면 계속 대기합니다', done: '실험을 끝냈습니다.' })),
+      history: subjectHistory(ctx, 'strategy_version', e.strategyVersionId),
       details: kv([['엔진 원문', e.reason], ['검토 업무', e.reviewTaskId], ['전략 id', e.strategyVersionId]]),
     });
   }
@@ -732,7 +780,9 @@ export function trialDecision(ctx: ReviewContext, row: OrgProposalRow): Decision
       ...common, key: `confirm:${row.id}`, question: `${slugs} 시험이 통과했습니다. 정식 확정할까요?`, lead: trialLine(t),
       facts: [['무엇', '시험 중인 역할을 정식 조직으로 확정합니다'], ['확인할 것', '시험 결과(통과율·관측 수)가 충분한지'], ['위험·기한', '확정하면 시험 범위 제한이 풀립니다 (이후 되돌리기 가능)']],
       badge: { label: '검증 통과', tone: 'ok' },
-      actions: choices({ approve: { label: '정식 확정', command: `${APPROVE_CLI} org confirm ${shellArg(row.id)} --comment "사유"` }, extra: h`<p class="mute">확정하지 않으면 시험 상태로 남습니다.</p>` }), details: detail,
+      history: subjectHistory(ctx, 'org_proposal', row.id),
+      actions: actionsOf(h`<p class="mute">확정하지 않으면 시험 상태로 남습니다.</p>`,
+        { buttons: [{ verb: 'confirm', label: '정식 확정', tone: 'yes', steps: [{ label: slugs, request: { cmd: 'org', op: 'confirm', id: row.id }, hash: null }], reason: 'required', reasonLabel: '확정하는 이유 (필수)', done: '정식 조직으로 확정했습니다.' }] }), details: detail,
     };
   }
   if (row.status === 'inconclusive') {
@@ -740,7 +790,8 @@ export function trialDecision(ctx: ReviewContext, row: OrgProposalRow): Decision
       ...common, key: `retrial:${row.id}`, question: `${slugs} 시험은 관측이 부족했습니다. 한 번 더 시험할까요?`, lead: trialLine(t),
       facts: [['무엇', '새 평가 계획으로 시험을 한 번 더 진행합니다'], ['확인할 것', '업무가 더 쌓일 때까지 기다릴 만한지'], ['위험·기한', `재시험은 제안당 1회까지입니다 (지금까지 ${row.trial_extensions}회)`]],
       badge: { label: '판정 보류', tone: 'warn' },
-      actions: choices({ approve: { label: '재시험', command: `${APPROVE_CLI} org retrial ${shellArg(row.id)} --file evaluation-plan.json --comment "사유"`, note: '새 평가 계획 JSON 파일이 필요합니다' }, extra: h`<p class="mute">재시험하지 않으면 판정 불충분 상태로 남습니다.</p>` }), details: detail,
+      history: subjectHistory(ctx, 'org_proposal', row.id),
+      actions: actionsOf(h`${NOT_HERE('재시험에는 새 평가 계획 파일이 필요합니다.')}<p class="mute">재시험하지 않으면 판정 불충분 상태로 남습니다.</p>`), details: detail,
     };
   }
   return null;
@@ -765,7 +816,7 @@ export function trialPage(ctx: ReviewContext, row: OrgProposalRow): { title: str
   const slugs = t.roleSlugs.map((s) => `'${s}'`).join(', ');
   return {
     title: decision?.question ?? `${slugs} 시험 중`, lead: trialLine(t),
-    body: h`${t.endsAt === null ? '' : h`<p class="mute">${until(t.endsAt, ctx.clock.nowMs(), '판정')} (${monthDay(t.endsAt)})</p>`}${chart}${decision?.actions ?? h`<p class="mute">지금은 할 일이 없습니다. 판정이 나면 결정할 일에 올라옵니다.</p>`}<details><summary>자세히</summary>${decision?.details ?? trialDetails(ctx, t)}</details>`,
+    body: h`${t.endsAt === null ? '' : h`<p class="mute">${until(t.endsAt, ctx.clock.nowMs(), '판정')} (${monthDay(t.endsAt)})</p>`}${chart}${decision === null ? h`<p class="mute">지금은 할 일이 없습니다. 판정이 나면 결정할 일에 올라옵니다.</p>` : h`${historyList(decision.history)}${renderActions(ctx, decision.key, decision.actions)}`}<details><summary>자세히</summary>${decision?.details ?? trialDetails(ctx, t)}</details>`,
   };
 }
 
@@ -780,7 +831,7 @@ export function signalDecisions(ctx: ReviewContext): Decision[] {
     question: `'${s.task_type}' 업무 ${s.count}건이 맡을 역할이 없어 멈췄습니다 — 새 역할 제안서를 만들까요?`,
     facts: [['무엇', `이 업무를 맡을 새 역할의 제안서 초안을 만듭니다 (최근 ${signals.window_days}일 ${s.count}건)`], ['확인할 것', '이 업무를 새 역할에 맡길 필요가 있는지'], ['위험·기한', '제안서만 만들어지고 아무것도 바뀌지 않습니다. 승인은 따로 합니다']],
     urgency: ctx.clock.nowMs() + 25 * DAY,
-    actions: choices({ approve: { label: '제안서 만들기', command: `${APPROVE_CLI} org propose --type ${shellArg(s.task_type)} --role <새-역할-slug> [--unit <부서-slug>]`, note: '역할 slug 는 직접 정합니다' }, extra: h`<p class="mute">그대로 두면 이 업무는 계속 멈춰 있습니다.</p>` }),
+    actions: actionsOf(h`${NOT_HERE('새 역할의 이름(slug)을 직접 정해야 합니다.')}<p class="mute">그대로 두면 이 업무는 계속 멈춰 있습니다.</p>`),
     details: h`<p>맡을 역할이 없어 멈춘 업무 유형 '${s.task_type}' (최근 ${signals.window_days}일 ${s.count}건). 기준은 3건 이상입니다.</p>`,
   }));
 }
@@ -849,4 +900,18 @@ export function watchLines(ctx: ReviewContext): { text: string; href?: string }[
     lines.push({ text: `'${clip(desc, 24)}'${desc.endsWith('역할') ? '' : ' 역할'} — 최근 사람 확인 필요 ${r.needs_review}건·실패 ${r.failed}건이 반복됩니다` });
   }
   return lines;
+}
+
+/** 결정 키(`task:<id>`·`batch:<묶음>`·`org:<id>` …)로 지금의 결정을 DB 에서 다시 만든다. 폼 전송 때 서버가 "무엇을 보낼지"를 정하는 유일한 길이다 */
+export function resolveDecision(ctx: ReviewContext, key: string): Decision | undefined {
+  if (key.startsWith('task:')) {
+    const id = key.slice('task:'.length);
+    const group = taskGroups(ctx).flat().find((i) => i.id === id);
+    return group === undefined ? undefined : taskDecision(ctx, group);
+  }
+  if (key.startsWith('batch:')) {
+    const group = taskGroups(ctx).find((items) => items.length > 1 && batchDecision(ctx, items).key === key);
+    return group === undefined ? undefined : batchDecision(ctx, group);
+  }
+  return buildInbox(ctx).decisions.find((d) => d.key === key);
 }

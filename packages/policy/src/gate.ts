@@ -12,6 +12,7 @@ import { proposedDraftsOf, type Db, type EffectDraftRow, type TaskPolicyGate, ty
 
 import { approvalStatus, taskRequester, taskSubject, taskSubjectHash, type ApprovalStatus } from './approval.ts';
 import { recordDecision, recordVerdict } from './decisions.ts';
+import { delegationAuthority } from './delegation.ts';
 import { evaluateRequest, requestOf, requestsFromSpec, taskApprovalParams, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
 import type { ActivePolicy, PolicyStore } from './store.ts';
 
@@ -177,7 +178,8 @@ function budgetSpent(tx: Db, task: TaskRow): string | null {
  * 승인이 필요한 업무의 실행 시점 확인 (trust-boundaries §4).
  *  1. 현재 대상 해시(명세 + 현재 정책 버전) = task.approved_hash. 다르면 실행 인자가 바뀌었거나 정책이 바뀐 것 → 재승인
  *  2. 역할 버전·상태가 승인 당시와 같은가 (조직·역할 변경이 승인 범위를 벗어나면 재검토)
- *  3. 승인자 수·자기 승인·취소 (approvalStatus). 외부 부작용이 있으면 cooldown·재인증도 (그 밖의 require_approval 은 사람 1인 승인만)
+ *  3. 승인자 수·자기 승인·취소 (approvalStatus). 외부 부작용이 있으면 cooldown·재인증도 (그 밖의 require_approval 은 사람 1인 승인만).
+ *     위임 승인이 정족수면 위임의 cooldown 을 따르고 재인증은 요구하지 않는다(ADR-0016 제안)
  * 초안 승인 업무(ADR-0015)는 `drafts`(제안된 초안)를 해시에 더한다. 기한(`expires_at`)이 지난 초안이 있으면 승인이 유효해도 거부한다
  * (새 상태를 만들지 않고 `hash_mismatch`: 사람이 변경 요청으로 초안을 다시 쓰게 한다).
  */
@@ -209,6 +211,8 @@ export function verifyTaskApproval(
   }
   return approvalStatus(tx, {
     kind: 'task', id: task.id, hash, requesterId: taskRequester(tx, task), params: taskApprovalParams(policy.document, requestsFromSpec(spec)), now,
+    // 위임 승인(ADR-0016, 제안)은 지금 정책의 위임이 유효할 때만 센다: 정지·철회·만료·정책 변경 즉시 효력을 잃는다. 위임이 없는 정책이면 null
+    authority: delegationAuthority(tx, policy.document, now),
   });
 }
 

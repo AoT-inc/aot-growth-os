@@ -34,7 +34,7 @@ export const TASK_MACHINE: StateMachine<TaskStatus> = {
     rule('validating', 'completed', ['validator'], { preconditions: "모든 acceptance_criteria 충족 AND safety != 'fail' (최신 evaluation.safety='pass')" }),
     rule('validating', 'retry_wait', ['validator'], { preconditions: '기준 미충족, 재시도 가능' }),
     rule('validating', 'needs_review', ['validator', 'policy'], { preconditions: "validation.human=true, 승인 필요, 또는 평가 'inconclusive' (증거 부족, 2026-10-21 결정)" }),
-    rule('needs_review', 'queued', ['human'], { requires: ['approval'] }),
+    rule('needs_review', 'queued', ['human', 'policy'], { requires: ['approval'], preconditions: "주체 policy 는 ADR-0016(제안)의 위임 승인(approval.mandate_id)이 정족수이고 위임 cooldown 이 끝나 위임이 아직 유효할 때(데몬 주기 releaseDelegated), 또는 위임 보유자의 다시 쓰게 (changes_requested)" }),
     rule('needs_review', 'completed', ['human'], { requires: ['approval'] }),
     rule('needs_review', 'failed', ['human'], { requires: ['approval'] }),
     rule('retry_wait', 'queued', ['scheduler'], { preconditions: 'next_run_at 도달' }),

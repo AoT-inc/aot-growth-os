@@ -5,6 +5,9 @@
 //  - 'approved' 가 아닌 행(rejected 등)은 그 앞의 승인을 모두 무효로 한다 (거절, 대기 중 취소)
 //  - 남은 'approved' 중 subject_hash 가 지금 해시와 같고, 사람(actor.kind='human')이며, 자기 승인이 금지(min_approvers ≥ 2)면 요청자가 아닌 것만 센다
 //  - 서로 다른 승인자 수가 min_approvers 에 닿은 시각 + cooldown 이 지나야 하고, reauth_before_effect 면 그 뒤의 재인증 기록이 있어야 한다
+//  - 위임 승인(ADR-0016, 제안): `actor.kind='agent'` 행은 `mandate_id` 가 있고 `authority`(지금 정책의 위임 + 정지·철회·만료 확인)가 받아 주고 min_approvers 가 1 이고
+//    요청자가 보유자가 아닐 때만 센다. 사람 승인이 하나라도 유효하면 사람 행이 정족수 행이다. 위임 승인이 정족수면 cooldown 은 위임의 cooldown(정책의 risky_change.cooldown 이상),
+//    재인증(TOTP)은 요구하지 않는다(사람 재인증은 위임을 배포할 때 했다)
 import type { ApprovalSubjectKind, Db, EffectDraftRow, PublicationRow, StrategyVersionRow, TaskRow, TaskSpec } from '@aot/domain';
 import { contentHash, draftSubjectEntries } from '@aot/domain';
 
@@ -29,6 +32,18 @@ export interface ApprovalStatus {
   quorumApprovalId: string | null;
   quorumAt: string | null;
   cooldownEndsAt: string | null;
+  /** 정족수 행이 위임 승인이면 그 위임 id (아니면 null) */
+  mandateId?: string | null;
+}
+
+/**
+ * 위임 승인 행을 받아 주는 쪽 (ADR-0016, 제안). 구현은 delegation.ts — 지금 정책에 그 위임이 있고, 보유자가 맞고, 정지·철회·만료가 아닌지를 본다.
+ * 승인 계산은 이 포트를 통해서만 위임 행을 센다. 포트가 없으면 에이전트 행은 하나도 세지 않는다.
+ */
+export interface DelegationAuthority {
+  accepts(row: { mandateId: string; decidedBy: string; at: string }): boolean;
+  /** 위임의 cooldown(초). 위임이 정책에 없으면 null */
+  cooldownOf(mandateId: string): number | null;
 }
 
 export interface ApprovalQuery {
@@ -41,6 +56,8 @@ export interface ApprovalQuery {
   now: string;
   /** false 면 재인증은 보지 않는다 (재인증 직전의 확인) */
   checkReauth?: boolean;
+  /** 위임 승인 행을 받아 주는 쪽 (업무 승인에서만 준다). 없으면 에이전트 행은 세지 않는다 */
+  authority?: DelegationAuthority | null;
 }
 
 interface ApprovalJoinRow {
@@ -50,6 +67,7 @@ interface ApprovalJoinRow {
   decided_by: string;
   at: string;
   actor_kind: string | null;
+  mandate_id: string | null;
   [key: string]: string | null;
 }
 
@@ -57,7 +75,7 @@ export const reauthPurpose = (kind: ApprovalSubjectKind, id: string, hash: strin
 
 export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
   const rows = db.all<ApprovalJoinRow>(
-    `SELECT a.id, a.decision, a.subject_hash, a.decided_by, a.at, actor.kind AS actor_kind
+    `SELECT a.id, a.decision, a.subject_hash, a.decided_by, a.at, a.mandate_id, actor.kind AS actor_kind
      FROM approval a LEFT JOIN actor ON actor.id = a.decided_by
      WHERE a.subject_kind = ? AND a.subject_id = ? ORDER BY a.at, a.rowid`,
     [query.kind, query.id],
@@ -72,7 +90,25 @@ export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
   let quorum: ApprovalJoinRow | null = null;
   let stale = 0;
   let self = 0;
+  let ignoredDelegated = 0;
+  let delegated: ApprovalJoinRow | null = null;
   for (const row of epoch) {
+    if (row.actor_kind === 'agent') {
+      // 위임 승인: 위임이 지금 유효하고 승인자 한 명 몫(min_approvers == 1)일 때만, 요청자가 보유자가 아닐 때만 센다. 사람 승인이 없을 때 정족수가 된다(아래)
+      if (row.mandate_id === null) {
+        continue; // 위임 표시가 없는 에이전트 행은 예전처럼 아무것도 아니다 (승인으로 세지 않고 설명에도 나오지 않는다)
+      } else if (!query.authority || query.params.min_approvers !== 1
+        || !query.authority.accepts({ mandateId: row.mandate_id, decidedBy: row.decided_by, at: row.at })) {
+        ignoredDelegated += 1;
+      } else if (row.subject_hash !== query.hash) {
+        stale += 1;
+      } else if (query.requesterId !== null && row.decided_by === query.requesterId) {
+        self += 1;
+      } else if (delegated === null) {
+        delegated = row;
+      }
+      continue;
+    }
     if (row.actor_kind !== 'human') continue;
     if (row.subject_hash !== query.hash) {
       stale += 1;
@@ -86,7 +122,13 @@ export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
     approvers.push(row.decided_by);
     if (approvers.length === query.params.min_approvers) quorum = row;
   }
-  const base = { approvers, quorumApprovalId: quorum?.id ?? null, quorumAt: quorum?.at ?? null, cooldownEndsAt: null };
+  let mandateId: string | null = null;
+  if (quorum === null && delegated !== null) {
+    approvers.push(delegated.decided_by);
+    quorum = delegated;
+    mandateId = delegated.mandate_id;
+  }
+  const base = { approvers, quorumApprovalId: quorum?.id ?? null, quorumAt: quorum?.at ?? null, cooldownEndsAt: null, mandateId };
   const fail = (state: ApprovalState, reason: string): ApprovalStatus => ({ ok: false, state, reason, ...base });
   if (!quorum) {
     const need = `${approvers.length}/${query.params.min_approvers} human approvals`;
@@ -94,14 +136,16 @@ export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
     if (stale > 0) return fail('hash_mismatch', `approval was given for different content (approved_hash mismatch); re-approval required`);
     if (self > 0) return fail('self_approval', 'the requester cannot approve their own request (self-approval is allowed only when min_approvers is 1)');
     if (revoked) return fail('revoked', 'the approval was rejected or cancelled');
+    if (ignoredDelegated > 0) return fail('revoked', 'the delegated approval is no longer valid (the mandate was paused, revoked, expired or changed, or the approval is not from its holder)');
     return fail('missing', 'approval required (no approval recorded)');
   }
-  const cooldownEndsAt = new Date(Date.parse(quorum.at) + query.params.cooldown * 1000).toISOString();
+  const cooldownSeconds = mandateId === null ? query.params.cooldown : Math.max(query.params.cooldown, query.authority?.cooldownOf(mandateId) ?? 0);
+  const cooldownEndsAt = new Date(Date.parse(quorum.at) + cooldownSeconds * 1000).toISOString();
   const withCooldown = { ...base, cooldownEndsAt };
   if (query.now < cooldownEndsAt) {
     return { ok: false, state: 'cooldown', reason: `approved; cooldown until ${cooldownEndsAt} (can be cancelled meanwhile)`, ...withCooldown };
   }
-  if (query.params.reauth_before_effect && query.checkReauth !== false) {
+  if (query.params.reauth_before_effect && query.checkReauth !== false && mandateId === null) {
     const reauth = db.get('SELECT 1 AS one FROM human_reauth WHERE purpose = ? AND at >= ? LIMIT 1', [reauthPurpose(query.kind, query.id, query.hash), cooldownEndsAt]);
     if (!reauth) return { ok: false, state: 'reauth_required', reason: 'human re-authentication (TOTP) is required after the cooldown', ...withCooldown };
   }

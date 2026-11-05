@@ -348,9 +348,11 @@ CREATE TABLE approval (
   subject_id   TEXT NOT NULL,
   decision     TEXT NOT NULL CHECK (decision IN ('approved','rejected','changes_requested')),
   subject_hash TEXT,                          -- 승인 당시 대상 내용의 해시 (내용이 바뀌면 승인 무효)
-  decided_by   TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 허용 (애플리케이션 규칙)
+  decided_by   TEXT NOT NULL REFERENCES actor(id),   -- human, 또는 mandate_id 가 있는 위임 보유자 (ADR-0016 위임 승인, 애플리케이션 규칙)
   comment      TEXT,
-  at           TEXT NOT NULL
+  at           TEXT NOT NULL,
+  mandate_id   TEXT,                          -- 위임 승인일 때만: 정책 delegation.mandates[].id (ADR-0016). 사람 행은 NULL
+  via          TEXT CHECK (via IS NULL OR via IN ('cli','web','delegate'))   -- 결정 경로(자기 신고, 감사용). 옛 행은 NULL
 );
 CREATE INDEX approval_subject ON approval(subject_kind, subject_id, at);
 
@@ -365,6 +367,35 @@ CREATE TABLE human_reauth (
   at           TEXT NOT NULL,
   UNIQUE (actor_id, method, time_step)
 );
+
+-- 위임 검토 기록 (ADR-0016). 위임 보유자 AI 가 적격 업무를 본 결과: 판정(approve|request_changes|escalate)과 그 사유, 엔진이 기록한 결과(recorded 또는 거부 코드).
+-- append-only. 같은 업무·같은 대상 해시는 한 번만 검토한다. 사람에게 넘긴 이유와 AI 검토 비용 집계가 여기서 나온다.
+CREATE TABLE delegate_review (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id      TEXT NOT NULL REFERENCES task(id),
+  subject_hash TEXT NOT NULL,                 -- 검토한 대상 해시 (초안 목록 포함)
+  mandate_id   TEXT NOT NULL,
+  verdict      TEXT NOT NULL CHECK (verdict IN ('approve','request_changes','escalate')),
+  reason       TEXT NOT NULL,                 -- AI 사유 또는 사람에게 온 이유 (200자)
+  outcome      TEXT NOT NULL,                 -- 엔진 결과: 'recorded' 또는 거부 코드 (예: not_eligible)
+  cost_usd     REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+  at           TEXT NOT NULL
+);
+CREATE INDEX delegate_review_task ON delegate_review(task_id, subject_hash);
+CREATE INDEX delegate_review_at ON delegate_review(at);
+
+-- 위임 정지·해제·철회 (ADR-0016). 강화(pause·revoke)는 정책 배포 없이 런타임에 하고, 해제(resume)는 사람 + TOTP. 철회는 되돌릴 수 없다. append-only.
+-- mandate_id NULL = 모든 위임 (pause·resume 만. revoke 는 위임마다 한 행씩 남긴다).
+CREATE TABLE delegation_control (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  action       TEXT NOT NULL CHECK (action IN ('pause','resume','revoke')),
+  mandate_id   TEXT,
+  actor_id     TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 (애플리케이션 규칙)
+  reason       TEXT NOT NULL,
+  at           TEXT NOT NULL,
+  CHECK (action <> 'revoke' OR mandate_id IS NOT NULL)
+);
+CREATE INDEX delegation_control_at ON delegation_control(at);
 
 -- ===== 평가 (ADR-0007) =====
 CREATE TABLE evaluation (
@@ -480,5 +511,9 @@ CREATE TRIGGER cost_entry_no_update BEFORE UPDATE ON cost_entry BEGIN SELECT RAI
 CREATE TRIGGER cost_entry_no_delete BEFORE DELETE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER policy_decision_no_update BEFORE UPDATE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER policy_decision_no_delete BEFORE DELETE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegate_review_no_update BEFORE UPDATE ON delegate_review BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegate_review_no_delete BEFORE DELETE ON delegate_review BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegation_control_no_update BEFORE UPDATE ON delegation_control BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegation_control_no_delete BEFORE DELETE ON delegation_control BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER human_reauth_no_update BEFORE UPDATE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER human_reauth_no_delete BEFORE DELETE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;

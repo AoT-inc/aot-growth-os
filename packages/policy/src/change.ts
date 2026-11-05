@@ -6,10 +6,12 @@
 //    (require_approval 규칙 추가도 기본 거부였던 요청을 승인 가능으로 바꿀 수 있다)
 //  - phone 섹션(ADR-0014): 통화를 더 많이/더 넓게 허용하는 변경은 위험 변경(섹션 신설, 지역·발신 번호·전환 대상 추가, 금지 번호 삭제, 통화시간·일일 통화량 상향,
 //    영업시간 해제·확대, 녹취 완화). 섹션 삭제와 그 밖의 강화는 일반 변경
+//  - delegation 섹션(ADR-0016, 제안): 위임을 넓히는 변경은 위험 변경(섹션 신설, 위임 추가, 보유자 변경, match 확대, 한도 상향, cooldown 단축, expires 연장, guidance 변경).
+//    위임 삭제, 한도 하향, 섹션 삭제는 일반 변경
 // 기억 기본 만료(memory.default_validity) 변경은 권한·공개 범위와 무관하므로 일반 변경이다.
 import { canonicalJson, type ChangeClass } from '@aot/domain';
 
-import { selfApprovalAllowed, type PhonePolicySection, type PolicyDocument } from './document.ts';
+import { selfApprovalAllowed, type DelegationSection, type Mandate, type PhonePolicySection, type PolicyDocument } from './document.ts';
 
 export interface PolicyChange {
   changeClass: ChangeClass;
@@ -52,6 +54,7 @@ export function classifyChange(current: PolicyDocument, next: PolicyDocument): P
     if (!after.has(id) && rule.decision !== 'allow') reasons.push(`rule '${id}' (decision '${rule.decision}') removed`);
   }
   reasons.push(...phoneWidenings(current.phone, next.phone));
+  reasons.push(...delegationWidenings(current.delegation, next.delegation));
   return { changeClass: reasons.length > 0 ? 'risky' : 'normal', reasons };
 }
 
@@ -78,5 +81,37 @@ function phoneWidenings(before: PhonePolicySection | undefined, after: PhonePoli
     const narrower = h1 !== undefined && h1.tz === h0.tz && h1.days.every((day) => h0.days.includes(day)) && h1.start >= h0.start && h1.end <= h0.end;
     if (!narrower && canonicalJson(h0) !== canonicalJson(h1)) reasons.push('phone.business_hours removed or widened');
   }
+  return reasons;
+}
+
+/** 위임 섹션이 AI 의 결정 범위를 넓히게 바뀐 부분. 강화임을 증명할 수 없으면 넓힘으로 본다 (패턴은 문자열이 같을 때만 같은 것으로 본다) */
+function delegationWidenings(before: DelegationSection | undefined, after: DelegationSection | undefined): string[] {
+  if (after === undefined) return []; // 섹션을 지우면 위임이 모두 꺼진다
+  if (before === undefined) return ['delegation section added (an AI may decide approvals within the mandates)'];
+  const reasons: string[] = [];
+  const old = new Map(before.mandates.map((mandate) => [mandate.id, mandate]));
+  for (const mandate of after.mandates) {
+    const prior = old.get(mandate.id);
+    if (prior === undefined) reasons.push(`delegation mandate '${mandate.id}' added`);
+    else reasons.push(...mandateWidenings(prior, mandate));
+  }
+  return reasons;
+}
+
+function mandateWidenings(a: Mandate, b: Mandate): string[] {
+  const reasons: string[] = [];
+  const label = `delegation mandate '${b.id}'`;
+  if (a.holder !== b.holder) reasons.push(`${label} holder changed ${a.holder} -> ${b.holder}`);
+  const grown = (key: 'actions' | 'targets' | 'scopes') => (b.match[key] as string[]).filter((entry) => !(a.match[key] as string[]).includes(entry));
+  for (const key of ['actions', 'targets', 'scopes'] as const) {
+    const added = grown(key);
+    if (added.length > 0) reasons.push(`${label} match.${key} widened by ${added.map((entry) => `'${entry}'`).join(', ')}`);
+  }
+  for (const key of Object.keys(b.limits) as (keyof Mandate['limits'])[]) {
+    if (b.limits[key] > a.limits[key]) reasons.push(`${label} limits.${key} raised ${a.limits[key]} -> ${b.limits[key]}`);
+  }
+  if (b.cooldown < a.cooldown) reasons.push(`${label} cooldown shortened ${a.cooldown}s -> ${b.cooldown}s`);
+  if (b.expires > a.expires) reasons.push(`${label} expires extended ${a.expires} -> ${b.expires}`);
+  if (b.guidance !== a.guidance) reasons.push(`${label} guidance changed`);
   return reasons;
 }

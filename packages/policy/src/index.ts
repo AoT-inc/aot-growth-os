@@ -5,18 +5,26 @@
 export {
   approvalStatus, publicationSubject, reauthPurpose, recordReauth, ReauthError, strategySubject, strategySubjectHash, taskRequester, taskSubject, taskSubjectHash,
   verifyStrategyApproval,
-  type ApprovalQuery, type ApprovalState, type ApprovalStatus, type StrategyApprovalCheck, type StrategySubject, type TaskSubject,
+  type ApprovalQuery, type ApprovalState, type ApprovalStatus, type DelegationAuthority, type StrategyApprovalCheck, type StrategySubject, type TaskSubject,
 } from './approval.ts';
 export { ApprovalChannelError, MAX_REQUEST_BYTES, prepareSocketDir, sendApprovalRequest, startApprovalServer, type ApprovalHandler, type ApprovalServer } from './channel.ts';
 export { classifyChange, type PolicyChange } from './change.ts';
+export {
+  ALWAYS_HUMAN, delegationAuthority, delegationEligibility, DELEGABLE_SUBJECTS, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, mandateUsability, MAX_DELEGATE_REASON_CHARS,
+  readDelegationControls, rewritesUsed,
+  type AlwaysHuman, type DelegationTaskContext, type Eligibility, type EligibilityCode, type MandateStop, type MandateUsability,
+} from './delegation.ts';
 export { recordDecision, type DecisionRecord } from './decisions.ts';
 export {
-  memoryDefaultValidity, parseDuration, parsePolicy, PHONE_RECORDING_MODES, POLICY_FORMAT, policyHash, policyVersionIdOf, RISKY_CHANGE_RANGE, validatePolicyDocument,
-  type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits, type PolicyRule, type RiskyChangeParams,
+  DELEGATION_MAX_DAYS, mandateExpiresAt, MAX_GUIDANCE_CHARS, memoryDefaultValidity, parseDuration, parsePolicy, PHONE_RECORDING_MODES, POLICY_FORMAT, policyHash, policyVersionIdOf,
+  RISKY_CHANGE_RANGE, validatePolicyDocument,
+  type DelegationSection, type Mandate, type MandateLimits, type MandateMatch, type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits,
+  type PolicyRule, type RiskyChangeParams,
 } from './document.ts';
 export {
-  ApprovalEngine, ApprovalRefusedError, orgProposalStaleness, ReauthRefusedError, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions, type ApprovalResponse,
-  type ApprovalSubject, type ReauthRefusalCode,
+  ApprovalEngine, ApprovalRefusedError, DECISION_VIA, orgProposalStaleness, ReauthRefusedError, REFUSAL_CODES, TOTP_LOCKOUT_MS, TOTP_MAX_FAILURES, type ApprovalCommand, type ApprovalEngineOptions,
+  type ApprovalResponse, type ApprovalSubject, type DecisionVia, type DelegateDecideResult, type DelegateDecision, type DelegateVerdict, type DelegationReviewMaterial, type DelegationScanEntry,
+  type ReauthRefusalCode, type RefusalCode,
 } from './engine.ts';
 export {
   approvalRequirement, constraintsOf, evaluateRequest, globMatch, requestOf, requestsFromSpec, strictest, subjectOf,

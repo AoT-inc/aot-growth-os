@@ -127,9 +127,13 @@ test('task: needs_review exits need a human and an approval record', () => {
     assert.ok(!noApproval.ok && noApproval.code === 'approval_required', to);
     assert.ok(checkTransition(TASK_MACHINE, { from: 'needs_review', to, by: 'human', approvalId: 'approval-1' }).ok);
     for (const by of ['scheduler', 'validator', 'policy', 'system'] as const) {
-      assert.equal(checkTransition(TASK_MACHINE, { from: 'needs_review', to, by, approvalId: 'approval-1' }).ok, false);
+      // ADR-0016 (제안): 주체 policy 는 needs_review → queued 만, 위임 승인 참조와 함께 가능하다. 나머지 출구는 사람만
+      const allowed = by === 'policy' && to === 'queued';
+      assert.equal(checkTransition(TASK_MACHINE, { from: 'needs_review', to, by, approvalId: 'approval-1' }).ok, allowed, `${by} -> ${to}`);
     }
   }
+  const policyNoApproval = checkTransition(TASK_MACHINE, { from: 'needs_review', to: 'queued', by: 'policy' });
+  assert.ok(!policyNoApproval.ok && policyNoApproval.code === 'approval_required', 'the policy actor needs an approval reference too');
 });
 
 test('task: cancellation needs a reason and a human or the policy', () => {

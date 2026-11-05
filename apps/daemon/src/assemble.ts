@@ -32,6 +32,7 @@ import {
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
+import { createDelegateCycle, type DelegateCycle, type DelegateReviewer } from './delegate-cycle.ts';
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createConsentHandler, isConsentCommand } from './consent.ts';
@@ -122,6 +123,11 @@ export interface AssembleOptions {
    * 도구가 열려도 명세의 `allowed_tools`, 도구 호출별 정책 판정, 전화 정책(`phone:` 섹션; 없으면 모든 통화 거부)이 모두 통과해야 통화가 일어난다.
    */
   phone?: PhoneOptions;
+  /**
+   * 결정 위임 (ADR-0016, 제안). 위임(`delegation.mandates`)은 정책이 선언해야 켜진다 — 이 옵션은 위임 *검토자*(AI)를 연결할 뿐이다. 없으면 `Daemon.delegation.advance()` 는 이미 기록된 위임 승인을
+   * cooldown 뒤에 풀어 주기만 하고 새 검토를 하지 않는다(적격한 업무는 사람에게 남는다). 위임이 없는 정책에서는 어느 쪽이든 아무것도 쓰지 않는다.
+   */
+  delegate?: { reviewer?: DelegateReviewer; maxReviewsPerAdvance?: number };
 }
 
 /**
@@ -176,6 +182,8 @@ export interface Daemon {
   cycle: ExperimentCycle | null;
   /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
   phone: PhoneRuntime | null;
+  /** 위임 주기 (ADR-0016, 제안): 위임 승인 풀어 주기 + 적격 업무 검토. main 루프가 tick 뒤마다 `advance()` 를 부른다. 소켓에 닿지 않는다 */
+  delegation: DelegateCycle;
   /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
@@ -248,6 +256,11 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
       return active === null || active.policy === null ? undefined : memoryDefaultValidity(active.policy.document);
     },
   });
+  const delegation = createDelegateCycle({
+    engine,
+    reviewer: options.delegate?.reviewer,
+    ...(options.delegate?.maxReviewsPerAdvance === undefined ? {} : { maxReviewsPerAdvance: options.delegate.maxReviewsPerAdvance }),
+  });
   const worker = new TaskWorker({
     db: options.db,
     clock: options.clock,
@@ -277,6 +290,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     measurementSignals,
     cycle,
     phone,
+    delegation,
     handleChannelRequest,
     async prepareAgentRuntime() {
       const docker = options.agent?.docker;

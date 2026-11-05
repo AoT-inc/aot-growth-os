@@ -38,3 +38,20 @@ ADR-0011(§2·§3 "`approved`는 사람의 `approval` 기록으로만")과 ADR-0
 - 브라우저라는 쓰기 표면이 생긴다. 같은 OS 사용자 프로세스가 소켓을 쓸 수 있다는 기존 한계(Q26 전제)는 그대로다.
 - 위임 검토 run의 LLM 비용이 생긴다(위임별 일일 한도).
 - 위임 섹션이 없는 정책은 동작과 정책 버전 해시가 지금과 같다.
+
+## 구현 기록 — 트랙 B 엔진·정책 (2026-11-05, 상태는 proposed 그대로)
+작업 B1~B10을 구현했다. 위임은 **꺼져 있다**: 기본 템플릿·시드 정책에 `delegation`이 없고, 위임이 없는 정책·DB에서는 정책 해시와 승인 계산이 지금과 같다(기존 시험이 그대로 통과한다). 오너 결정 D-B1에 따라 이 ADR이 accepted 되기 전에는 ADR-0006·0013·0015·trust-boundaries의 Amendment가 모두 "제안"으로 표시돼 있다.
+
+- 공유 계약(§5): 소켓 요청의 선택 필드 `expected_hash`(`reject`·`cancel`·`request_changes`·`release`, 64자 소문자 16진수가 아니면 `bad_request`)와 `via`(`cli|web`, 그 밖의 값은 `bad_request`)를 엔진이 받는다. 거부 응답은 `{ok:false, error, code?}`이고 코드는 `hash_mismatch wrong_state send_started masked expired policy_denied self_approval cooldown reauth_required reauth_failed reauth_locked not_human bad_request`다(코드 없는 거부가 남을 수 있다 — 화면은 "그 밖"으로 안내). 상태를 먼저 확인하고 해시를 그 다음에 대조한다(이미 다른 결정이 난 업무는 `wrong_state`).
+- 계산: `approvalStatus`가 `DelegationAuthority`를 받아 위임 행을 센다(delegation.ts). 사람 승인이 하나라도 유효하면 사람 행이 정족수 행이다. 위임 승인 행이 정족수면 cooldown은 `max(risky_change.cooldown, 위임 cooldown)`이고 재인증은 요구하지 않는다. **정지 뒤 풀어도 정지 전의 위임 승인은 되살아나지 않는다**(정지·철회가 승인 시각 이후에 한 번이라도 있었으면 무효, 사람이 다시 결정한다).
+- 엔진 프로세스 내 메서드: `delegationScan()`(읽기 전용 적격 후보), `delegateDecide()`(같은 트랜잭션에서 적격 재확인, 결과를 `delegate_review`에 남김), `releaseDelegated()`(`needs_review → queued`, 주체 `policy`). 사람 소켓 명령: `delegation status|pause|resume|revoke`(resume만 TOTP). `delegate_decide` 모양의 소켓 요청은 `bad_request`로 거부된다.
+- 데몬: `apps/daemon/src/delegate-cycle.ts`(풀어 주기 → 적격 업무 검토 → 출력 검사 → `delegateDecide`), `assembleDaemon`의 `delegate.reviewer` 옵션, `Daemon.delegation.advance()`를 main 루프가 tick마다 부른다. 업무마다 적격을 다시 읽어 한도를 넘은 뒤에는 AI를 부르지 않는다. 검토자를 쓸 수 없으면(`DelegateReviewerUnavailableError`) 기록 없이 다음 tick에 다시 한다.
+
+설계 문서(plans/decision-delegation.md)와 달라진 곳:
+- **`approval-delegate` 시드는 `seedPhaseA`가 아니라 요청형이다.** `ensureApprovalDelegate`(domain)가 행위자와 도구 없는 역할을 멱등으로 만들고, 위임 보유자가 예약 id `approval-delegate`인 정책을 사람이 배포하는 같은 트랜잭션에서 승인 엔진이 호출한다. 이유: 시드를 바꾸면 위임이 없는 DB(행위자·역할 수)가 달라져 "위임이 없으면 지금과 같다"가 깨진다. 이미 시드된 인스턴스도 그대로 쓸 수 있다. org_version 스냅샷은 바꾸지 않는다.
+- **위임 검토자(AI 호출)는 포트(`DelegateReviewer`)로만 연결했고 실제 모델 검토자는 만들지 않았다.** 데몬 설정 `delegate_reviewer`는 `{"kind":"stub"}`(점검·시험용, 기본 판정은 사람에게 넘김)만 받는다. `claude_code_cli` 검토자는 후속 작업이다. 그러므로 지금 실제 운영에서 위임을 선언해도 AI 승인은 일어나지 않는다(풀어 주기만 돈다). `delegate_review`에 AI run id 열은 두지 않았다(별도 task_run을 만들지 않는 호출이라 비용·판정·사유만 남긴다).
+- **정지·철회·만료 때문에 적격하지 않을 때는 `delegate_review`를 남기지 않는다**(풀리면 다시 본다). 그 밖의 적격 실패(한도·범위·외부 입력 등)는 `escalate` 행으로 남아 그 해시는 사람에게 남고, 이 행의 `reason`이 화면의 "AI가 넘긴 이유"가 된다(한국어 한 줄).
+- **`revoke`를 위임 id 없이 보내면 지금 정책의 모든 위임에 대해 위임마다 한 행을 남긴다**(테이블의 `revoke`는 `mandate_id`가 필수). 전체 정지는 `pause`다.
+- **위임 보유자의 `다시 쓰게`로 초안을 `superseded`로 버리는 전이 주체는 `scheduler`다**(초안 상태표가 `policy`를 받지 않는다). 업무 쪽 전이(`needs_review → queued`)는 주체 `policy` + 승인 참조.
+- 기존 시험 세 곳을 계약에 맞게 고쳤다: `state-machines.test.ts`(`needs_review → queued`를 `policy`도 승인 참조와 함께 허용), `daemon-effect-resolve.test.ts`(모르는 명령의 거부가 이제 `code: bad_request`), `entity-rows.test.ts`(새 열·표).
+- 진행 중인 실험을 거절하는 경로(`experiment-review.ts`, 승인 엔진이 아니라 결과 채널이 처리)는 `via`·`expected_hash` 필드를 받아들이지만 해시를 대조하지 않는다(전략 본문이 아니라 실험 상태에 대한 결정).

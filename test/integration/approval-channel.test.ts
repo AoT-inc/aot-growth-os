@@ -10,6 +10,7 @@ import { prepareSocketDir, sendApprovalRequest, startApprovalServer } from '@aot
 
 import { draftedTask } from '../support/draft-flow.ts';
 import { examplePayload } from '../support/message-tool.ts';
+import { DELEGATE, delegationEnv } from '../support/delegation.ts';
 import { AGENT, OWNER, policyEnv, taskRow } from '../support/policy.ts';
 import { runApproveCli } from '../support/approve-cli.ts';
 import { makeTempDir } from '../support/temp.ts';
@@ -150,4 +151,60 @@ test('the CLI shows the proposed drafts with secret-like values masked (the stor
   assert.equal(done.code, 0, done.stderr);
   assert.equal(done.json?.['state'], 'queued');
   assert.equal(taskRow(env.db, taskId).status, 'queued');
+});
+
+// ===== 공유 계약: expected_hash · via · code, 위임 명령 (ADR-0016, 제안) =====
+
+test('over the socket and the CLI: via is recorded, a stale --expected-hash is refused with code hash_mismatch, and the reply carries the refusal code', async (t) => {
+  const { env, socket } = await serve(t);
+  const { taskId } = await draftedTask(env);
+  const shown = await runApproveCli(['show', 'task', taskId], { socket, actor: OWNER });
+  const hash = String(shown.json?.['hash']);
+
+  const stale = await runApproveCli(['reject', 'task', taskId, '--expected-hash', 'a'.repeat(64)], { socket, actor: OWNER });
+  assert.equal(stale.code, 1);
+  assert.equal(stale.json?.['code'], 'hash_mismatch');
+  assert.equal(taskRow(env.db, taskId).status, 'needs_review');
+
+  const raw = await sendApprovalRequest(socket, { cmd: 'cancel', actor: OWNER, kind: 'task', id: taskId, expected_hash: 'b'.repeat(64), via: 'web' }) as { ok: boolean; code: string };
+  assert.deepEqual([raw.ok, raw.code], [false, 'hash_mismatch']);
+  assert.equal((await sendApprovalRequest(socket, { cmd: 'reject', actor: OWNER, kind: 'task', id: taskId, via: 'delegate' }) as { code: string }).code, 'bad_request');
+  assert.equal((await sendApprovalRequest(socket, { cmd: 'list', actor: AGENT }) as { code: string }).code, 'not_human');
+
+  const approved = await runApproveCli(['approve', 'task', taskId, '--hash', hash], { socket, actor: OWNER });
+  assert.equal(approved.code, 0, approved.stderr);
+  const rows = env.db.all<{ via: string | null }>("SELECT via FROM approval WHERE subject_kind = 'task' AND subject_id = ?", [taskId]);
+  assert.deepEqual(rows.map((row) => row.via), ['cli'], 'the CLI reports via=cli');
+  const web = await sendApprovalRequest(socket, { cmd: 'cancel', actor: OWNER, kind: 'task', id: taskId, expected_hash: hash, via: 'web' }) as { ok: boolean };
+  assert.equal(web.ok, true);
+  assert.deepEqual(env.db.all<{ via: string | null }>("SELECT via FROM approval WHERE subject_kind = 'task' AND subject_id = ? ORDER BY at, rowid", [taskId]).map((row) => row.via), ['cli', 'web']);
+});
+
+test('the delegation CLI: status, pause, resume (TOTP from stdin) and revoke; a delegateDecide-shaped request is not a socket command', async (t) => {
+  const env = delegationEnv(t);
+  const socket = join(makeTempDir(t, 'aot-sock-'), 'run', 'approval.sock');
+  const server = await startApprovalServer({ socketPath: socket, handle: (request) => env.engine.handle(request) });
+  t.after(() => server.close());
+
+  const status = await runApproveCli(['delegation', 'status'], { socket, actor: OWNER });
+  assert.equal(status.code, 0, status.stderr);
+  assert.equal(status.json?.['enabled'], true);
+  assert.deepEqual((status.json?.['mandates'] as { id: string; state: string }[]).map((m) => [m.id, m.state]), [['routine-mail', 'active']]);
+
+  const paused = await runApproveCli(['delegation', 'pause', '--comment', 'holiday'], { socket, actor: OWNER });
+  assert.equal(paused.json?.['state'], 'paused');
+  const noCode = await runApproveCli(['delegation', 'resume'], { socket, actor: OWNER });
+  assert.equal(noCode.code, 1);
+  assert.equal(noCode.json?.['code'], 'reauth_required');
+  const resumed = await runApproveCli(['delegation', 'resume', '--totp-stdin'], { socket, actor: OWNER, stdin: `${env.code(OWNER)}\n` });
+  assert.equal(resumed.json?.['state'], 'resumed', resumed.stderr);
+  const revoked = await runApproveCli(['delegation', 'revoke', 'routine-mail'], { socket, actor: OWNER });
+  assert.deepEqual(revoked.json?.['mandate_ids'], ['routine-mail']);
+  assert.equal((await runApproveCli(['delegation', 'frobnicate'], { socket, actor: OWNER })).code, 2);
+  assert.equal((await runApproveCli(['delegation', 'pause'], { socket, actor: AGENT })).json?.['code'], 'not_human');
+
+  const shaped = await sendApprovalRequest(socket, { cmd: 'delegate_decide', actor: DELEGATE, task_id: 'x', hash: 'a'.repeat(64), verdict: 'approve', reason: 'x' }) as { ok: boolean; code: string };
+  assert.deepEqual([shaped.ok, shaped.code], [false, 'bad_request']);
+  const asHuman = await sendApprovalRequest(socket, { cmd: 'delegate_decide', actor: OWNER, task_id: 'x', hash: 'a'.repeat(64), verdict: 'approve', reason: 'x' }) as { code: string };
+  assert.equal(asHuman.code, 'bad_request', 'not a socket command even for a person');
 });

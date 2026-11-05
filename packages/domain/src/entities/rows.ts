@@ -127,6 +127,19 @@ export type CostEntryRow = {
 export type ApprovalRow = {
   id: string; subject_kind: ApprovalSubjectKind; subject_id: string; decision: ApprovalDecision;
   subject_hash: string | null; decided_by: string; comment: string | null; at: Iso;
+  /** 위임 승인(ADR-0016)일 때만. 사람 행과 옛 행은 null */
+  mandate_id: string | null; via: 'cli' | 'web' | 'delegate' | null;
+}
+
+/** 위임 검토 기록 (ADR-0016, append-only) */
+export type DelegateReviewRow = {
+  id: number; task_id: string; subject_hash: string; mandate_id: string; verdict: 'approve' | 'request_changes' | 'escalate';
+  reason: string; outcome: string; cost_usd: number; at: Iso;
+}
+
+/** 위임 정지·해제·철회 (ADR-0016, append-only). mandate_id null = 모든 위임 */
+export type DelegationControlRow = {
+  id: number; action: 'pause' | 'resume' | 'revoke'; mandate_id: string | null; actor_id: string; reason: string; at: Iso;
 }
 
 export type HumanReauthRow = {

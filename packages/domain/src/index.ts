@@ -76,7 +76,7 @@ export type {
   TaskValidationRequest, TaskValidationVerdict, TaskValidator,
 } from './ports/task-validator.ts';
 export {
-  currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
+  APPROVAL_DELEGATE, currentPolicyVersionId, DEFAULT_OWNER_NAME, ensureApprovalDelegate, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
   taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,
 } from './seed.ts';
 // 외부 대화 계층(ADR-0014 §0): 채널 중립 발화 기록·구조화 결과, 그리고 첫 채널인 전화(canonical 모델·검증·통화 저장·이벤트 적용·인바운드 라우팅).

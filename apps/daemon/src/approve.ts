@@ -10,6 +10,10 @@
 //     reject  <task|publication|policy_version|strategy> <id> [--comment 글]
 //     request-changes task <id> --comment <사유>   (ADR-0015 초안 승인 업무: 제안된 초안을 버리고 에이전트가 다시 쓰게 한다. 사유 필수, 1~500자.
 //             `show task <id>` 는 제안된 초안의 받는 사람·본문·payload_hash 를 보여 준다(비밀 모양은 가린다). 같은 해시(`hash`)로 approve 하면 그 초안 묶음 그대로 나간다)
+//             (cancel·reject·release·request-changes 는 `--expected-hash <show 가 보여 준 해시>` 를 줄 수 있다: 그 사이 내용이 바뀌었으면 데몬이 거부한다)
+//     delegation status | pause [<위임 id>] | resume [<위임 id>] [--totp-stdin] | revoke [<위임 id>]   [--comment 글]
+//             (ADR-0016 제안, 결정 위임. status: 위임 상태·오늘 쓴 한도. pause: 위임(생략하면 전체)을 멈춘다 — TOTP 없음. resume: 해제 — TOTP 필요(표준 입력 한 줄).
+//              revoke: 철회 — 되돌릴 수 없다(생략하면 지금 정책의 모든 위임). 위임 자체는 정책 파일의 `delegation` 섹션으로만 정하고 `approve policy` 로 배포한다)
 //     totp-enroll [--totp-dir DIR]   (이 기기에서 실행. 비밀을 instance/totp/<actor> 에 0600 으로 만들고 등록 URI 를 한 번 보여 준다)
 //     promote strategy <id> --comment 사유     (A6-U16. 결과가 pass 로 기록된 실험을 experiment → active 로 올린다. 사람만, 이전 active 는 retired. 사유 필수)
 //     reject  strategy <id> --comment 사유     (proposed 는 승인 엔진이, experiment 는 결과 채널이 처리한다: experiment → rejected. experiment 는 사유 필수)
@@ -44,6 +48,7 @@ import { maskSecrets, type JsonValue } from '@aot/agent-runtime';
 import { otpauthUri, sendApprovalRequest, TotpSecretStore } from '@aot/policy';
 
 const KINDS = ['task', 'publication', 'policy_version', 'strategy_version', 'org_proposal'] as const;
+const ENGINE_COMMANDS = ['whoami', 'list', 'show', 'approve', 'release', 'cancel', 'reject', 'request_changes', 'delegation'];
 const ORG_FLAGS = ['socket', 'actor', 'file', 'comment', 'type', 'role', 'unit'];
 const PRODUCT_FLAGS = ['socket', 'actor', 'name', 'repo', 'kind', 'stage', 'hash', 'comment'];
 const KIND_ALIASES: Readonly<Record<string, string>> = { policy: 'policy_version', strategy: 'strategy_version', org: 'org_proposal' };
@@ -124,6 +129,8 @@ async function main(): Promise<void> {
     if (!id) fail('an id is required');
   };
   const comment = flag('comment');
+  const expected = flag('expected-hash');
+  const expectedHash = expected === undefined ? {} : { expected_hash: expected };
 
   let request: Record<string, unknown>;
   switch (cmd) {
@@ -292,24 +299,37 @@ async function main(): Promise<void> {
       break;
     case 'release':
       needKind();
-      request = { cmd, actor, kind, id, ...(flags.get('totp-stdin') === true ? { totp: await readStdinLine() } : {}) };
+      request = { cmd, actor, kind, id, ...(flags.get('totp-stdin') === true ? { totp: await readStdinLine() } : {}), ...expectedHash };
       break;
     case 'cancel':
     case 'reject':
       needKind();
-      request = { cmd, actor, kind, id, ...(comment ? { comment } : {}) };
+      request = { cmd, actor, kind, id, ...(comment ? { comment } : {}), ...expectedHash };
       break;
     case 'request-changes':
       if (kind !== 'task' || !id) fail('usage: request-changes task <id> --comment <reason>');
-      request = { cmd: 'request_changes', actor, kind, id, comment: comment ?? fail('request-changes needs --comment <reason>') };
+      request = { cmd: 'request_changes', actor, kind, id, comment: comment ?? fail('request-changes needs --comment <reason>'), ...expectedHash };
       break;
+    case 'delegation': {
+      const op = kindArg ?? fail('delegation needs an operation: status|pause|resume|revoke');
+      if (!['status', 'pause', 'resume', 'revoke'].includes(op) || positional[3] !== undefined || (op === 'status' && id !== undefined)) {
+        fail('usage: delegation status | pause [<mandate id>] | resume [<mandate id>] [--totp-stdin] | revoke [<mandate id>]');
+      }
+      request = {
+        cmd, actor, op, ...(id === undefined ? {} : { mandate_id: id }), ...(comment ? { comment } : {}),
+        ...(op === 'resume' && flags.get('totp-stdin') === true ? { totp: await readStdinLine() } : {}),
+      };
+      break;
+    }
     case 'promote':
       needKind();
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|request-changes|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|request-changes|delegation|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
   }
+  // 결정 경로를 감사용으로 남긴다 (자기 신고 값). 승인 엔진이 처리하는 명령에만 싣는다 — 다른 채널(상품·조직·측정 등)은 모르는 필드를 거부한다
+  if (ENGINE_COMMANDS.includes(String(request['cmd']))) request = { ...request, via: 'cli' };
   const response = await sendApprovalRequest(socket, request) as { ok: boolean };
   process.stdout.write(`${JSON.stringify(cmd === 'show' ? maskDraftPayloads(response) : response)}\n`);
   process.exitCode = response.ok ? 0 : 1;

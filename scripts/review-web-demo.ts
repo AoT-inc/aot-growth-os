@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 import {
-  applyMigrations, canonicalJson, createOrgProposal, EXPERIMENT_RESULT_EVENT, experimentEventId, experimentResultKey, FakeClock, openDb, recordExperimentReview, seedPhaseA, SEED_IDS, sha256Hex, transitionOrgProposal,
+  applyMigrations, canonicalJson, createOrgProposal, ensureApprovalDelegate, EXPERIMENT_RESULT_EVENT, experimentEventId, experimentResultKey, FakeClock, openDb, recordExperimentReview, seedPhaseA, SEED_IDS, sha256Hex, transitionOrgProposal,
   type TaskPolicyGate,
 } from '@aot/domain';
-import { PolicyStore } from '@aot/policy';
+import { maskSecrets, type JsonValue } from '@aot/agent-runtime';
+import { ApprovalEngine, PolicyStore, TotpSecretStore } from '@aot/policy';
 import { createTask, effectKeyOf } from '@aot/task-engine';
 
 import { draftProposalFromSignal } from '../apps/daemon/src/org-channel.ts';
@@ -33,6 +34,8 @@ export interface DemoResult {
   nowIso: string;
   ids: {
     orgNormal: string; orgRisky: string; orgTrial: string; orgPass: string; orgInconclusive: string;
+    /** AI가 대신 승인한 일: 아직 나가지 않은 것(취소 가능)과 이미 나간 것 */
+    delegated: { waiting: string; sent: string };
     task: string; publication: string; strategy: string; productSlug: string; effect: string; policy: string; plainTask: string; experiments: { promote: string; needs: string; wait: string };
     evidence: { text: string; injected: string; png: string; svg: string; mismatch: string; outside: string; url: string };
   };
@@ -278,9 +281,60 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
       tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [plainTask, 'queued', 'needs_review', '정책이 사람 확인을 요구했다', 'system:policy', clock.nowIso()]);
     });
 
+    // 결정 위임 (ADR-0016): 사람이 정책으로 맡겨 둔 범위 안의 안내 메일을 AI(approval-delegate)가 대신 승인했다. 하나는 아직 나가지 않았고(취소할 수 있다), 하나는 이미 나갔다.
+    // 이 일들은 "결정할 일"에 올라오지 않고 홈의 "AI가 처리함" 요약에만 보인다. 위의 사람 결정 거리(고객 메일 초안·조직 제안·게시·실험 …)는 그대로 남는다.
+    const baseText = readFileSync(fileURLToPath(new URL('../policies/default.yaml', import.meta.url)), 'utf8');
+    const delegationText = `${baseText.trimEnd()}\n\ndelegation:\n  mandates:\n    - id: routine-notice\n      holder: approval-delegate\n      subjects: [task]\n      match:\n        actions: ['notify-tool.send']\n        targets: ['mailbox:*']\n        scopes: [customer]\n      limits:\n        max_per_day: 5\n        max_drafts_per_task: 1\n        max_recipients_per_draft: 1\n        max_payload_bytes: 20000\n        max_task_usd: 2\n        max_rewrites_per_task: 1\n        max_review_usd_per_day: 1\n      cooldown: 1h\n      guidance: '정기 안내 메일만. 가격·계약·사과 문구가 있으면 넘긴다'\n      expires: ${new Date(nowMs + 60 * DAY).toISOString().slice(0, 10)}\n`;
+    const demoStore = new PolicyStore({ dir: join(dir, 'policies') });
+    const deployed = demoStore.archive(delegationText);
+    db.writeTx((tx) => {
+      ensureApprovalDelegate(tx, clock);
+      tx.run("INSERT INTO policy_version (id, content_hash, change_class, approved_by, deployed_at, rollback_of) VALUES (?, ?, 'risky', ?, ?, NULL)", [deployed.versionId, deployed.hash, JSON.stringify([SEED_IDS.owner]), clock.nowIso()]);
+    });
+    const delegatedTask = (objective: string, ref: string): string => {
+      const id = createTask(db, { clock, gate: ALLOW }, {
+        spec: draft('manual', {
+          trigger: { kind: 'manual', ref }, role: 'generalist', objective,
+          allowed_tools: [
+            { tool: 'web_search', operations: ['search'], scope: 'internal', impact: 'read' },
+            { tool: 'notify-tool', operations: ['send'], scope: 'customer', impact: 'external_effect', target: 'mailbox:example' },
+          ],
+        }),
+      }).taskId;
+      db.writeTx((tx) => {
+        tx.run("UPDATE task SET status = 'needs_review' WHERE id = ?", [id]);
+        tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [id, 'queued', 'needs_review', '고객 대상 외부 효과는 사람 승인이 필요하다', 'system:policy', clock.nowIso()]);
+      });
+      return id;
+    };
+    const demoEngine = new ApprovalEngine({ db, clock, store: demoStore, totp: new TotpSecretStore(join(dir, 'totp-unused')), maskPayload: (payload) => maskSecrets(payload as JsonValue) });
+    const delegatedApproval = (taskIdOf: string, atMs: number, why: string): void => {
+      const shown = demoEngine.handle({ cmd: 'show', actor: SEED_IDS.owner, kind: 'task', id: taskIdOf }) as unknown as { hash: string; subject: unknown };
+      const at = new Date(atMs).toISOString();
+      db.writeTx((tx) => {
+        tx.run(
+          "INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at, mandate_id, via) VALUES (?, 'task', ?, 'approved', ?, 'approval-delegate', ?, ?, 'routine-notice', 'delegate')",
+          [`approval-demo-${taskIdOf}`, taskIdOf, shown.hash, why, at],
+        );
+        tx.run('UPDATE task SET approval_id = ?, approved_snapshot = ?, approved_hash = ?, updated_at = ? WHERE id = ?', [`approval-demo-${taskIdOf}`, JSON.stringify(shown.subject), shown.hash, at, taskIdOf]);
+      });
+    };
+    clock.set(nowMs - 40 * 60_000);
+    const delegatedWaiting = delegatedTask('정기 점검 일정 안내 메일 발송', 'actor:example-owner-delegated-1');
+    addDraft(delegatedWaiting, 'run-demo-delegated-1', 1, { to: ['kang.hana@example.com'], subject: '정기 점검 일정 안내', text: '다음 주 수요일 새벽에 정기 점검이 있습니다. 그 시간에는 서비스를 잠시 쓸 수 없습니다.' }, { expiresInMs: 47 * HOUR });
+    delegatedApproval(delegatedWaiting, nowMs - 10 * 60_000, '정기 안내 메일이고 가격·계약 언급이 없어 기준 안이라고 판단했습니다');
+    clock.set(nowMs - 5 * HOUR);
+    const delegatedSent = delegatedTask('이용 약관 개정 안내 메일 발송', 'actor:example-owner-delegated-2');
+    delegatedApproval(delegatedSent, nowMs - 4 * HOUR, '약관 개정 일정만 알리는 정기 안내라서 기준 안이라고 판단했습니다');
+    db.writeTx((tx) => {
+      tx.run("UPDATE task SET status = 'completed', updated_at = ? WHERE id = ?", [new Date(nowMs - 3 * HOUR).toISOString(), delegatedSent]);
+      tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [delegatedSent, 'needs_review', 'completed', '위임 cooldown 뒤 전송 완료', 'system:policy', new Date(nowMs - 3 * HOUR).toISOString()]);
+    });
+    clock.set(nowMs - DAY);
+
     // 정책 변경 제안 1건: 한도를 올린 새 정책안을 보관소에 두고 승인 기록만 남긴다 (배포 대기)
-    const policyText = readFileSync(fileURLToPath(new URL('../policies/default.yaml', import.meta.url)), 'utf8').replace('max_usd_per_task: 5', 'max_usd_per_task: 8');
-    const archived = new PolicyStore({ dir: join(dir, 'policies') }).archive(policyText);
+    const policyText = delegationText.replace('max_usd_per_task: 5', 'max_usd_per_task: 8');
+    const archived = demoStore.archive(policyText);
     const policyProposal = 'policy-demo-2';
     db.writeTx((tx) => tx.run("INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at) VALUES ('approval-policy-demo', 'policy_version', ?, 'approved', ?, ?, NULL, ?)", [policyProposal, archived.hash, SEED_IDS.owner, clock.nowIso()]));
 
@@ -365,7 +419,7 @@ export function seedDemo(options: { dir: string; nowMs?: number; empty?: boolean
     clock.set(nowMs);
     return {
       dbPath, dir, evidenceDir, outsideDir, nowIso: clock.nowIso(),
-      ids: { orgNormal, orgRisky, orgTrial, orgPass, orgInconclusive, task: taskId, publication: 'publication-demo-1', strategy: 'strategy-demo-1', productSlug: slug, effect, policy: policyProposal, plainTask, experiments: strategies, evidence },
+      ids: { orgNormal, orgRisky, orgTrial, orgPass, orgInconclusive, delegated: { waiting: delegatedWaiting, sent: delegatedSent }, task: taskId, publication: 'publication-demo-1', strategy: 'strategy-demo-1', productSlug: slug, effect, policy: policyProposal, plainTask, experiments: strategies, evidence },
     };
   } finally {
     db.close();

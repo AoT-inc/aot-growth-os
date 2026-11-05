@@ -65,7 +65,7 @@ const hidden = (name: string, value: string): Raw => raw(`<input type="hidden" n
 
 export const REASON_MAX_CHARS = 500;
 
-function buttonForm(ctx: ReviewContext, key: string, button: Button): Raw {
+export function buttonForm(ctx: ReviewContext, key: string, button: Button): Raw {
   const { issued, nonce } = ctx.forms.issue(button.verb, key, fingerprint(button), ctx.clock.nowMs());
   const reasonField = button.reason === 'none' ? h`` : button.reason === 'optional'
     ? h`<details class="why"><summary>${button.reasonLabel ?? '이유 남기기 (선택)'}</summary><textarea name="reason" rows="3" maxlength="${String(REASON_MAX_CHARS)}" aria-label="${button.reasonLabel ?? '이유 (선택)'}"></textarea></details>`

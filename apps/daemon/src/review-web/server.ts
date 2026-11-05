@@ -15,7 +15,7 @@ import { readEvidence } from './evidence-file.ts';
 import { h, page, type Raw } from './html.ts';
 import { FormGuard } from './nonce.ts';
 import {
-  approvalDetail, batchDetail, effectsDetail, evidenceDetail, evidenceList, experimentDetail, homePage, productDetail, signalDetail, trialDetail, watchPage, type Rendered,
+  approvalDetail, batchDetail, delegatedPage, effectsDetail, evidenceDetail, evidenceList, experimentDetail, homePage, productDetail, signalDetail, trialDetail, watchPage, type Rendered,
 } from './pages.ts';
 
 export const LOOPBACK_HOST = '127.0.0.1';
@@ -66,6 +66,7 @@ function route(ctx: ReviewContext, segments: string[], query: URLSearchParams): 
   if (first === undefined) return out(homePage(ctx));
   if (segments.length === 1) {
     if (first === 'watch') return out(watchPage(ctx));
+    if (first === 'delegated') return out(delegatedPage(ctx));
     if (first === 'effects') return out(effectsDetail(ctx));
     if (first === 'evidence') return out(evidenceList(ctx, query.get('task')));
   }

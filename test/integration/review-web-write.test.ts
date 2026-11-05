@@ -347,8 +347,9 @@ test('failures are said in plain Korean from the engine code; an unknown code or
     if (next !== undefined) assert.ok(text.includes(next), `${code} → ${next}`);
     assert.ok(text.includes('engine words here'), 'the engine text is kept, inside the folded details');
   }
-  // 코드가 없으면 (옛 엔진) 영어 문장 패턴으로 짐작하고, 짐작되지 않으면 그 밖
-  assert.ok((await say({ ok: false, error: 'the task changed since it was shown (subject hash mismatch); show it again before approving' })).includes('그 사이 내용이 바뀌었습니다'));
+  // 코드가 없으면 영어 문장을 짐작하지 않는다: 어떤 문장이든 같은 한 줄
+  const noCode = await say({ ok: false, error: 'the task changed since it was shown (subject hash mismatch); show it again before approving' });
+  assert.ok(noCode.includes('처리하지 못했습니다.') && !noCode.includes('그 사이 내용이 바뀌었습니다'));
   assert.ok((await say({ ok: false, error: 'something nobody has seen' })).includes('처리하지 못했습니다.'));
   assert.ok((await say({ nonsense: true })).length > 0, 'a response without ok is treated as no answer');
   // 첫 화면(제목과 다음 할 일)에는 영어 엔진 문장이 없고 자세히 안에만 있다

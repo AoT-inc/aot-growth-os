@@ -604,3 +604,23 @@ test('the batch detail shows every mail above the decision box, and asks what th
   const page = await allExpired.get(/href="(\/batch\/[^"]*)"/.exec((await allExpired.get('/')).text)![1]!);
   assert.ok(!verbsOf(page.text).includes('approve') && page.text.includes('기한 지남'));
 });
+
+test('delegated items are not decisions: the home lists them only in the "AI가 처리함" digest (read-only screen: no buttons), and /delegated shows the reason and when', async (t) => {
+  const rig = await startRig(t);
+  const home = (await rig.get('/')).text;
+  const flat = textOf(home);
+  assert.match(flat, /AI가 처리함/);
+  assert.match(flat, /AI가 지난 24시간에 2건 처리함\. 1건은 아직 나가지 않았고 취소할 수 있습니다/);
+  assert.match(flat, /50분 뒤 나감/);
+  assert.match(flat, /AI의 판단: 정기 안내 메일이고 가격·계약 언급이 없어/);
+  assert.ok(!home.includes('<form'), 'a read-only screen offers no buttons');
+  const { waiting, sent } = rig.demo.ids.delegated;
+  for (const id of [waiting, sent]) assert.ok(!home.includes(`href="/approvals/task/${id}"`), 'a delegated task is not a decision card');
+  assert.match(flat, /결정할 일 \d+건|바깥에 나가는 일 \d+건/, 'the decisions that need a person are still there');
+  const page = textOf((await rig.get('/delegated')).text);
+  assert.match(page, /이용 약관 개정 안내 메일 발송|메일 1통 '정기 점검 일정 안내'/);
+  assert.match(page, /나가기 전/);
+  assert.match(page, /오늘 나감/);
+  assert.ok(!/[0-9a-f]{32}|20\d\d-\d\d-\d\dT/.test(page), 'no ids, hashes or ISO times');
+  assert.match(textOf((await rig.get(`/approvals/task/${waiting}`)).text), /AI가 처리한 일입니다/);
+});

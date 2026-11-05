@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { fingerprint, type Button } from '../../apps/daemon/src/review-web/actions.ts';
-import { inferCode } from '../../apps/daemon/src/review-web/decide.ts';
+import { failureOf } from '../../apps/daemon/src/review-web/decide.ts';
 import { FormGuard, NONCE_TTL_MS } from '../../apps/daemon/src/review-web/nonce.ts';
 import { originAllowed } from '../../apps/daemon/src/review-web/server.ts';
 import { RateLimiter, ResultStore, RESULT_TTL_MS } from '../../apps/daemon/src/review-web/write-state.ts';
@@ -74,23 +74,20 @@ test('fingerprint changes with the button, the requests, the hashes and the OTP 
   assert.match(fingerprint(base), /^[0-9a-f]{64}$/);
 });
 
-test('inferCode guesses a reason code from the engine sentence only as a fallback', () => {
-  const cases: [string, string | undefined][] = [
-    ['the task changed since it was shown (subject hash mismatch); show it again before approving', 'hash_mismatch'],
-    ['the task or the policy changed since approval (approved_hash mismatch); re-approval required', 'hash_mismatch'],
-    ['1 draft(s) already left the ledger (d: sent); rejecting would let a rewritten draft send the same content again.', 'send_started'],
-    ["2 of 3 drafts would show masked values (d1: to)", 'masked'],
-    ['draft expired (1 of 2 past expires_at)', 'expired'],
-    ['the current policy denies this task (x)', 'policy_denied'],
-    ['the requester cannot approve their own task (self-approval is allowed only when risky_change.min_approvers is 1)', 'self_approval'],
-    ['a TOTP code is required to release this risky change', 'reauth_required'],
-    ['the TOTP code is not valid', 'reauth_failed'],
-    ['too many wrong TOTP codes; try again later', 'reauth_locked'],
-    ["only human actors can use the approval channel; 'a' is 'agent'", 'not_human'],
-    ["task 't' is 'completed'; approvals apply to tasks in needs_review", 'wrong_state'],
-    ["task 't' does not exist", 'wrong_state'],
-    ['something else entirely', undefined],
-  ];
-  for (const [sentence, code] of cases) assert.equal(inferCode(sentence), code, sentence);
-  assert.equal(inferCode(undefined), undefined);
+test('the failure text comes from the engine code only: every contract code has one Korean conclusion and a next step, and English engine text never becomes the headline', () => {
+  const codes = ['hash_mismatch', 'wrong_state', 'send_started', 'masked', 'expired', 'policy_denied', 'self_approval', 'cooldown', 'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request'];
+  for (const code of codes) {
+    const failure = failureOf({ label: '업무', outcome: 'refused', code, error: 'the task changed since it was shown (expected_hash mismatch)' });
+    assert.match(failure.headline, /[가-힣]/, code);
+    assert.ok(!/[A-Za-z]{4,}/.test(failure.headline) || /OTP/.test(failure.headline), `${code}: ${failure.headline}`);
+    assert.ok(failure.next.length >= 1, code);
+  }
+  // 코드가 없거나 모르는 코드: 한 줄 결론 + 다음 단계 (영어 문장을 짐작해 코드로 바꾸지 않는다)
+  for (const code of [undefined, 'strategy_not_experiment']) {
+    const failure = failureOf({ label: '업무', outcome: 'refused', code, error: 'the task changed since it was shown (subject hash mismatch)' });
+    assert.equal(failure.headline, '처리하지 못했습니다.');
+    assert.deepEqual(failure.next, ['fresh']);
+  }
+  assert.match(failureOf({ label: 'x', outcome: 'unreachable' }).headline, /데몬이 꺼져/);
+  assert.match(failureOf({ label: 'x', outcome: 'unknown' }).headline, /확인하지 못했습니다/);
 });

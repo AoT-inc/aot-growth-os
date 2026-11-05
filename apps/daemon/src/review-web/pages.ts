@@ -9,6 +9,7 @@ import {
 import { MAX_TEXT_CHARS, readEvidence } from './evidence-file.ts';
 import { ago, clip } from './format.ts';
 import { renderActions } from './actions.ts';
+import { delegatedItems, delegatedPage as delegatedView, homeDigest } from './delegation.ts';
 import { historyList } from './history.ts';
 import { back, badge, badgeRow, details, facts, full, h, kv, link, type Raw } from './html.ts';
 
@@ -47,9 +48,11 @@ export function homePage(ctx: ReviewContext): Rendered {
     title: decisions.length === 0 ? '지금 결정할 일이 없습니다' : `결정할 일 ${decisions.length}건`, status: 200,
     body: h`${problem === null ? '' : h`<p class="card">${problem}</p>`}${decisions.length === 0 ? '' : h`<p class="summary">${summaryLine(decisions)}</p>`}
       ${first.length === 0 ? '' : h`<h2 class="grp">먼저</h2><p class="mute">바깥에 나가거나, 업무를 막고 있거나, 곧 만료되는 일</p>${first.map(card)}`}
-      ${week.length === 0 ? '' : h`<h2 class="grp">이번 주 안에</h2>${week.map(card)}`}${watchSection(ctx, 5)}`,
+      ${week.length === 0 ? '' : h`<h2 class="grp">이번 주 안에</h2>${week.map(card)}`}${homeDigest(ctx)}${watchSection(ctx, 5)}`,
   };
 }
+
+export const delegatedPage = (ctx: ReviewContext): Rendered => delegatedView(ctx);
 
 export function watchPage(ctx: ReviewContext): Rendered {
   const lines = watchLines(ctx);
@@ -64,7 +67,7 @@ export function decisionPage(ctx: ReviewContext, d: Decision): Rendered {
   };
 }
 
-const notFound = (what: string): Rendered => ({ title: '찾을 수 없습니다', status: 404, body: h`${back('/', '결정할 일')}<p class="card">${what}</p>` });
+const notFound = (what: string | Raw): Rendered => ({ title: '찾을 수 없습니다', status: 404, body: h`${back('/', '결정할 일')}<p class="card">${what}</p>` });
 const found = (ctx: ReviewContext, d: Decision | null | undefined, what = '해당 결정이 없거나 이미 처리됐습니다.'): Rendered => (d === null || d === undefined ? notFound(what) : decisionPage(ctx, d));
 
 export function approvalDetail(ctx: ReviewContext, kind: string, id: string): Rendered {
@@ -75,6 +78,7 @@ export function approvalDetail(ctx: ReviewContext, kind: string, id: string): Re
     }
     case 'task': {
       const group = taskGroupsOf(ctx).flat().find((i) => i.id === id);
+      if (group === undefined && delegatedItems(ctx).some((item) => item.taskId === id && item.state !== 'back')) return notFound(h`AI가 처리한 일입니다. ${link(['delegated'], '“AI가 처리함”에서 보세요')}.`);
       return found(ctx, group === undefined ? null : taskDecision(ctx, group));
     }
     case 'publication': return found(ctx, publicationDecision(ctx, id));

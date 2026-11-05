@@ -56,8 +56,8 @@ export function delegationPolicyText(mandates: readonly MandateOptions[] = [{}],
 }
 
 /** 위임 보유자 행위자를 만든 정책 환경. `policy` 가 주어지면(기본: 위임 하나) 승인 절차 없이 배포한다 */
-export function delegationEnv(t: TestContext, mandates: readonly MandateOptions[] = [{}]): PolicyEnv {
-  const env = policyEnv(t);
+export function delegationEnv(t: TestContext, mandates: readonly MandateOptions[] = [{}], options: { file?: boolean } = {}): PolicyEnv {
+  const env = policyEnv(t, options);
   env.db.writeTx((tx) => ensureApprovalDelegate(tx, env.clock));
   env.db.writeTx((tx) => {
     const parsed = env.store.archive(delegationPolicyText(mandates));

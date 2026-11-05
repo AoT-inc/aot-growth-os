@@ -1,7 +1,7 @@
 // 화면에서 결정 보내기 (설계 §2.3·§2.4): POST /decide 의 본체와 결과 화면(PRG).
 // 이 파일은 DB 에 쓰지 않는다. 폼이 가진 것은 (결정 키, 버튼 이름, 본 내용의 지문, 발급 시각, nonce) 뿐이고, 무엇을 보낼지는 서버가 DB 에서 같은 결정을 다시 만들어 정한다.
 // 지문이 폼을 만들 때와 다르면(그 사이 내용이 바뀜) 보내지 않는다. 보낼 때는 승인 CLI 와 같은 소켓으로 `expected_hash`·`via:'web'` 를 싣는다(엔진 쪽은 트랙 B).
-// 엔진 응답의 `code` 로 실패 문구를 정한다. 코드가 없는 옛 엔진을 위해 영어 문장 패턴 매핑을 임시로 둔다(`inferCode` — 트랙 C 가 엔진 코드가 들어온 뒤 지운다).
+// 엔진 응답의 `code` 로만 실패 문구를 정한다. 코드가 없거나 모르는 코드면 "처리하지 못했습니다" 한 줄(영어 원문은 자세히에만 보인다).
 import { fingerprint, REASON_MAX_CHARS, type Button, type Step } from './actions.ts';
 import type { ReviewContext } from './context.ts';
 import { resolveDecision } from './decisions.ts';
@@ -19,7 +19,7 @@ export interface DecideReply {
 const text = (status: number, message: string): DecideReply => ({ status, message });
 
 /** 엔진이 `expected_hash` 를 대조하는 명령 (트랙 B 계약 §5). approve 는 hash 로 이미 대조한다 */
-const EXPECTS_HASH = new Set(['reject', 'cancel', 'request_changes', 'release']);
+const EXPECTS_HASH = new Set(['reject', 'cancel', 'request_changes', 'release', 'promote']);
 
 const FIELD_MAX = { key: 300, verb: 40, hash: 64, issued: 16, nonce: 64, reason: 4_000, totp: 32 } as const;
 
@@ -30,29 +30,9 @@ function field(form: URLSearchParams, name: keyof typeof FIELD_MAX): string | nu
   return value.length > FIELD_MAX[name] ? null : value;
 }
 
-/** 엔진 영어 원문에서 사유 코드를 짐작한다. 임시: 엔진이 `code` 를 주면 쓰이지 않는다 */
-export function inferCode(error: string | undefined): string | undefined {
-  if (error === undefined) return undefined;
-  const rules: [RegExp, string][] = [
-    [/hash mismatch|changed since (it was shown|approval)/i, 'hash_mismatch'],
-    [/already left the ledger/i, 'send_started'],
-    [/masked values/i, 'masked'],
-    [/draft expired/i, 'expired'],
-    [/policy denies/i, 'policy_denied'],
-    [/cannot approve their own/i, 'self_approval'],
-    [/a TOTP code is required/i, 'reauth_required'],
-    [/too many wrong TOTP/i, 'reauth_locked'],
-    [/TOTP code is not valid|already used/i, 'reauth_failed'],
-    [/only human actors|unknown actor/i, 'not_human'],
-    [/cooldown/i, 'cooldown'],
-    [/does not exist|no longer in needs_review|is '[^']*'; |nothing is waiting|no approval to release|already deployed|already the deployed/i, 'wrong_state'],
-  ];
-  return rules.find(([pattern]) => pattern.test(error))?.[1];
-}
-
 // ----- 실패 문구 (설계 §2.4) -----
 type Next = 'fresh' | 'home' | 'effects' | 'again' | 'status';
-interface Failure {
+export interface Failure {
   headline: string;
   /** 묶음 요약에 붙는 짧은 사유 */
   short: string;
@@ -72,6 +52,7 @@ const FAILURES: Readonly<Record<string, Failure>> = {
   reauth_failed: { headline: 'OTP 코드가 맞지 않습니다.', short: 'OTP 코드 틀림', next: ['again'] },
   reauth_locked: { headline: '잠시 뒤 다시 하세요(5분).', short: 'OTP 입력 잠김', next: ['again'] },
   not_human: { headline: '이 결정은 사람만 할 수 있습니다. 화면을 시작할 때 준 행위자가 사람인지 확인하세요.', short: '사람만 결정할 수 있음', next: ['home'] },
+  bad_request: { headline: '요청이 맞지 않아 처리하지 못했습니다.', short: '요청이 맞지 않음', next: ['fresh'] },
   stale_form: { headline: '이 화면이 오래돼서 결정을 보내지 않았습니다.', short: '화면이 오래됨', next: ['fresh'] },
   gone: { headline: '이미 다른 결정이 났거나 더 이상 결정할 일이 아닙니다.', short: '이미 처리됨', next: ['home'] },
 };
@@ -79,7 +60,7 @@ const OTHER: Failure = { headline: '처리하지 못했습니다.', short: '처�
 const UNREACHABLE: Failure = { headline: '데몬이 꺼져 있어 보내지 못했습니다. 아무것도 바뀌지 않았습니다.', short: '데몬이 꺼져 있음', next: ['again'] };
 const UNKNOWN: Failure = { headline: '결과를 확인하지 못했습니다.', short: '결과를 확인하지 못함', next: ['status'] };
 
-const failureOf = (step: StepResult): Failure => (step.outcome === 'unreachable' ? UNREACHABLE : step.outcome === 'unknown' ? UNKNOWN : FAILURES[step.code ?? ''] ?? OTHER);
+export const failureOf = (step: StepResult): Failure => (step.outcome === 'unreachable' ? UNREACHABLE : step.outcome === 'unknown' ? UNKNOWN : FAILURES[step.code ?? ''] ?? OTHER);
 
 // ----- POST 처리 -----
 const STOPPING = new Set(['reauth_failed', 'reauth_locked']);
@@ -112,7 +93,7 @@ async function sendSteps(ctx: ReviewContext, button: Button, reason: string, tot
       results.push({ label: step.label, outcome: 'done' });
       continue;
     }
-    const code = typeof response.code === 'string' ? response.code : inferCode(response.error);
+    const code = typeof response.code === 'string' ? response.code : undefined;
     results.push({ label: step.label, outcome: 'refused', code, error: typeof response.error === 'string' ? response.error : undefined });
     if (code !== undefined && STOPPING.has(code)) stopped = true; // 틀린 OTP 를 건마다 되풀이해 보내지 않는다
   }

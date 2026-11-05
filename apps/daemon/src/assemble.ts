@@ -230,7 +230,13 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   };
   const measure = measurementSignals.length === 0 ? null : createMeasurementHandler({ db: options.db, clock: options.clock, signals: measurementSignals });
   const resolveEffects = createEffectResolutionHandler({ db: options.db, clock: options.clock, reauth: (tx, actorId, code, purpose) => engine.reauthenticateInTx(tx, actorId, code, purpose) });
-  const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
+  const decide = createExperimentDecisionHandler({
+    db: options.db, clock: options.clock,
+    subjectHash: (actor, strategyVersionId) => {
+      const shown = engine.handle({ cmd: 'show', actor, kind: 'strategy_version', id: strategyVersionId });
+      return shown.ok && typeof shown['hash'] === 'string' ? shown['hash'] : null;
+    },
+  });
   const consent = createConsentHandler({ db: options.db, clock: options.clock });
   const org = createOrgChannel({ db: options.db, clock: options.clock });
   const productChannel = options.productChannel === undefined ? null : createProductChannel({

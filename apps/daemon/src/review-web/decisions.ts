@@ -19,6 +19,7 @@ import { addressDomain, ago, clip, commonAffixes, draftExpiry, eulReul, maskAddr
 import { renderActions, type Actions, type Blocked, type Button, type Step } from './actions.ts';
 import { full, h, kv, link, list, num, prettyJson, table, type Raw } from './html.ts';
 import { historyList, productLinks, subjectHistory, taskHistory } from './history.ts';
+import { controlActions, delegatedActions, handedBackReason, CONTROL_KEY, DELEGATED_KEY } from './delegation.ts';
 import { arr, json, metricsCharts, metricsOf, orgProposalSummary, rec, str, type Metrics } from './org-summary.ts';
 import { barChart } from './svg.ts';
 
@@ -258,11 +259,14 @@ const OUTSIDE = (kind: TaskInfo['kind']): boolean => kind !== 'plain';
 const draftClass = (info: TaskInfo): string => (info.drafts.length === 0 ? '' : `|drafts${isMasked(info) ? '-masked' : ''}${isSent(info) ? '-sent' : ''}`);
 const groupId = (info: TaskInfo): string => createHash('sha256').update(`${info.reason}|${info.kind}|${info.sig}${draftClass(info)}`).digest('hex').slice(0, 12);
 
+/** 엔진이 지금도 위임 승인을 유효로 세는 업무 (정지·철회·정책 변경이면 사람에게 돌아간다) */
+const isDelegated = (info: TaskInfo): boolean => typeof obj(info.shown?.['approval'])['mandate_id'] === 'string';
+
 export function taskGroups(ctx: ReviewContext): TaskInfo[][] {
   const groups = new Map<string, TaskInfo[]>();
   for (const task of pendingLists(ctx).lists.tasks) {
     const info = taskInfo(ctx, task.id);
-    if (info === null) continue;
+    if (info === null || isDelegated(info)) continue; // AI가 이미 처리한 일은 결정할 일이 아니다: "AI가 처리함" 요약에만 보인다
     const gid = groupId(info);
     groups.set(gid, [...(groups.get(gid) ?? []), info]);
   }
@@ -438,13 +442,14 @@ function draftDecision(ctx: ReviewContext, items: TaskInfo[], now: number): Deci
     revisable.length === 0 ? blockedPart('거절', SENT_HINT) : rejectPart(revisionSteps(), { label: rejectLabel }),
     revisable.length === 0 ? blockedPart('다시 쓰게', SENT_HINT) : changesPart(revisable.map((i) => changesStep(i.id, i.shown, stepLabel(i))), changesLabel));
   const waiting = waitingText(items, now);
+  const handedBack = single ? handedBackReason(ctx, first.id, false) : null;
   const mailsOnly = allDrafts(items).filter((d) => d.preview !== null).length;
   return {
     key: single ? `task:${first.id}` : `batch:${gid}`, category: 'outside', first: true,
     href: single ? `/approvals/task/${encodeURIComponent(first.id)}` : `/batch/${gid}`,
     question: approvable.length === 0 && revisable.length > 0 && items.some(isMasked) ? `'${clip(draftNoun(items), 24)}'에 가려진 값이 있어요. 다시 쓰게 할까요?`
       : approvable.length === 0 && revisable.length > 0 && items.some(isExpired) ? `기한이 지난 메일 ${mailsIn(items.filter(isExpired))}${unit} — 다시 쓰게 할까요?` : draftQuestion(items),
-    facts: [['무엇', items.some(hasUnsure) || (items.some(isSent) && allDrafts(items).every((d) => !isPending(d))) ? sentSummary(allDrafts(items), countWord(items)) : draftSummary(items.some(isSent) ? allDrafts(items).filter(isPending) : allDrafts(items))], ['확인할 것', DRAFT_CHECK], ['위험·기한', draftRisk(items, now)]],
+    facts: [['무엇', items.some(hasUnsure) || (items.some(isSent) && allDrafts(items).every((d) => !isPending(d))) ? sentSummary(allDrafts(items), countWord(items)) : draftSummary(items.some(isSent) ? allDrafts(items).filter(isPending) : allDrafts(items))], handedBack === null ? ['확인할 것', DRAFT_CHECK] : ['AI가 넘긴 이유', handedBack], ['위험·기한', draftRisk(items, now)]],
     ...(first.denied && single ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
     badges: draftBadges(items),
     body: single ? draftBody(first, now) : batchBody(items, now),
@@ -701,6 +706,8 @@ export function effectsDecision(ctx: ReviewContext): Decision | null {
 export function experimentDecisions(ctx: ReviewContext): Decision[] {
   const reviews = listExperimentReviews(ctx.db);
   const title = (id: string): string => ctx.db.get<{ title: string }>('SELECT title FROM strategy_version WHERE id = ?', [id])?.title ?? id;
+  // 엔진이 낡은 화면을 막도록 지금 해시를 싣는다 (실험 승격·거절도 expected_hash 를 대조한다)
+  const hashFor = (id: string): string | null => hashOf(shownOf(ctx, 'strategy_version', id));
   const out: Decision[] = [];
   for (const e of reviews.awaitingPromotion) {
     out.push({
@@ -709,8 +716,8 @@ export function experimentDecisions(ctx: ReviewContext): Decision[] {
       facts: [['무엇', '이 실험을 정식 전략으로 올립니다 (이전 정식 전략은 보관 처리)'], ['확인할 것', '실험 결과가 목표를 넘겼는지'], ['위험·기한', `실험 비용 $${num(e.totalCostUsd)} · 승격 뒤에도 되돌릴 수 있습니다`]],
       badge: { label: '검증 통과', tone: 'ok' }, urgency: ctx.clock.nowMs(),
       actions: actionsOf(undefined,
-        { buttons: [{ verb: 'promote', label: '정식 전략으로 올리기', tone: 'yes', steps: [{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'promote', kind: 'strategy_version', id: e.strategyVersionId }, hash: null }], reason: 'required', reasonLabel: '올리는 이유 (필수)', done: '정식 전략으로 올렸습니다.' }] },
-        rejectPart([{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'reject', kind: 'strategy_version', id: e.strategyVersionId }, hash: null }], { label: '올리지 않기', reason: 'required', reasonLabel: '올리지 않는 이유 (필수)', done: '정식 전략으로 올리지 않았습니다.' })),
+        { buttons: [{ verb: 'promote', label: '정식 전략으로 올리기', tone: 'yes', steps: [{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'promote', kind: 'strategy_version', id: e.strategyVersionId }, hash: hashFor(e.strategyVersionId) }], reason: 'required', reasonLabel: '올리는 이유 (필수)', done: '정식 전략으로 올렸습니다.' }] },
+        rejectPart([{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'reject', kind: 'strategy_version', id: e.strategyVersionId }, hash: hashFor(e.strategyVersionId) }], { label: '올리지 않기', reason: 'required', reasonLabel: '올리지 않는 이유 (필수)', done: '정식 전략으로 올리지 않았습니다.' })),
       history: subjectHistory(ctx, 'strategy_version', e.strategyVersionId),
       details: kv([['실험 비용(USD)', num(e.totalCostUsd)], ['평가 id', e.evaluationId], ['전략 id', e.strategyVersionId]]),
     });
@@ -721,7 +728,7 @@ export function experimentDecisions(ctx: ReviewContext): Decision[] {
       question: `'${clip(title(e.strategyVersionId))}' 실험 결과를 판정하지 못했습니다. 이 실험을 끝낼까요?`,
       facts: [['무엇', '이 실험을 끝냅니다 (결과 기록은 남기지 않음)'], ['확인할 것', '증거가 부족해 결과를 가릴 수 없다는 판단에 동의하는지'], ['위험·기한', '끝내면 같은 실험을 다시 승인받아야 합니다']],
       badge: { label: '판정 보류', tone: 'warn' }, urgency: ctx.clock.nowMs() + DAY,
-      actions: actionsOf(undefined, rejectPart([{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'reject', kind: 'strategy_version', id: e.strategyVersionId }, hash: null }], { label: '실험 끝내기', reason: 'required', reasonLabel: '끝내는 이유 (필수)', note: '그대로 두면 계속 대기합니다', done: '실험을 끝냈습니다.' })),
+      actions: actionsOf(undefined, rejectPart([{ label: `'${clip(title(e.strategyVersionId), 24)}'`, request: { cmd: 'reject', kind: 'strategy_version', id: e.strategyVersionId }, hash: hashFor(e.strategyVersionId) }], { label: '실험 끝내기', reason: 'required', reasonLabel: '끝내는 이유 (필수)', note: '그대로 두면 계속 대기합니다', done: '실험을 끝냈습니다.' })),
       history: subjectHistory(ctx, 'strategy_version', e.strategyVersionId),
       details: kv([['엔진 원문', e.reason], ['검토 업무', e.reviewTaskId], ['전략 id', e.strategyVersionId]]),
     });
@@ -903,7 +910,9 @@ export function watchLines(ctx: ReviewContext): { text: string; href?: string }[
 }
 
 /** 결정 키(`task:<id>`·`batch:<묶음>`·`org:<id>` …)로 지금의 결정을 DB 에서 다시 만든다. 폼 전송 때 서버가 "무엇을 보낼지"를 정하는 유일한 길이다 */
-export function resolveDecision(ctx: ReviewContext, key: string): Decision | undefined {
+export function resolveDecision(ctx: ReviewContext, key: string): Pick<Decision, 'actions' | 'href'> | undefined {
+  if (key.startsWith(DELEGATED_KEY)) return { actions: delegatedActions(ctx, key.slice(DELEGATED_KEY.length)), href: '/delegated' };
+  if (key === CONTROL_KEY) return { actions: controlActions(ctx), href: '/delegated' };
   if (key.startsWith('task:')) {
     const id = key.slice('task:'.length);
     const group = taskGroups(ctx).flat().find((i) => i.id === id);

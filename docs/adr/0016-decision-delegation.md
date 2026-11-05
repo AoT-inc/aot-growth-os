@@ -54,4 +54,14 @@ ADR-0011(§2·§3 "`approved`는 사람의 `approval` 기록으로만")과 ADR-0
 - **`revoke`를 위임 id 없이 보내면 지금 정책의 모든 위임에 대해 위임마다 한 행을 남긴다**(테이블의 `revoke`는 `mandate_id`가 필수). 전체 정지는 `pause`다.
 - **위임 보유자의 `다시 쓰게`로 초안을 `superseded`로 버리는 전이 주체는 `scheduler`다**(초안 상태표가 `policy`를 받지 않는다). 업무 쪽 전이(`needs_review → queued`)는 주체 `policy` + 승인 참조.
 - 기존 시험 세 곳을 계약에 맞게 고쳤다: `state-machines.test.ts`(`needs_review → queued`를 `policy`도 승인 참조와 함께 허용), `daemon-effect-resolve.test.ts`(모르는 명령의 거부가 이제 `code: bad_request`), `entity-rows.test.ts`(새 열·표).
-- 진행 중인 실험을 거절하는 경로(`experiment-review.ts`, 승인 엔진이 아니라 결과 채널이 처리)는 `via`·`expected_hash` 필드를 받아들이지만 해시를 대조하지 않는다(전략 본문이 아니라 실험 상태에 대한 결정).
+- 진행 중인 실험을 거절하는 경로(`experiment-review.ts`, 승인 엔진이 아니라 결과 채널이 처리)는 `via`·`expected_hash` 필드를 받아들이지만 해시를 대조하지 않았다 — 트랙 C에서 대조하도록 고쳤다(아래 트랙 C 기록).
+
+## 구현 기록 — 트랙 C 화면 (2026-11-05, 상태는 proposed 그대로)
+작업 C1~C3을 구현했다. 화면 프로세스는 DB에 여전히 쓰지 않고, 위임 관련 쓰기도 모두 사람 소켓 명령이다. 화면은 AI 결정 요청을 보낼 길이 없다.
+
+- **위임된 일은 결정이 아니다.** 엔진 `show`가 지금도 위임 승인을 유효로 세는 업무(`approval.mandate_id`)는 결정 카드·묶음에서 빠지고 `/delegated`와 홈의 "AI가 처리함" 요약에만 나온다(건마다 한 줄 AI 이유와 나가기 전까지의 `취소` 버튼). 정지·철회·만료·정책 변경으로 효력을 잃으면 다시 결정 카드로 돌아오고 「확인할 것」 자리에 "AI가 넘긴 이유"(`delegate_review.reason`, 정지 때는 고정 문구)가 나온다.
+- **버튼**: `취소`(`cancel` + `expected_hash`, 눌러 두면 엔진이 그 위임을 자동 정지하므로 완료 문구에 그 사실을 말한다), `위임 멈추기`(`delegation pause`, TOTP 없음), `위임 다시 켜기`(`delegation resume`, OTP, 전체 정지면 전체·개별 정지면 위임마다 한 버튼). 모두 기존 `POST /decide` 폼(nonce·지문·속도 제한)을 그대로 쓰고 서버가 키(`delegated:<업무>`, `delegation:control`)로 요청을 다시 만든다.
+- **실패 문구는 엔진 `code` 로만 정한다.** 트랙 A의 임시 영어 문장 패턴 매핑(`inferCode`)을 지웠다. 코드가 없거나 모르는 코드면 "처리하지 못했습니다" 한 줄이고 영어 원문은 접힌 자세히에만 보인다.
+- **실험 승격·거절도 `expected_hash`를 대조한다.** `experiment-review.ts`가 `expected_hash`가 있으면 승인 엔진 `show`의 전략 해시(`subjectHash` 옵션, `assembleDaemon`이 연결)와 비교하고 다르면 `hash_mismatch`, 형식이 틀리면 `bad_request`로 거부한다. 화면은 이제 이 두 버튼에도 해시를 싣는다. 이 채널의 거부에도 `code`(`not_human` 포함)가 붙는다.
+- **시험**: `test/integration/review-web-decide.test.ts`가 실제 `ApprovalEngine` + 진짜 Unix 소켓 + 파일 DB(화면은 읽기 전용 연결)로 승인·거절(이유 있음/없음)·다시 쓰게·낡은 해시(`hash_mismatch`)·이미 결정됨(`wrong_state`, 화면 쪽 `gone`)·위임 승인 취소 → 자동 정지 → OTP로 해제·위임 멈추기·"AI가 넘긴 이유" 카드를 확인한다. 순수 규칙(요약 상태·시간 문구·실패 매핑)은 `test/unit/review-web-delegation.test.ts`, `review-web-write.test.ts`.
+- **남은 일**: 실제 AI 검토자(`claude_code_cli`)가 없어 운영에서는 아직 AI 승인이 일어나지 않는다(트랙 B의 남은 일). 위임 철회와 정책 배포는 파일/CLI 일이다.

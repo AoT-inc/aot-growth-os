@@ -20,3 +20,4 @@
 | [0013](0013-policy-format.md) | 정책 표현: YAML + 결정론적 판정기 | accepted |
 | [0014](0014-phone-capability.md) | 외부 대화 계층과 첫 채널: 전화 (Phone Capability) | proposed |
 | [0015](0015-draft-before-approval.md) | 외부 부작용은 정확한 초안을 승인하고 호스트가 그대로 보낸다 | proposed |
+| [0016](0016-decision-delegation.md) | 화면에서 결정하고, 사람이 정한 위임 안에서는 AI가 결정한다 | proposed |

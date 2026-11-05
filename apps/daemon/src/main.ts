@@ -27,6 +27,7 @@ import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolli
 
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
 import { readClaudeCodeConsent } from './consent.ts';
+import { delegateReviewerFromConfig, parseDelegateReviewerConfig } from './delegate-cycle.ts';
 import { daemonForbiddenRoots } from './forbidden-roots.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { advanceOrganization } from './org-cycle.ts';
@@ -41,6 +42,8 @@ import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts'
 interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
+  /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 만 */
+  delegate_reviewer?: unknown;
   db_path: string;
   busy_timeout_ms?: number;
   worker_id: string;
@@ -88,6 +91,7 @@ async function main(): Promise<void> {
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);
+  const delegateReviewer = delegateReviewerFromConfig(parseDelegateReviewerConfig(config.delegate_reviewer));
   const daemon = assembleDaemon({
     db,
     clock: systemClock,
@@ -106,6 +110,7 @@ async function main(): Promise<void> {
     ...(pack === undefined ? {} : { pack }),
     ...(cycle === undefined ? {} : { cycle }),
     ...(phone === undefined ? {} : { phone: phone.options }),
+    ...(delegateReviewer === undefined ? {} : { delegate: { reviewer: delegateReviewer } }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
     ...(config.defer_delay_ms === undefined ? {} : { deferDelayMs: config.defer_delay_ms }),
@@ -161,6 +166,15 @@ async function main(): Promise<void> {
           for (const id of org.awaitingConfirmation) console.log(`org proposal ${id}: trial passed; waiting for a person to confirm (org confirm)`);
           for (const id of [...org.expired, ...org.superseded]) console.log(`org proposal ${id}: closed (expired or superseded)`);
           for (const f of org.failed) console.error(`org cycle failed${f.proposalId === null ? '' : ` ${f.proposalId}`}: ${f.error}`);
+        }
+        try {
+          // 결정 위임(ADR-0016, 제안): 위임 cooldown 이 끝난 승인을 풀고, 적격 업무를 검토한다. 위임이 없는 정책에서는 읽기만 한다
+          const delegated = await daemon.delegation.advance();
+          for (const r of delegated.released) console.log(`delegated approval released ${r.taskId}: mandate ${r.mandateId} (approval ${r.approvalId})`);
+          for (const d of delegated.decided) console.log(`delegate review ${d.taskId}: ${d.verdict} -> ${d.outcome}`);
+          if (delegated.unavailable > 0) console.error(`delegate reviewer unavailable: ${delegated.unavailable} review(s) postponed`);
+        } catch (error) {
+          console.error('delegation cycle failed:', error); // 위임 문제가 주간 사이클을 멈추지 않게 한다
         }
         if (phoneRuntime !== null) {
           // webhook 이 늦거나 오지 않은 통화를 provider 에 조회하고, 마감을 넘기면 닫는다 (업무 검증 보류가 영원히 이어지지 않게)

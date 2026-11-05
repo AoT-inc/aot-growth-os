@@ -20,7 +20,8 @@ export interface ExperimentDecisionOptions {
   clock: Clock;
 }
 
-const KEYS = ['cmd', 'actor', 'kind', 'id', 'comment'];
+// via(결정 경로, 자기 신고)와 expected_hash(낡은 결정 막기)는 승인 엔진과 같은 요청 모양이라 받는다. 진행 중인 실험을 거절하는 이 경로는 해시를 대조하지 않는다(전략 본문이 아니라 실험 상태에 대한 결정).
+const KEYS = ['cmd', 'actor', 'kind', 'id', 'comment', 'via', 'expected_hash'];
 
 class Refused extends Error {}
 

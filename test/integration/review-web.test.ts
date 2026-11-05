@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { canonicalJson, openDb, sha256Hex } from '@aot/domain';
+import { PolicyStore } from '@aot/policy';
 import { createEvidenceStore } from '../../apps/daemon/src/evidence-store.ts';
 
 import { openReadOnlyDb, ReadOnlyViolation } from '../../apps/daemon/src/review-web/read-only-db.ts';
@@ -132,6 +133,53 @@ test('every kind of decision opens on a question with its buttons: risky org, ta
   assert.ok(verbsOf(policy.text).includes('cancel'));
   assert.ok(textOf(policy.text).includes('업무 하나당 비용 한도(USD): 5 → 8'), 'the changed rule is said in words');
   for (const path of ['/approvals/org_proposal/nope', '/approvals/bogus/x', '/batch/000000000000']) assert.equal((await rig.get(path)).status, 404, path);
+});
+
+test('a policy proposal that only widens delegation never reads as "the same as the current policy": it says what the AI may now do, first', async (t) => {
+  const widen = (edit: (active: string) => string) => (db: import('@aot/domain').Db, demo: { dir: string }): void => {
+    const store = new PolicyStore({ dir: join(demo.dir, 'policies') });
+    const hash = db.get<{ content_hash: string }>('SELECT content_hash FROM policy_version ORDER BY deployed_at DESC, rowid DESC LIMIT 1')!.content_hash;
+    const archived = store.archive(edit(readFileSync(join(demo.dir, 'policies', `${hash}.yaml`), 'utf8')));
+    const owner = db.get<{ id: string }>("SELECT id FROM actor WHERE kind = 'human' ORDER BY id LIMIT 1")!.id;
+    db.writeTx((tx) => tx.run("INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at) VALUES ('approval-policy-widen', 'policy_version', 'policy-widen', 'approved', ?, ?, NULL, '2026-11-04T00:00:00.000Z')", [archived.hash, owner]));
+  };
+  // 새 위임을 더한다: 모든 작업, 하루 1000건
+  const added = await startRig(t, {
+    before: widen((text) => {
+      const block = text.slice(text.indexOf('    - id: routine-notice'));
+      return `${text.trimEnd()}\n${block.replace('id: routine-notice', 'id: everything').replace("actions: ['notify-tool.send']", "actions: ['*.*']").replace("targets: ['mailbox:*']", "targets: ['*']").replace('max_per_day: 5', 'max_per_day: 1000')}`;
+    }),
+  });
+  const addedPage = await added.get('/approvals/policy_version/policy-widen');
+  assert.equal(addedPage.status, 200);
+  const addedFirst = firstLevel(addedPage.text);
+  assert.ok(addedFirst.includes('AI 위임 추가: 모든 작업, 하루 최대 1000건'), addedFirst);
+  assert.ok(!addedFirst.includes('현재 정책과 같은 내용'), 'a widening is never "the same"');
+  assert.ok(textOf((await added.get('/')).text).includes('AI 위임 추가: 모든 작업, 하루 최대 1000건'), 'the home card says it too');
+  // 있던 위임을 넓힌다: 한도 상향
+  const raised = await startRig(t, { before: widen((text) => text.replace('max_per_day: 5', 'max_per_day: 900').replace("actions: ['notify-tool.send']", "actions: ['notify-tool.send', '*.*']")) });
+  const raisedFirst = firstLevel((await raised.get('/approvals/policy_version/policy-widen')).text);
+  assert.ok(raisedFirst.includes("AI 위임 'routine-notice' 하루 최대 승인 건수 상향: 5 → 900") && raisedFirst.includes("작업 확대: '*.*'"), raisedFirst);
+  assert.ok(!raisedFirst.includes('현재 정책과 같은 내용'));
+  // 위임을 줄이는 변경도 "같은 내용" 이 아니다
+  const narrowed = await startRig(t, { before: widen((text) => text.replace('max_per_day: 5', 'max_per_day: 2')) });
+  const narrowedFirst = firstLevel((await narrowed.get('/approvals/policy_version/policy-widen')).text);
+  assert.ok(narrowedFirst.includes('AI 위임이 바뀝니다 (넓어지지 않음)') && !narrowedFirst.includes('현재 정책과 같은 내용'), narrowedFirst);
+  // 진짜 같은 내용이면 그대로 말한다
+  const same = await startRig(t, { before: widen((text) => text) });
+  assert.ok(firstLevel((await same.get('/approvals/policy_version/policy-widen')).text).includes('현재 정책과 같은 내용'));
+});
+
+test('a task the AI approved that came back to a person says that rejecting or asking for a rewrite pauses the AI, like cancel does; a task the AI never touched says nothing', async (t) => {
+  const rig = await startWriteRig(t, {
+    before: (db) => db.writeTx((tx) => tx.run("INSERT INTO delegation_control (action, mandate_id, actor_id, reason, at) VALUES ('pause', NULL, (SELECT id FROM actor WHERE kind = 'human' ORDER BY id LIMIT 1), 'test', '2026-11-04T00:00:00.000Z')")),
+  });
+  const back = await rig.get(`/approvals/task/${rig.demo.ids.delegated.waiting}`);
+  assert.equal(back.status, 200);
+  const box = textOf(back.text.slice(back.text.indexOf('결정하기')));
+  assert.ok(box.includes('이 일은 AI가 승인했던 일입니다') && box.includes('같은 종류의 AI 처리가 멈추고'), box);
+  const untouched = textOf((await rig.get(`/approvals/task/${rig.demo.ids.task}`)).text);
+  assert.ok(!untouched.includes('AI가 승인했던 일입니다'));
 });
 
 test('no screen shows an approval CLI command, an id, a hash or an ISO time above the fold', async (t) => {
@@ -466,7 +514,7 @@ test('a customer-mail task with drafts shows who gets what, in three rows, with 
   const one = await rig.get(`/approvals/task/${rig.demo.ids.task}`);
   const first = firstLevel(one.text);
   assert.ok(first.includes("메일 2통 · 받는 사람 모두 4명 · 첫 제목 '가을 신제품 판매 시작 안내'") && first.includes('초안 47시간 뒤 만료'), first);
-  assert.ok(first.includes('k***@example.com, l***@example.com, p***@example.org') && first.includes('example.com 2명, example.org 1명') && first.includes('이번 달 말부터 새 제품을 판매합니다') && first.includes('정확한 주소는 화면에 내지 않습니다'), first);
+  assert.ok(['kim.minji@example.com', 'lee.joon@example.com', 'park.seo@example.org'].every((a) => first.includes(a)) && !first.includes('k***@') && first.includes('example.com 2명, example.org 1명') && first.includes('이번 달 말부터 새 제품을 판매합니다') && first.includes('줄이거나 가리지 않고 그대로 보여 줍니다'), first);
   assert.ok(!first.includes('외부 입력 영향'), 'not influenced');
   assert.deepEqual(idsIn(first), [], 'no ids or hashes above the fold');
   const hashPrefix = rig.db.get<{ payload_hash: string }>('SELECT payload_hash FROM effect_draft WHERE task_run_id = ? AND seq = 1', ['run-demo-draft-0'])!.payload_hash.slice(0, 12);
@@ -494,18 +542,70 @@ test('an expired draft has no approve button: the reason and the rewrite button 
   assert.ok(batch.text.slice(batch.text.indexOf('<details>')).includes('초안 기한이 지났습니다'), 'the per-task reason is inside the details');
 });
 
-test('recipient addresses never appear in full, and a secret in a draft body is masked before it is cut', async (t) => {
+test('recipient addresses are shown in full on the detail pages (never on the home card); a secret in a draft body is masked, never half shown, and blocks approval', async (t) => {
   const key = `${'sk'}-${'q'.repeat(30)}`;
   const rig = await startRig(t, { before: (db) => setPayload(db, 'run-demo-draft-2', 1, { to: ['oh.sora@example.com'], subject: `정기 점검 안내 ${key}`, text: `점검 안내입니다.\napi_key = ${key}\n${'긴 문장 '.repeat(20000)}` }) });
   const task = taskOfRun(rig, 'run-demo-draft-2');
-  const pages = ['/', `/approvals/task/${rig.demo.ids.task}`, `/approvals/task/${task}`, `/approvals/task/${taskOfRun(rig, 'run-demo-draft-1')}`, /href="(\/batch\/[^"]*)"/.exec((await rig.get('/')).text)![1]!];
+  const home = (await rig.get('/')).text;
+  for (const address of DRAFT_ADDRESSES) assert.ok(!home.includes(address), `${address} on the home card`);
+  const pages = [`/approvals/task/${rig.demo.ids.task}`, `/approvals/task/${task}`, `/approvals/task/${taskOfRun(rig, 'run-demo-draft-1')}`, /href="(\/batch\/[^"]*)"/.exec(home)![1]!];
   for (const path of pages) {
     const body = (await rig.get(path)).text;
-    for (const address of DRAFT_ADDRESSES) assert.ok(!body.includes(address), `${address} on ${path}`);
     assert.ok(!body.includes(key) && !body.includes('qqqqqqqq'), `secret on ${path}`);
+    assert.ok(!/[a-z]\*\*\*@/.test(body), `masked address on ${path}`);
   }
-  const detail = (await rig.get(`/approvals/task/${task}`)).text;
-  assert.ok(detail.includes('o***@example.com') && detail.includes('[REDACTED]') && detail.includes('이하 생략'), 'masked, then cut with a visible note');
+  const detail = await rig.get(`/approvals/task/${task}`);
+  assert.ok(detail.text.includes('oh.sora@example.com') && detail.text.includes('[REDACTED]'), 'the address is exact; the secret is masked');
+  assert.ok(!verbsOf(detail.text).includes('approve'), 'nothing is cut silently: a draft that cannot be shown whole has no approve button');
+  assert.ok(!detail.text.includes('이하 생략'), 'no silent or noted truncation of the mail');
+});
+
+// 승인하는 사람이 보지 못한 것이 나가면 안 된다: payload 의 모든 필드를 그대로 보여 주고, 다 보여 줄 수 없으면 승인 버튼을 내지 않는다
+const FULL_MAIL = {
+  to: ['kxx-attacker@example.com'], cc: ['cc.person@example.net'], bcc: ['hidden.watcher@example.org'], subject: '결제 안내', text: '안녕하세요.\n결제 링크를 확인해 주세요.',
+  html: '<a href="https://evil.example/pay">여기를 누르세요</a><script>alert(1)</script>', reply_to: 'reply-here@evil.example',
+  headers: { 'X-Campaign': 'spring-2026', 'List-Unsubscribe': '<mailto:u@example.com>' }, attachments: [{ name: 'invoice.pdf', size: 1024, sha256: 'ab'.repeat(32) }], x_unknown_field: { nested: [1, 'two', { three: true }] },
+};
+
+test('every field of a draft is shown in full above the buttons: attacker-like address, html as escaped source, reply_to, headers, attachments, an unknown key', async (t) => {
+  const rig = await startWriteRig(t, { before: (db) => setPayload(db, 'run-demo-draft-0', 1, FULL_MAIL) });
+  const id = rig.demo.ids.task;
+  const page = await rig.get(`/approvals/task/${id}`);
+  const above = page.text.slice(0, page.text.indexOf('결정하기'));
+  const aboveText = textOf(above);
+  for (const shown of ['kxx-attacker@example.com', 'cc.person@example.net', 'hidden.watcher@example.org', 'reply-here@evil.example', 'reply_to', 'x_unknown_field', 'X-Campaign', 'invoice.pdf', 'spring-2026', 'three']) assert.ok(aboveText.includes(shown), `${shown} is above the decision box`);
+  assert.ok(above.includes('&lt;a href=&quot;https://evil.example/pay&quot;&gt;') && above.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !above.includes('<script>alert(1)'), 'html is shown as escaped source text');
+  assert.ok(!/[a-z]\*\*\*@/.test(page.text), 'no masked address anywhere');
+  assert.ok(verbsOf(page.text).includes('approve'), 'everything is visible, so approving is possible');
+  const details = page.text.slice(page.text.indexOf('<details>'));
+  assert.ok(details.includes('x_unknown_field') && details.includes('reply-here@evil.example') && details.includes(rig.db.get<{ payload_hash: string }>('SELECT payload_hash FROM effect_draft WHERE task_run_id = ? AND seq = 1', ['run-demo-draft-0'])!.payload_hash), 'the details hold the whole payload and the full hash');
+  // 묶음 상세에도 같다
+  const batch = (await rig.get(/href="(\/batch\/[^"]*)"/.exec((await rig.get('/')).text)![1]!)).text;
+  const batchAbove = textOf(batch.slice(0, batch.indexOf('결정하기')));
+  for (const shown of ['kxx-attacker@example.com', 'reply-here@evil.example', 'x_unknown_field']) assert.ok(batchAbove.includes(shown), `${shown} on the batch page`);
+});
+
+test('a draft with a field that cannot be shown whole (too large, binary) has no approve button on the task page or the batch page: it asks for a rewrite', async (t) => {
+  const cases: [string, object, string][] = [
+    ['too large html', { ...FULL_MAIL, html: '<p>x</p>'.repeat(10_000) }, '너무 큼'],
+    ['binary attachment bytes', { ...FULL_MAIL, attachments: [{ name: 'a.bin', data: 'ab\u0000\u0001\ufffdcd' }] }, '글이 아닌 값'],
+    ['non-mail payload with a huge field', { op: 'create', blob: 'z '.repeat(40_000) }, '너무 큼'],
+  ];
+  for (const [name, payload, why] of cases) {
+    const rig = await startWriteRig(t, { before: (db) => setPayload(db, 'run-demo-draft-0', 1, payload) });
+    const id = rig.demo.ids.task;
+    const page = await rig.get(`/approvals/task/${id}`);
+    const first = firstLevel(page.text);
+    assert.ok(first.includes('다시 쓰게 할까요?') && first.includes('승인 불가 — 다 볼 수 없는 값이 있음') && first.includes(why), `${name}: ${first}`);
+    assert.ok(!verbsOf(page.text).includes('approve'), `${name}: no approve button`);
+    assert.ok(verbsOf(page.text).includes('changes'), `${name}: rewrite is offered`);
+    assert.ok(!page.text.includes('이하 생략'), `${name}: nothing is cut`);
+    // 다 볼 수 없는 업무는 묶음에 섞이지 않는다(할 수 있는 결정이 다르다). 어느 묶음의 승인 버튼에도 이 업무가 들어 있지 않다
+    for (const [, href] of (await rig.get('/')).text.matchAll(/href="(\/batch\/[^"]*)"/g)) {
+      const batch = (await rig.get(href!)).text;
+      assert.ok(!(formsOf(batch).get('approve')?.html ?? '').includes(id), `${name}: batch ${href} approve leaves this task out`);
+    }
+  }
 });
 
 test('tasks with drafts are never batched with tasks without; other kinds of drafts say there is no preview', async (t) => {
@@ -592,9 +692,9 @@ test('the batch detail shows every mail above the decision box, and asks what th
   const batch = (await rig.get(/href="(\/batch\/[^"]*)"/.exec((await rig.get('/')).text)![1]!)).text;
   const above = batch.slice(0, batch.indexOf('결정하기'));
   assert.ok(above.includes('보낼 내용') && above.indexOf('보낼 내용') < batch.indexOf('결정하기'), 'mails come first');
-  for (const mail of ['k***@example.com', 'example.com 2명, example.org 1명', '가을 신제품 판매 시작 안내', '문의하신 환불 절차 안내', '정기 점검 일정 안내', '이번 달 말부터 새 제품을 판매합니다']) assert.ok(above.includes(mail), mail);
+  for (const mail of ['kim.minji@example.com', 'example.com 2명, example.org 1명', '가을 신제품 판매 시작 안내', '문의하신 환불 절차 안내', '정기 점검 일정 안내', '이번 달 말부터 새 제품을 판매합니다']) assert.ok(above.includes(mail), mail);
   assert.ok(above.includes('고객 안내 메일 초안 #1 발송') && above.includes('<span class="badge bad">기한 지남</span>') && above.includes('외부 입력 영향 하에 작성됨'), 'grouped per task, badges inline');
-  for (const address of DRAFT_ADDRESSES) assert.ok(!batch.includes(address), address);
+  for (const address of ['kim.minji@example.com', 'park.seo@example.org', 'oh.sora@example.com']) assert.ok(batch.includes(address), `${address} is shown in full`);
   const box = textOf(batch.slice(batch.indexOf('결정하기')));
   assert.ok(box.includes('보낼 수 있는 메일 3통 승인 (업무 2건)') && box.includes('기한 지난 1통은 빠졌습니다') && box.includes('메일 4통 모두 거절') && box.includes('메일 4통 모두 다시 쓰게'), box);
   // 전부 기한이 지났으면: 할 수 있는 결정(다시 쓰기)을 묻는다

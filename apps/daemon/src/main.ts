@@ -42,7 +42,7 @@ import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts'
 interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
-  /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 만 */
+  /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 뿐인데 시험 전용이라 데몬은 읽지 않고 시작을 거부한다 (delegate-cycle.ts) */
   delegate_reviewer?: unknown;
   db_path: string;
   busy_timeout_ms?: number;

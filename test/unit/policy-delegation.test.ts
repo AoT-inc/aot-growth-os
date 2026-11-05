@@ -18,7 +18,7 @@ import { draftsOf } from '../support/drafts.ts';
 import { claimWith } from '../support/draft-flow.ts';
 import { taskStatus } from '../support/engine.ts';
 import { examplePayload } from '../support/message-tool.ts';
-import { AGENT, HOUR, OWNER, REVIEWER, DEFAULT_TEMPLATE_TEXT, taskRow, type PolicyEnv } from '../support/policy.ts';
+import { AGENT, HOUR, OWNER, REVIEWER, DEFAULT_TEMPLATE_TEXT, policyEnv, taskRow, type PolicyEnv } from '../support/policy.ts';
 
 const DAY = 24 * HOUR;
 
@@ -511,4 +511,75 @@ test('without a delegation section nothing changes: the scan is empty, nothing i
   assert.deepEqual([refused.ok, refused.ok ? '' : refused.code], [false, 'no_mandate']);
   assert.equal(reviewsOf(env.db, taskId).length, 0, 'no review row without a mandate');
   assert.equal(env.send({ cmd: 'delegation', actor: OWNER, op: 'status' })['enabled'], false);
+});
+
+// ===== 사람이 위임 결정을 뒤집으면 위임이 멈춘다 (취소와 같다) =====
+
+test('a person rejecting or requesting changes on a delegated approval pauses that mandate like a cancel does; the same on a person\'s own approval or on an undelegated task does not', async (t) => {
+  const env = delegationEnv(t);
+  const a = await draftedFor(env);
+  assert.equal(decide(env, a.taskId, 'approve').ok, true);
+  const rejected = env.send({ cmd: 'reject', actor: OWNER, kind: 'task', id: a.taskId, comment: 'no', via: 'web' });
+  assert.equal(rejected['ok'], true);
+  assert.equal(rejected['delegation_paused'], MANDATE);
+  assert.deepEqual(controlsOf(env.db), [{ action: 'pause', mandate_id: MANDATE, actor_id: OWNER, reason: '사람이 위임 결정을 거절함' }]);
+  assert.equal(taskStatus(env.db, a.taskId), 'failed');
+  assert.equal(env.send({ cmd: 'delegation', actor: OWNER, op: 'resume', mandate_id: MANDATE, totp: env.code(OWNER) })['ok'], true);
+
+  env.clock.advance(60_000);
+  const b = await draftedFor(env, { dedupeKey: 'b' });
+  assert.equal(decide(env, b.taskId, 'approve').ok, true);
+  const changed = env.send({ cmd: 'request_changes', actor: OWNER, kind: 'task', id: b.taskId, comment: 'wrong tone' });
+  assert.equal(changed['ok'], true);
+  assert.equal(changed['state'], 'queued');
+  assert.equal(changed['delegation_paused'], MANDATE);
+  assert.deepEqual(controlsOf(env.db).map((c) => [c.action, c.reason]), [['pause', '사람이 위임 결정을 거절함'], ['resume', controlsOf(env.db)[1]!.reason], ['pause', '사람이 위임 결정에 변경을 요청함']]);
+  assert.equal(env.send({ cmd: 'delegation', actor: OWNER, op: 'resume', mandate_id: MANDATE, totp: env.code(OWNER) })['ok'], true);
+
+  // 위임이 아닌 승인(사람)이나 승인이 없는 업무는 위임을 멈추지 않는다
+  const before = controlsOf(env.db).length;
+  const human = await draftedFor(env, { dedupeKey: 'human' });
+  env.send({ cmd: 'approve', actor: OWNER, kind: 'task', id: human.taskId, hash: hashOf(env, human.taskId) });
+  assert.equal(env.send({ cmd: 'reject', actor: OWNER, kind: 'task', id: human.taskId })['delegation_paused'], undefined);
+  const plain = await draftedFor(env, { dedupeKey: 'plain' });
+  assert.equal(env.send({ cmd: 'request_changes', actor: OWNER, kind: 'task', id: plain.taskId, comment: 'again' })['delegation_paused'], undefined);
+  assert.equal(controlsOf(env.db).length, before, 'no pause row for either');
+});
+
+test('a policy change that adds delegation always needs a TOTP release, even when the current policy turns reauth_before_effect off', async (t) => {
+  const env = policyEnv(t);
+  const lax = DEFAULT_TEMPLATE_TEXT.replace('reauth_before_effect: true', 'reauth_before_effect: false').replace('cooldown: 1h ', 'cooldown: 0  ');
+  assert.notEqual(lax, DEFAULT_TEMPLATE_TEXT);
+  env.clock.advance(60_000);
+  env.db.writeTx((tx) => {
+    const parsed = env.store.archive(lax);
+    tx.run('INSERT INTO policy_version (id, content_hash, change_class, approved_by, deployed_at, rollback_of) VALUES (?, ?, ?, ?, ?, NULL)', [parsed.versionId, parsed.hash, 'risky', JSON.stringify([OWNER]), env.clock.nowIso()]);
+  });
+  env.clock.advance(60_000);
+  // 대조: 위임이 아닌 위험 변경(한도 상향)은 이 느슨한 정책에서 바로 배포된다 — 위임만 TOTP 를 강제한다
+  const raised = env.send({ cmd: 'approve', actor: OWNER, kind: 'policy_version', policy_text: lax.replace(/max_usd_per_task: (\d+)/, (_, n: string) => `max_usd_per_task: ${Number(n) + 1}`) });
+  assert.deepEqual([raised['change_class'], raised['state']], ['risky', 'deployed'], String(raised['error']));
+  env.clock.advance(60_000);
+
+  const text = delegationPolicyText([{}], lax.replace(/max_usd_per_task: (\d+)/, (_, n: string) => `max_usd_per_task: ${Number(n) + 1}`));
+  const approved = env.send({ cmd: 'approve', actor: OWNER, kind: 'policy_version', policy_text: text });
+  assert.equal(approved['ok'], true, String(approved['error']));
+  assert.equal(approved['change_class'], 'risky');
+  assert.notEqual(approved['state'], 'deployed', 'not deployed on approval: the TOTP release is still required');
+  const id = String(approved['id']);
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'policy_version', id });
+  assert.notEqual((shown['approval'] as { state: string }).state, 'approved_ready');
+  const noCode = env.send({ cmd: 'release', actor: OWNER, kind: 'policy_version', id });
+  assert.equal(noCode['code'], 'reauth_required');
+  assert.equal(env.send({ cmd: 'release', actor: OWNER, kind: 'policy_version', id, totp: '000000' })['ok'], false);
+  assert.equal(env.send({ cmd: 'release', actor: OWNER, kind: 'policy_version', id, totp: env.code(OWNER) })['state'], 'deployed');
+});
+
+test('the engine show (what the CLI prints) carries every payload field of a draft, including html, reply_to and unknown keys; secret-looking values are listed in masked_paths', async (t) => {
+  const env = delegationEnv(t);
+  const extra = { html: '<b>x</b>', reply_to: 'r@evil.example', x_unknown: { a: [1, 2] } };
+  const { taskId } = await draftedFor(env, { requests: [{ ...examplePayload(), ...extra }] });
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'task', id: taskId });
+  const payload = (shown['drafts'] as { payload: Record<string, unknown> }[])[0]!.payload;
+  for (const [key, value] of Object.entries({ ...examplePayload(), ...extra })) assert.deepEqual(payload[key], value, key);
 });

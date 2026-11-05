@@ -4,9 +4,9 @@
 // 첫 화면에는 id·해시·ISO 시각·엔진 상태 문구·JSON 을 내지 않는다("자세히" 안에만). 명령어는 어디에도 찍지 않는다: 결정은 버튼이고, 버튼이 보낼 요청은 여기서 데이터로만 만든다.
 import { createHash } from 'node:crypto';
 
-import { draftSendStates, getOrgProposal, maskedPathsOf, messagePreviewOf, proposedDraftsOf, type DraftSendState, type OrgProposalRow } from '@aot/domain';
+import { canonicalJson, draftSendStates, getOrgProposal, maskedPathsOf, messagePreviewOf, proposedDraftsOf, type DraftSendState, type OrgProposalRow } from '@aot/domain';
 import { evaluateOrgTrial } from '@aot/evaluation';
-import { orgProposalStaleness } from '@aot/policy';
+import { classifyChange, orgProposalStaleness, type Mandate, type PolicyDocument } from '@aot/policy';
 import { listUnresolvedEffects } from '@aot/task-engine';
 
 import { listExperimentReviews } from '../cycle.ts';
@@ -14,8 +14,9 @@ import { orgSignals } from '../org-channel.ts';
 import { productReader, registrationApproveBlocker } from '../product-channel.ts';
 import { REGISTRATION_TRIGGER_PREFIX } from '../registration-task.ts';
 import { maskMessagePayload, type ReviewContext } from './context.ts';
+import { chunksOf, unshowableOf, type Chunk } from './payload-view.ts';
 import { readEvidence } from './evidence-file.ts';
-import { addressDomain, ago, clip, commonAffixes, draftExpiry, eulReul, maskAddress, monthDay, percent, until } from './format.ts';
+import { addressDomain, ago, clip, commonAffixes, draftExpiry, eulReul, monthDay, percent, until } from './format.ts';
 import { renderActions, type Actions, type Blocked, type Button, type Step } from './actions.ts';
 import { full, h, kv, link, list, num, prettyJson, table, type Raw } from './html.ts';
 import { historyList, productLinks, subjectHistory, taskHistory } from './history.ts';
@@ -94,8 +95,8 @@ const rejectPart = (steps: Step[], o: { label?: string; note?: string; done?: st
   buttons: [{ verb: 'reject', label: o.label ?? '거절', tone: 'no', steps, reason: o.reason ?? 'optional', ...(o.reasonLabel === undefined ? {} : { reasonLabel: o.reasonLabel }), ...(o.note === undefined ? {} : { note: o.note }), done: o.done ?? '거절했습니다.' }],
 });
 /** 다시 쓰게: 이유는 필수 (엔진 규칙 1~500자) */
-const changesPart = (steps: Step[], label = '다시 쓰게'): Part => ({
-  buttons: [{ verb: 'changes', label, tone: 'ch', steps, reason: 'required', reasonLabel: '다시 쓰게 하기 — 무엇을 고칠지 (필수)', collapse: true, note: '초안을 버리고 에이전트가 다시 쓰게 합니다', done: '다시 쓰라고 요청했습니다. 새 초안이 올라오면 결정할 일에 나타납니다.' }],
+const changesPart = (steps: Step[], label = '다시 쓰게', note = '초안을 버리고 에이전트가 다시 쓰게 합니다'): Part => ({
+  buttons: [{ verb: 'changes', label, tone: 'ch', steps, reason: 'required', reasonLabel: '다시 쓰게 하기 — 무엇을 고칠지 (필수)', collapse: true, note, done: '다시 쓰라고 요청했습니다. 새 초안이 올라오면 결정할 일에 나타납니다.' }],
 });
 const cancelPart = (steps: Step[], note?: string): Part => ({ buttons: [{ verb: 'cancel', label: '취소', tone: 'no', steps, reason: 'none', ...(note === undefined ? {} : { note }), done: '취소했습니다.' }] });
 const otpPart = (steps: Step[], note?: string): Part => ({ buttons: [{ verb: 'otp', label: 'OTP 확인', tone: 'yes', steps, reason: 'none', otp: true, ...(note === undefined ? {} : { note }), done: 'OTP 확인을 마쳤습니다. 곧 진행됩니다.' }] });
@@ -190,6 +191,8 @@ interface TaskInfo {
   id: string; objective: string; reason: string; kind: 'customer' | 'external' | 'plain'; sig: string; waitingSince: string | null; denied: boolean; shown: Shown | null;
   /** 바깥으로 나가는 도구의 대상 (예: 받는 곳) */
   targets: string[]; spec: unknown;
+  /** 지금도 뒤집히지 않은 위임 승인 행이 있다 (엔진 #delegatedApprovalOf 와 같은 규칙). 사람이 거절·취소·변경 요청하면 그 위임이 멈춘다 */
+  delegatedBefore: boolean;
   /** 사람이 승인할 제안된 초안 (ADR-0015). 없으면 지금까지의 업무 카드 */
   drafts: DraftInfo[];
 }
@@ -204,6 +207,8 @@ interface DraftInfo {
   body: string | null;
   /** 표시용 가리기가 바꾼 값의 경로. 비어 있지 않으면 승인할 수 없다 (엔진과 같은 maskedPathsOf) */
   maskedPaths: string[];
+  /** 너무 크거나 글이 아니어서 사람이 다 볼 수 없는 필드와 이유 (payload-view.ts). 비어 있지 않으면 승인할 수 없다 */
+  unshowable: string[];
   /** 원장의 전송 상태 (`none` = 아직 시작 안 함) */
   sendState: DraftSendState;
 }
@@ -224,7 +229,7 @@ function draftsOf(ctx: ReviewContext, taskId: string): DraftInfo[] {
     return {
       seq: row.seq, tool: row.tool, action: row.action, target: row.target, payloadHash: row.payload_hash, expiresAt: row.expires_at, expired: Date.parse(row.expires_at) <= now,
       influenced: Number(row.influenced_by_external_input) === 1, preview, payload, body: text,
-      maskedPaths: maskedPathsOf(payload, maskMessagePayload(payload)), sendState: sendStates.get(row.id) ?? 'none',
+      maskedPaths: maskedPathsOf(payload, maskMessagePayload(payload)), unshowable: unshowableOf(payload), sendState: sendStates.get(row.id) ?? 'none',
     };
   });
 }
@@ -246,9 +251,20 @@ function taskInfo(ctx: ReviewContext, id: string): TaskInfo | null {
     id, objective: row.objective, reason: reason?.reason ?? '', kind: customer ? 'customer' : external ? 'external' : 'plain',
     sig: tools.map((t) => `${str(t['tool'])}:${str(t['impact'])}:${str(t['scope'])}`).sort().join(','), waitingSince: reason?.at ?? null, denied, shown, spec,
     targets: [...new Set(tools.filter((t) => t['impact'] === 'external_effect').map((t) => str(t['target'])).filter((t) => t !== ''))],
-    drafts,
+    drafts, delegatedBefore: delegatedApprovalExists(ctx, id),
   };
 }
+
+/** 이 업무의 뒤집히지 않은 승인 중 위임 승인(mandate_id)이 있는가 — 엔진의 #delegatedApprovalOf 와 같다 */
+function delegatedApprovalExists(ctx: ReviewContext, taskId: string): boolean {
+  const rows = ctx.db.all<{ decision: string; mandate_id: string | null }>("SELECT decision, mandate_id FROM approval WHERE subject_kind = 'task' AND subject_id = ? ORDER BY at, rowid", [taskId]);
+  let start = 0;
+  rows.forEach((row, index) => {
+    if (row.decision !== 'approved') start = index + 1;
+  });
+  return rows.slice(start).some((row) => row.mandate_id !== null);
+}
+const PAUSES_NOTE = '이 일은 AI가 승인했던 일입니다. 이렇게 결정하면 같은 종류의 AI 처리가 멈추고, 다시 켜기 전까지 사람이 직접 결정합니다';
 
 const TASK_CHECK = { customer: '받는 사람과 문구가 맞는지', external: '보내는 대상과 내용이 맞는지', plain: '업무 목표가 맞는지' } as const;
 const TASK_RISK = { customer: '고객에게 실제로 전달되며 되돌릴 수 없습니다', external: '외부로 나가며 되돌리기 어렵습니다', plain: '내부 작업이라 되돌릴 수 있습니다' } as const;
@@ -256,7 +272,7 @@ const OUTSIDE = (kind: TaskInfo['kind']): boolean => kind !== 'plain';
 
 // 초안이 있는 업무와 없는 업무는 한 장으로 묶지 않는다 (승인하는 것이 다르다)
 // 가려진 값이 있거나 이미 나간 초안이 있는 업무는 할 수 있는 일이 달라서 따로 둔다
-const draftClass = (info: TaskInfo): string => (info.drafts.length === 0 ? '' : `|drafts${isMasked(info) ? '-masked' : ''}${isSent(info) ? '-sent' : ''}`);
+const draftClass = (info: TaskInfo): string => (info.drafts.length === 0 ? '' : `|drafts${isMasked(info) ? '-masked' : ''}${isUnshowable(info) ? '-hidden' : ''}${isSent(info) ? '-sent' : ''}`);
 const groupId = (info: TaskInfo): string => createHash('sha256').update(`${info.reason}|${info.kind}|${info.sig}${draftClass(info)}`).digest('hex').slice(0, 12);
 
 /** 엔진이 지금도 위임 승인을 유효로 세는 업무 (정지·철회·정책 변경이면 사람에게 돌아간다) */
@@ -288,6 +304,8 @@ const INFLUENCED = '외부 입력 영향 하에 작성됨';
 const EXPIRED_HINT = '초안 기한이 지났습니다 — 다시 쓰게 해 주세요';
 const MASKED_BADGE = '승인 불가 — 가려진 값이 있음';
 const MASKED_HINT = '비밀값처럼 보이는 내용이 있어 사람이 전부 볼 수 없습니다. 다시 쓰게 해 주세요';
+const UNSHOWABLE_BADGE = '승인 불가 — 다 볼 수 없는 값이 있음';
+const UNSHOWABLE_HINT = '너무 크거나 글이 아닌 값이 있어 사람이 전부 볼 수 없습니다. 다시 쓰게 해 주세요';
 const SENT_HINT = '이미 나갔거나 전송 여부가 불명인 메일이 있어 거절·다시 쓰게를 할 수 없습니다. 전송 여부 카드에서 먼저 확인하세요';
 const NO_PREVIEW = '내용 미리보기 없음 — 자세히에서 원문 확인';
 const DRAFT_CHECK = '받는 사람과 문구가 이대로 나가도 되는지';
@@ -295,6 +313,11 @@ const UNSURE_HINT = '전송 여부가 불명인 메일이 있어 승인할 수 �
 const IRREVERSIBLE = '보내면 되돌릴 수 없음';
 
 const isMasked = (info: TaskInfo): boolean => info.drafts.some((d) => d.maskedPaths.length > 0);
+/** 가려진 값은 없지만 너무 크거나 글이 아니라 다 보여 줄 수 없는 필드가 있다 */
+const isUnshowable = (info: TaskInfo): boolean => info.drafts.some((d) => d.unshowable.length > 0);
+/** 사람이 내용을 전부 볼 수 없는 업무: 승인 버튼을 내지 않고 다시 쓰게만 묻는다 */
+const isHidden = (info: TaskInfo): boolean => isMasked(info) || isUnshowable(info);
+const hiddenHint = (items: readonly TaskInfo[]): string => (items.some(isMasked) ? MASKED_HINT : UNSHOWABLE_HINT);
 /** 엔진은 효과가 `planned` 를 넘은 초안이 있으면 변경 요청·거절을 거절한다 */
 const isSent = (info: TaskInfo): boolean => info.drafts.some((d) => d.sendState !== 'none' && d.sendState !== 'planned');
 const isExpired = (info: TaskInfo): boolean => info.drafts.some((d) => d.expired);
@@ -353,7 +376,7 @@ const countWord = (items: readonly TaskInfo[]): string => (allDrafts(items).ever
 /** 카드 「위험·기한」: 한 줄에 둘까지 (되돌릴 수 없음 · 가장 가까운 기한). 막힌 이유가 있으면 그 이유가 먼저 나온다 */
 function draftRisk(items: readonly TaskInfo[], now: number): string {
   const drafts = allDrafts(items);
-  if (items.some(isMasked)) return MASKED_HINT;
+  if (items.some(isHidden)) return hiddenHint(items);
   if (items.some(isSent)) {
     const count = (states: DraftSendState[]): number => drafts.filter((d) => states.includes(d.sendState)).length;
     const parts = [[count(['confirmed', 'compensated']), '이미 나간'], [count(['dispatched', 'unknown']), '전송 여부 불명'], [count(['failed']), '보내지 못한']] as const;
@@ -371,6 +394,8 @@ function draftBadges(items: readonly TaskInfo[]): BadgeSpec[] {
   const single = items.length === 1;
   const masked = items.filter(isMasked).length;
   if (masked > 0) out.push({ label: single ? MASKED_BADGE : `${MASKED_BADGE} (${masked}건)`, tone: 'bad' });
+  const unshowable = items.filter((i) => !isMasked(i) && isUnshowable(i)).length;
+  if (unshowable > 0) out.push({ label: single ? UNSHOWABLE_BADGE : `${UNSHOWABLE_BADGE} (${unshowable}건)`, tone: 'bad' });
   const expired = allDrafts(items).filter((d) => d.expired).length;
   if (expired > 0) out.push(single ? { label: '승인 불가 — 초안 기한 지남', tone: 'bad' } : { label: `${expired}${countWord(items)} 기한 지남`, tone: 'warn' });
   const influenced = items.filter((i) => i.drafts.some((d) => d.influenced)).length;
@@ -378,15 +403,28 @@ function draftBadges(items: readonly TaskInfo[]): BadgeSpec[] {
   return out;
 }
 
-/** 상세: 초안마다 받는 사람(가림)·도메인별 수·제목·본문 전문. 정확한 주소는 싣지 않는다 */
-const mailBadges = (d: DraftInfo): Raw => h`${d.expired ? h` <span class="badge bad">기한 지남</span>` : ''}${d.maskedPaths.length > 0 ? h` <span class="badge bad">가려진 값이 있음</span>` : ''}${isUnsure(d) ? h` <span class="badge warn">전송 여부 불명</span>` : ''}${d.influenced ? h` <span class="badge warn">${INFLUENCED}</span>` : ''}`;
+/** 상세: 초안마다 나가는 내용 전부. 받는 사람 주소는 그대로, 모르는 필드도 빠뜨리지 않는다. 다 볼 수 없는 필드가 있으면 승인 버튼이 없다 */
+const mailBadges = (d: DraftInfo): Raw => h`${d.expired ? h` <span class="badge bad">기한 지남</span>` : ''}${d.maskedPaths.length > 0 ? h` <span class="badge bad">가려진 값이 있음</span>` : ''}${d.unshowable.length > 0 ? h` <span class="badge bad">다 볼 수 없는 값이 있음</span>` : ''}${isUnsure(d) ? h` <span class="badge warn">전송 여부 불명</span>` : ''}${d.influenced ? h` <span class="badge warn">${INFLUENCED}</span>` : ''}`;
+
+const SHOWN_ALL = '이 화면은 내 컴퓨터에서만 열립니다. 받는 사람 주소와 모든 항목을 줄이거나 가리지 않고 그대로 보여 줍니다.';
 
 function draftBody(info: TaskInfo, now: number): Raw {
-  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 화면에 내지 않습니다.</p>${mailSections(info, now)}`;
+  return h`<h2>보낼 내용</h2>${hasUnsure(info) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">${SHOWN_ALL}</p>${mailSections(info, now)}`;
 }
 
 /** 묶음 상세: 업무마다 작은 제목 아래 그 업무의 메일을 모두 보여 준다 */
-const batchBody = (items: readonly TaskInfo[], now: number): Raw => h`<h2>보낼 내용</h2>${items.some(hasUnsure) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">받는 사람은 주소를 가려 보여 줍니다. 정확한 주소는 화면에 내지 않습니다.</p>${items.map((i) => h`<p><b>${clip(i.objective, 50)}</b> ${i.denied ? h`<span class="badge bad">정책 거부</span>` : ''}</p>${mailSections(i, now)}`)}`;
+const batchBody = (items: readonly TaskInfo[], now: number): Raw => h`<h2>보낼 내용</h2>${items.some(hasUnsure) ? h`<p><a href="/effects">전송 여부 카드로 이동</a></p>` : ''}<p class="mute">${SHOWN_ALL}</p>${items.map((i) => h`<p><b>${clip(i.objective, 50)}</b> ${i.denied ? h`<span class="badge bad">정책 거부</span>` : ''}</p>${mailSections(i, now)}`)}`;
+
+/** 필드 하나: 이름 아래 글 전체 (긴 글은 상자 안에서 스크롤, 자르지 않는다). 빈 값도 "빈 값" 이라고 보여 준다 */
+const fieldBox = (chunk: Chunk): Raw => h`<p><b>${chunk.key}</b></p><pre>${chunk.text === '' ? '(빈 값)' : full(chunk.text, Number.MAX_SAFE_INTEGER)}</pre>`;
+const MAIL_KEYS = ['to', 'cc', 'bcc', 'subject', 'text'];
+
+/** 받는 사람 줄: 주소를 그대로 (줄이거나 가리지 않는다) */
+const addressRow = (label: string, addresses: readonly string[]): [string, unknown][] => (addresses.length === 0 ? [] : [[`${label} ${addresses.length}명`, full(addresses.join(', '), Number.MAX_SAFE_INTEGER)]]);
+
+function unshowableNote(d: DraftInfo): Raw {
+  return d.unshowable.length === 0 ? h`` : h`<p class="mute"><b>다 볼 수 없는 값이 있어 승인할 수 없습니다. 다시 쓰게 할까요?</b></p>${list(d.unshowable)}`;
+}
 
 function mailSections(info: TaskInfo, now: number): Raw {
   const total = info.drafts.length;
@@ -394,22 +432,32 @@ function mailSections(info: TaskInfo, now: number): Raw {
     const heading = total === 1 ? '메일' : `메일 ${index + 1}/${total}`;
     const status = sendWord(d);
     const statusRows: [string, unknown][] = [...(status === null ? [] : [['전송 상태', status] as [string, unknown]]), ...(d.maskedPaths.length === 0 ? [] : [['가려진 값 위치', d.maskedPaths.join(', ')] as [string, unknown]])];
-    if (d.preview === null) return h`<h3>${heading}${mailBadges(d)}</h3>${statusRows.length === 0 ? '' : kv(statusRows)}<p class="mute">메일 모양이 아닌 초안입니다. 원문을 그대로 보여 줍니다.</p><pre>${full(prettyJson(d.payload))}</pre>`;
+    const chunks = chunksOf(d.payload);
+    const how: [string, unknown][] = [['보내는 방법', `${d.tool} · ${d.action}${d.target === '' ? '' : ` · ${d.target}`}`]];
+    if (d.preview === null) {
+      return h`<h3>${heading}${mailBadges(d)}</h3>${unshowableNote(d)}${kv([...statusRows, ...how, ['기한', draftExpiry(d.expiresAt, now)]])}<p class="mute">메일 모양이 아닌 초안입니다. 항목을 모두 그대로 보여 줍니다.</p>${chunks.map(fieldBox)}`;
+    }
+    const payload = d.payload as Record<string, unknown>;
+    const strings = (key: string): string[] => (Array.isArray(payload[key]) ? (payload[key] as string[]) : []);
     const domains = new Map<string, number>();
     for (const r of d.preview.recipients) domains.set(addressDomain(r), (domains.get(addressDomain(r)) ?? 0) + 1);
-    const shownMax = 20;
-    const masked = d.preview.recipients.slice(0, shownMax).map(maskAddress);
-    return h`<h3>${heading}${mailBadges(d)}</h3>${kv([
+    const subject = typeof payload['subject'] === 'string' && payload['subject'].trim() !== '' ? full(payload['subject'], Number.MAX_SAFE_INTEGER) : '(제목 없음)';
+    const others = chunks.filter((c) => !MAIL_KEYS.includes(c.key));
+    return h`<h3>${heading}${mailBadges(d)}</h3>${unshowableNote(d)}${kv([
       ...statusRows,
-      ['받는 사람', `${d.preview.recipients.length}명 — ${masked.join(', ')}${d.preview.recipients.length > shownMax ? ` 외 ${d.preview.recipients.length - shownMax}명` : ''}`],
+      ...addressRow('받는 사람', strings('to')),
+      ...addressRow('참조', strings('cc')),
+      ...addressRow('숨은 참조', strings('bcc')),
       ['도메인별', [...domains].map(([domain, n]) => `${domain} ${n}명`).join(', ')],
-      ['제목', d.preview.subject ?? '(제목 없음)'],
+      ['제목', subject],
+      ...how,
       ['기한', draftExpiry(d.expiresAt, now)],
-    ])}<pre>${full(d.body ?? '')}</pre>`;
+    ])}<p><b>본문</b></p><pre>${d.body === '' || d.body === null ? '(본문 없음)' : full(d.body, Number.MAX_SAFE_INTEGER)}</pre>${others.length === 0 ? '' : h`<p class="mute">메일 본문 말고도 아래 항목이 함께 나갑니다.</p>${others.map(fieldBox)}`}`;
   })}`;
 }
 
-const draftDetails = (items: readonly TaskInfo[]): Raw => h`${allDrafts(items).length === 0 ? '' : h`<h2>초안 상세 (원문)</h2>${table(['업무', '순번', '도구', '작업', '내용 해시(앞 12자)', '기한(원문)'], items.flatMap((i) => i.drafts.map((d) => [clip(i.objective, 30), d.seq, d.tool, d.action, d.payloadHash.slice(0, 12), d.expiresAt])))}`}`;
+/** 자세히: 초안마다 내용 해시 전체와 payload 원문 전체 (표시용 비밀 가리기만 거친다). 자르지 않는다 */
+const draftDetails = (items: readonly TaskInfo[]): Raw => h`${allDrafts(items).length === 0 ? '' : h`<h2>초안 상세 (원문)</h2>${table(['업무', '순번', '도구', '작업', '내용 해시', '기한(원문)'], items.flatMap((i) => i.drafts.map((d) => [clip(i.objective, 30), d.seq, d.tool, d.action, full(d.payloadHash, Number.MAX_SAFE_INTEGER), d.expiresAt])))}${items.flatMap((i) => i.drafts.map((d) => h`<h3>${clip(i.objective, 30)} · 초안 ${d.seq} payload</h3><pre>${full(typeof d.payload === 'string' ? d.payload : prettyJson(d.payload), Number.MAX_SAFE_INTEGER)}</pre>`))}`}`;
 
 /** 초안 업무 한 건 또는 묶음의 결정. 같은 문구 규칙을 쓴다 */
 function draftDecision(ctx: ReviewContext, items: TaskInfo[], now: number): Decision {
@@ -417,18 +465,19 @@ function draftDecision(ctx: ReviewContext, items: TaskInfo[], now: number): Deci
   const single = items.length === 1;
   const gid = groupId(first);
   const stepLabel = (i: TaskInfo): string => clip(i.objective, 30);
-  const approvable = items.filter((i) => !i.denied && !isExpired(i) && !isMasked(i) && !hasUnsure(i));
+  const approvable = items.filter((i) => !i.denied && !isExpired(i) && !isHidden(i) && !hasUnsure(i));
   const revisable = items.filter((i) => !isSent(i));
+  const pausesDelegation = revisable.some((i) => i.delegatedBefore);
   const unit = countWord(items);
   const mailsIn = (list: readonly TaskInfo[]): number => allDrafts(list).length;
   const reasonNote = (): string => {
     const out = items.filter((i) => !approvable.includes(i));
     const part = (list: readonly TaskInfo[], what: string): string => (list.length === 0 ? '' : `${what} ${mailsIn(list)}${unit}`);
-    const parts = [part(out.filter(isExpired), '기한 지난'), part(out.filter((i) => !isExpired(i) && isMasked(i)), '가려진 값이 있는'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && hasUnsure(i)), '전송 여부 불명인'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && !hasUnsure(i)), '정책이 거부한')].filter((x) => x !== '');
+    const parts = [part(out.filter(isExpired), '기한 지난'), part(out.filter((i) => !isExpired(i) && isMasked(i)), '가려진 값이 있는'), part(out.filter((i) => !isExpired(i) && !isMasked(i) && isUnshowable(i)), '다 볼 수 없는 값이 있는'), part(out.filter((i) => !isExpired(i) && !isHidden(i) && hasUnsure(i)), '전송 여부 불명인'), part(out.filter((i) => !isExpired(i) && !isHidden(i) && !hasUnsure(i)), '정책이 거부한')].filter((x) => x !== '');
     return `${parts.join(', ')}은 빠졌습니다`;
   };
   const approve: Part = approvable.length === 0
-    ? blockedPart('승인', items.some(isMasked) ? MASKED_HINT : items.some(isExpired) ? EXPIRED_HINT : items.some(hasUnsure) ? UNSURE_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.')
+    ? blockedPart('승인', items.some(isHidden) ? hiddenHint(items) : items.some(isExpired) ? EXPIRED_HINT : items.some(hasUnsure) ? UNSURE_HINT : items.some(isSent) ? '이미 나간 메일이 있어 승인하지 않습니다 — 전송 여부 카드에서 먼저 확인하세요' : '현재 정책이 모두 거부합니다.')
     : approvePart(approvable.map((i) => approveStep('task', i.id, i.shown, stepLabel(i))), {
       label: single ? '승인' : approvable.length === items.length ? `메일 ${mailsIn(approvable)}${unit} 모두 승인 (업무 ${approvable.length}건)` : `보낼 수 있는 메일 ${mailsIn(approvable)}${unit} 승인 (업무 ${approvable.length}건)`,
       note: !single && approvable.length < items.length ? reasonNote() : items.some(isSent) ? '승인하면 남은 초안이 그대로 나갑니다' : '승인하면 위 내용이 그대로 나갑니다',
@@ -439,15 +488,15 @@ function draftDecision(ctx: ReviewContext, items: TaskInfo[], now: number): Deci
   const changesLabel = single ? '다시 쓰게' : revisable.length === items.length ? `메일 ${mailsIn(revisable)}${unit} 모두 다시 쓰게` : `메일 ${mailsIn(revisable)}${unit} 다시 쓰게 (이미 나간 업무는 제외)`;
   const actions = actionsOf(undefined,
     approve,
-    revisable.length === 0 ? blockedPart('거절', SENT_HINT) : rejectPart(revisionSteps(), { label: rejectLabel }),
-    revisable.length === 0 ? blockedPart('다시 쓰게', SENT_HINT) : changesPart(revisable.map((i) => changesStep(i.id, i.shown, stepLabel(i))), changesLabel));
+    revisable.length === 0 ? blockedPart('거절', SENT_HINT) : rejectPart(revisionSteps(), { label: rejectLabel, ...(pausesDelegation ? { note: PAUSES_NOTE } : {}) }),
+    revisable.length === 0 ? blockedPart('다시 쓰게', SENT_HINT) : changesPart(revisable.map((i) => changesStep(i.id, i.shown, stepLabel(i))), changesLabel, pausesDelegation ? PAUSES_NOTE : undefined));
   const waiting = waitingText(items, now);
   const handedBack = single ? handedBackReason(ctx, first.id, false) : null;
   const mailsOnly = allDrafts(items).filter((d) => d.preview !== null).length;
   return {
     key: single ? `task:${first.id}` : `batch:${gid}`, category: 'outside', first: true,
     href: single ? `/approvals/task/${encodeURIComponent(first.id)}` : `/batch/${gid}`,
-    question: approvable.length === 0 && revisable.length > 0 && items.some(isMasked) ? `'${clip(draftNoun(items), 24)}'에 가려진 값이 있어요. 다시 쓰게 할까요?`
+    question: approvable.length === 0 && revisable.length > 0 && items.some(isHidden) ? `'${clip(draftNoun(items), 24)}'에 ${items.some(isMasked) ? '가려진' : '다 볼 수 없는'} 값이 있어요. 다시 쓰게 할까요?`
       : approvable.length === 0 && revisable.length > 0 && items.some(isExpired) ? `기한이 지난 메일 ${mailsIn(items.filter(isExpired))}${unit} — 다시 쓰게 할까요?` : draftQuestion(items),
     facts: [['무엇', items.some(hasUnsure) || (items.some(isSent) && allDrafts(items).every((d) => !isPending(d))) ? sentSummary(allDrafts(items), countWord(items)) : draftSummary(items.some(isSent) ? allDrafts(items).filter(isPending) : allDrafts(items))], handedBack === null ? ['확인할 것', DRAFT_CHECK] : ['AI가 넘긴 이유', handedBack], ['위험·기한', draftRisk(items, now)]],
     ...(first.denied && single ? { badge: { label: '승인 불가 — 정책 거부', tone: 'bad' as const } } : {}),
@@ -573,6 +622,49 @@ function policyChanges(ctx: ReviewContext, id: string): string[] | null {
   }
   for (const ruleId of rulesA.keys()) if (!rulesB.has(ruleId)) out.push(`규칙 '${ruleId}' 삭제`);
   if (JSON.stringify(a.risky_change) !== JSON.stringify(b.risky_change)) out.push('위험 변경 승인 절차(승인 인원·대기 시간)가 바뀝니다');
+  if (canonicalJson(a.memory) !== canonicalJson(b.memory)) out.push('기억 기본 만료 기간이 바뀝니다');
+  // AI 위임·전화 섹션은 "넓히는" 변경이 가장 중요한 사실이라 맨 앞에 둔다 (classifyChange 의 이유를 사람 말로)
+  return [...sectionChanges(a, b), ...out];
+}
+
+const LIMIT_KO: Readonly<Record<string, string>> = {
+  max_per_day: '하루 최대 승인 건수', max_drafts_per_task: '업무당 초안 수', max_recipients_per_draft: '메일당 받는 사람 수', max_payload_bytes: '초안 크기(바이트)',
+  max_task_usd: '업무당 비용(USD)', max_rewrites_per_task: '다시 쓰게 횟수', max_review_usd_per_day: '하루 검토 비용(USD)',
+};
+const MATCH_KO: Readonly<Record<string, string>> = { actions: '작업', targets: '대상', scopes: '범위' };
+const isWildcard = (patterns: readonly string[]): boolean => patterns.some((p) => p === '*' || p === '*.*');
+
+/** 위임 한 건을 사람 말로: "모든 작업, 하루 최대 1000건" */
+export function mandateText(mandate: Mandate): string {
+  const actions = isWildcard(mandate.match.actions) ? '모든 작업' : mandate.match.actions.join(', ');
+  const targets = isWildcard(mandate.match.targets) ? '' : `, 대상 ${mandate.match.targets.join('/')}`;
+  return `${actions}${targets}, 하루 최대 ${mandate.limits.max_per_day}건`;
+}
+
+/** classifyChange 의 이유(영문)를 사람 말로. 위임·전화 섹션은 여기서, 한도·규칙·승인 절차는 policyChanges 가 따로 말한다 */
+function sectionChanges(current: PolicyDocument, next: PolicyDocument): string[] {
+  const out: string[] = [];
+  const mandates = new Map((next.delegation?.mandates ?? []).map((m) => [m.id, m]));
+  const added = (id: string): string => `AI 위임 추가: ${mandates.get(id) === undefined ? `'${id}'` : mandateText(mandates.get(id)!)}`;
+  for (const reason of classifyChange(current, next).reasons) {
+    let m: RegExpExecArray | null;
+    if (reason.startsWith('delegation section added')) out.push(...(next.delegation?.mandates ?? []).map((x) => added(x.id)));
+    else if ((m = /^delegation mandate '(.+)' added$/.exec(reason)) !== null) out.push(added(m[1]!));
+    else if ((m = /^delegation mandate '(.+)' holder changed (.+) -> (.+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 담당 변경: ${m[2]} → ${m[3]}`);
+    else if ((m = /^delegation mandate '(.+)' match\.(\w+) widened by (.+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' ${MATCH_KO[m[2]!] ?? m[2]} 확대: ${m[3]}`);
+    else if ((m = /^delegation mandate '(.+)' limits\.(\w+) raised (\S+) -> (\S+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' ${LIMIT_KO[m[2]!] ?? m[2]} 상향: ${m[3]} → ${m[4]}`);
+    else if ((m = /^delegation mandate '(.+)' cooldown shortened (\S+) -> (\S+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 취소 대기 시간 단축: ${m[2]} → ${m[3]}`);
+    else if ((m = /^delegation mandate '(.+)' expires extended (\S+) -> (\S+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 만료일 연장: ${m[2]} → ${m[3]}`);
+    else if ((m = /^delegation mandate '(.+)' guidance changed$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 판단 기준 변경`);
+    else if (reason.startsWith('phone section added')) out.push('전화 통화 허용 추가');
+    else if (reason.startsWith('phone.')) out.push(`전화 설정 확대: ${reason.slice('phone.'.length)}`);
+    else if (!/^(risky_change\.|limits\.|rule )/.test(reason)) out.push(`위험 변경: ${reason}`); // 모르는 이유는 원문 그대로
+  }
+  // 넓히지 않는 변경(삭제·강화)도 "같은 내용" 으로 보이지 않게 한다
+  const before = new Map((current.delegation?.mandates ?? []).map((x) => [x.id, x]));
+  for (const id of before.keys()) if (!mandates.has(id)) out.push(`AI 위임 '${id}' 삭제`);
+  if (out.every((line) => !line.startsWith('AI 위임')) && canonicalJson(current.delegation ?? null) !== canonicalJson(next.delegation ?? null)) out.push('AI 위임이 바뀝니다 (넓어지지 않음)');
+  if (out.every((line) => !line.startsWith('전화')) && canonicalJson(current.phone ?? null) !== canonicalJson(next.phone ?? null)) out.push('전화 설정이 바뀝니다 (넓어지지 않음)');
   return out;
 }
 

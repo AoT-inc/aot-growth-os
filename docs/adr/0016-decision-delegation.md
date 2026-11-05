@@ -65,3 +65,10 @@ ADR-0011(§2·§3 "`approved`는 사람의 `approval` 기록으로만")과 ADR-0
 - **실험 승격·거절도 `expected_hash`를 대조한다.** `experiment-review.ts`가 `expected_hash`가 있으면 승인 엔진 `show`의 전략 해시(`subjectHash` 옵션, `assembleDaemon`이 연결)와 비교하고 다르면 `hash_mismatch`, 형식이 틀리면 `bad_request`로 거부한다. 화면은 이제 이 두 버튼에도 해시를 싣는다. 이 채널의 거부에도 `code`(`not_human` 포함)가 붙는다.
 - **시험**: `test/integration/review-web-decide.test.ts`가 실제 `ApprovalEngine` + 진짜 Unix 소켓 + 파일 DB(화면은 읽기 전용 연결)로 승인·거절(이유 있음/없음)·다시 쓰게·낡은 해시(`hash_mismatch`)·이미 결정됨(`wrong_state`, 화면 쪽 `gone`)·위임 승인 취소 → 자동 정지 → OTP로 해제·위임 멈추기·"AI가 넘긴 이유" 카드를 확인한다. 순수 규칙(요약 상태·시간 문구·실패 매핑)은 `test/unit/review-web-delegation.test.ts`, `review-web-write.test.ts`.
 - **남은 일**: 실제 AI 검토자(`claude_code_cli`)가 없어 운영에서는 아직 AI 승인이 일어나지 않는다(트랙 B의 남은 일). 위임 철회와 정책 배포는 파일/CLI 일이다.
+
+## 구현 기록 — 검토 반영 (2026-11-05, 상태는 proposed 그대로)
+- 사람의 `reject`·`request_changes` 도 취소처럼 지금 유효한 위임 승인의 위임을 자동 정지한다(D-B5 확장, 응답 `delegation_paused`).
+- 위임을 추가·확대하는 정책 변경(`classifyChange` 이유가 `delegation ...`)은 지금 정책의 `reauth_before_effect` 가 꺼져 있어도 배포에 TOTP 가 필요하다.
+- 가짜 검토자(stub)는 시험 전용이다. 데몬 설정 `delegate_reviewer` 로는 읽히지 않고(`parseDelegateReviewerConfig` 가 `allowStub: true` 없이는 거부), 운영 조립은 플래그를 주지 않는다.
+- 승인 화면(ADR-0015)은 정확한 주소와 payload 의 모든 필드를 보이고, 다 볼 수 없으면 승인 버튼을 내지 않는다. 정책 제안 카드는 위임·전화 섹션 변경을 첫 줄에 말한다.
+- **열린 오너 결정**: 위임에 받는 사람 도메인 한도(`recipient_domains` 같은 허용 목록)를 둘지. 구현하지 않았다.

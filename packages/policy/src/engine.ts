@@ -601,7 +601,7 @@ export class ApprovalEngine {
       const base = { id: parsed.versionId, hash: parsed.hash, change_class: change.changeClass, reasons: change.reasons, approval_id: approvalId };
       if (change.changeClass === 'normal') return { ...base, state: 'deployed', version_id: this.#deploy(tx, parsed, 'normal', [actor]) };
       // 위험 변경은 현재(변경 전) 정책의 risky_change 로 승인한다. 새 정책의 값으로 자기 자신을 승인할 수 없다.
-      const status = approvalStatus(tx, { kind: 'policy_version', id: parsed.versionId, hash: parsed.hash, requesterId: null, params: riskyApprovalParams(current.document), now: this.#now() });
+      const status = approvalStatus(tx, { kind: 'policy_version', id: parsed.versionId, hash: parsed.hash, requesterId: null, params: policyApprovalParams(current.document, change), now: this.#now() });
       if (status.ok) return { ...base, state: 'deployed', version_id: this.#deploy(tx, parsed, 'risky', status.approvers) };
       return { ...base, state: status.state, reason: status.reason, cooldown_ends_at: status.cooldownEndsAt };
     });
@@ -619,7 +619,7 @@ export class ApprovalEngine {
     this.#checkMandatesAtDeploy(tx, parsed.document, latest.at); // 위임 만료의 90일은 배포 승인 시각부터 센다
     const change = classifyChange(current.document, parsed.document);
     if (change.changeClass === 'normal') return { state: 'deployed', change_class: 'normal', version_id: this.#deploy(tx, parsed, 'normal', [actor]) };
-    const params = riskyApprovalParams(current.document);
+    const params = policyApprovalParams(current.document, change);
     const status = approvalStatus(tx, { kind: 'policy_version', id, hash: parsed.hash, requesterId: null, params, now: this.#now(), checkReauth: false });
     if (!status.ok) refuse(status.reason, STATE_CODES[status.state]);
     if (params.reauth_before_effect) this.#reauth(tx, actor, code, reauthPurpose('policy_version', id, parsed.hash));
@@ -710,7 +710,10 @@ export class ApprovalEngine {
       const rejectCtx = this.#taskContext(tx, id);
       this.#refuseStartedDrafts(rejectCtx, 'rejecting the task');
       this.#expect(expected, rejectCtx.hash, 'task');
+      // 사람이 위임 승인을 거절해도 취소와 같이 그 위임을 자동 정지한다 (ADR-0016 D-B5): AI 가 한 결정을 사람이 뒤집었다는 신호다
+      const delegatedMandate = this.#delegatedApprovalOf(tx, id);
       const approvalId = this.#insertApproval(tx, 'task', id, 'rejected', task.approved_hash, actor, comment ?? 'rejected');
+      if (delegatedMandate !== null) this.#insertControl(tx, 'pause', delegatedMandate, actor, '사람이 위임 결정을 거절함');
       assertAllowed('needs_review', 'failed', approvalId);
       tx.run("UPDATE task SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'needs_review'", [this.#now(), id]);
       tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [
@@ -718,7 +721,7 @@ export class ApprovalEngine {
       ]);
       // 같은 트랜잭션에서 제안된 초안도 거절한다 (ADR-0015)
       transitionDrafts(tx, { taskId: id, from: ['proposed'], to: 'rejected', by: 'human', now: this.#now() });
-      return { state: 'failed', approval_id: approvalId };
+      return { state: 'failed', approval_id: approvalId, ...(delegatedMandate === null ? {} : { delegation_paused: delegatedMandate }) };
     });
   }
 
@@ -733,7 +736,12 @@ export class ApprovalEngine {
       if (ctx.task.status !== 'needs_review') refuse(`task '${id}' is '${ctx.task.status}'; changes can only be requested for a task in needs_review`, 'wrong_state');
       this.#refuseStartedDrafts(ctx, 'requesting changes');
       this.#expect(expected, ctx.hash, 'task');
-      return this.#queueForRewrite(tx, ctx, actor, comment, null);
+      // 사람이 위임 승인에 변경을 요청해도 취소·거절과 같이 그 위임을 자동 정지한다 (ADR-0016 D-B5)
+      const delegatedMandate = this.#delegatedApprovalOf(tx, id);
+      const result = this.#queueForRewrite(tx, ctx, actor, comment, null);
+      if (delegatedMandate === null) return result;
+      this.#insertControl(tx, 'pause', delegatedMandate, actor, '사람이 위임 결정에 변경을 요청함');
+      return { ...result, delegation_paused: delegatedMandate };
     });
   }
 
@@ -1039,7 +1047,7 @@ export class ApprovalEngine {
     const parsed = this.#o.store.byHash(latest.subject_hash ?? '') ?? refuse(`the content of policy proposal '${id}' is not in the policy store`, 'bad_request');
     const current = this.#policy(db);
     const change = classifyChange(current.document, parsed.document);
-    const status = approvalStatus(db, { kind, id, hash: parsed.hash, requesterId: null, params: riskyApprovalParams(current.document), now: this.#now() });
+    const status = approvalStatus(db, { kind, id, hash: parsed.hash, requesterId: null, params: policyApprovalParams(current.document, change), now: this.#now() });
     return { kind, id, hash: parsed.hash, change_class: change.changeClass, reasons: change.reasons, approval: { state: status.state, reason: status.reason, cooldown_ends_at: status.cooldownEndsAt } };
   }
 
@@ -1077,6 +1085,15 @@ export function orgProposalStaleness(db: Db, row: OrgProposalRow, now: string): 
     return { to: 'superseded', reason: `base org_version is no longer active (now ${current?.id ?? 'none'})`, note: 'the organization changed since this proposal was made; propose again on the latest org_version' };
   }
   return null;
+}
+
+/**
+ * 정책 배포의 승인 요건: 지금(변경 전) 정책의 risky_change. 단, 위임을 추가·확대하는 변경은 지금 정책이 재인증을 꺼 두었어도 항상 TOTP 재인증을 요구한다
+ * (ADR-0016: AI 가 사람 대신 결정할 범위를 넓히는 일이다). 이유 문구는 change.ts 의 `delegation ...` 으로 시작한다.
+ */
+function policyApprovalParams(current: PolicyDocument, change: { reasons: readonly string[] }): ApprovalParams {
+  const params = riskyApprovalParams(current);
+  return change.reasons.some((reason) => reason.startsWith('delegation ')) ? { ...params, reauth_before_effect: true } : params;
 }
 
 function requireHuman(db: Db, actorId: unknown): void {

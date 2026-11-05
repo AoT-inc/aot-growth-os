@@ -146,11 +146,16 @@ export function createDelegateCycle(options: DelegateCycleOptions): DelegateCycl
  */
 export type DelegateReviewerConfig = { kind: 'stub'; verdict?: DelegateVerdict; cost_usd?: number };
 
-export function parseDelegateReviewerConfig(value: unknown): DelegateReviewerConfig | undefined {
+/**
+ * 가짜 검토자(stub)는 시험용이다: `verdict: "approve"` 를 두면 적격한 모든 업무를 사람 없이 승인한다. 그래서 데몬 설정(JSON)만으로는 읽히지 않는다 —
+ * 호출하는 쪽이 `{ allowStub: true }` 를 명시해야 하고, 운영 조립(main.ts)은 절대 주지 않는다. 설정 파일에 stub 이 있으면 데몬이 시작을 거부한다.
+ */
+export function parseDelegateReviewerConfig(value: unknown, options: { allowStub?: boolean } = {}): DelegateReviewerConfig | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('delegate_reviewer must be an object like {"kind": "stub"}');
   const record = value as Record<string, unknown>;
   if (record['kind'] !== 'stub') throw new Error(`delegate_reviewer.kind '${String(record['kind'])}' is not supported (use 'stub')`);
+  if (options.allowStub !== true) throw new Error("delegate_reviewer.kind 'stub' is test-only and cannot be loaded by the daemon (it could approve everything eligible without a person); remove delegate_reviewer from the daemon config");
   const unknown = Object.keys(record).filter((key) => !['kind', 'verdict', 'cost_usd'].includes(key));
   if (unknown.length > 0) throw new Error(`delegate_reviewer has unknown key(s): ${unknown.join(', ')}`);
   if (record['verdict'] !== undefined && !VERDICTS.includes(String(record['verdict']))) throw new Error('delegate_reviewer.verdict must be approve, request_changes or escalate');

@@ -308,6 +308,11 @@ test('the daily approval limit sends the next task to a person; the review cost 
   const b = newTask(r, 'b');
   for (let i = 0; i < 8 && [a, b].some((id) => taskStatus(r.env.db, id) !== 'needs_review'); i += 1) await r.daemon.worker.tick();
   assert.deepEqual([a, b].map((id) => taskStatus(r.env.db, id)), ['needs_review', 'needs_review']);
+  // 검토 순서는 (updated_at, id) 다. 두 업무가 같은 시각이면 uuid 순서로 떨어져 어느 쪽이 먼저인지 달라지므로, a 가 확실히 먼저가 되게 시각을 못 박는다
+  r.env.db.writeTx((tx) => {
+    tx.run('UPDATE task SET updated_at = ? WHERE id = ?', ['2000-01-01T00:00:00.000Z', a]);
+    tx.run('UPDATE task SET updated_at = ? WHERE id = ?', ['2000-01-01T00:00:01.000Z', b]);
+  });
   const report = await r.daemon.delegation.advance();
   assert.deepEqual(report.decided.map((d) => [d.taskId, d.verdict, d.outcome]), [[a, 'approve', 'recorded'], [b, 'escalate', 'daily_limit']]);
   assert.equal(r.reviewCalls.length, 1, 'the second task was not even sent to the AI');

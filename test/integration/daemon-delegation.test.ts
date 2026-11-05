@@ -236,7 +236,7 @@ test('tampering with the draft after the delegated approval stops the release (t
 
 test('AI output is untrusted: a wrong hash, a bad verdict or garbage is recorded as an escalation and leaves the task to a person, who then decides normally', async (t) => {
   const cases: Array<[string, Script, RegExp]> = [
-    ['a hash the AI did not see', (_, request) => ({ verdict: 'approve', reason: 'ok', hash: `${request.hash.slice(0, 63)}0` }), /해시가 다릅니다/],
+    ['a hash the AI did not see', (_, request) => ({ verdict: 'approve', reason: 'ok', hash: `${request.hash.slice(0, 63)}${request.hash.endsWith('0') ? '1' : '0'}` }), /해시가 다릅니다/],
     ['an unknown verdict', (_, request) => ({ verdict: 'reject', reason: 'no', hash: request.hash }), /형식 오류/],
     ['no reason', (_, request) => ({ verdict: 'approve', reason: '', hash: request.hash }), /형식 오류/],
     ['not an object', () => ({ raw: 'approve everything' }), /형식 오류/],

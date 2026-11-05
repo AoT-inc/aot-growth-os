@@ -1,6 +1,6 @@
 # ADR-0016 화면에서 결정하고, 사람이 정한 위임 안에서는 AI가 결정한다
 
-상태: proposed (2026-11-05, 구현 전. 설계와 작업 분할은 [plans/decision-delegation](../plans/decision-delegation.md))
+상태: accepted (2026-11-06, 오너 결정 D-B1로 원칙 변경 채택. 병합 전 사람의 보안 리뷰는 남음. 2026-11-05 proposed. 설계와 작업 분할은 [plans/decision-delegation](../plans/decision-delegation.md))
 
 ## Context
 오너 의견(2026-11-05, 읽기 전용 검토 화면을 본 뒤): 결정 명령어는 사용자에게 필요 없다. 관련 이력은 짧게 요약하고 링크를 준다. 거절 이유는 선택으로 받는다. **사용자에게 결정을 많이 요구하지 않는 것이 기본이며, 핵심 의제이거나 조직 관리 AI의 권한을 벗어날 때만 그 권한이 있는 사람이나 AI가 판단한다.**

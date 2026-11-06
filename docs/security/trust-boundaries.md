@@ -109,3 +109,7 @@
 - 실행 전에 정책이 강화되면 재검증으로 거부된다.
 - 승인 없는 `public` 게시와 내부 전용 데이터의 공개가 차단된다.
 - 사람의 승인이 없으면 전화가 걸리지 않고(실행 직전 재검증), 승인된 명세의 대상 밖 번호와 `phone:` 정책 한도 밖의 통화는 provider에 닿지 않는다. 외부 입력의 영향을 받은 run의 전화 호출은 승인 없이 막힌다 (`test/integration/phone-lifecycle.test.ts`, `test/unit/agent-runtime-gateway-effect-gate.test.ts`).
+
+## 7. 검토 체크리스트
+
+- [PR #17 보안 검토 체크리스트](review-checklist-pr17.md): 화면 결정 경로, 결정 위임, 초안 전송, 정책 배포를 사람 검토자가 코드로 확인하는 목록.

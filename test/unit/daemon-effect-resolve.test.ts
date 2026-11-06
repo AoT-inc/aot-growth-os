@@ -126,7 +126,8 @@ describe('routing on the approval socket handler', () => {
     const env = rig(t);
     const response = env.send({ cmd: 'no-such-command', actor: OWNER });
     assert.equal(response.ok, false);
-    assert.equal(response.code, undefined);
+    assert.match(String(response['error']), /cmd must be one of/);
+    assert.equal(response.code, 'bad_request', 'the approval engine answers with the shared refusal code (not one of the effect-channel codes)');
   });
 });
 

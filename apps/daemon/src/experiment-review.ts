@@ -18,14 +18,24 @@ import { listExperimentReviews } from './cycle.ts';
 export interface ExperimentDecisionOptions {
   db: Db;
   clock: Clock;
+  /** 전략의 지금 대상 해시(승인 엔진 `show` 의 hash). `expected_hash` 를 대조하는 데 쓴다. 없으면 `expected_hash` 가 든 요청은 거부한다 */
+  subjectHash?: (actor: string, strategyVersionId: string) => string | null;
 }
 
-const KEYS = ['cmd', 'actor', 'kind', 'id', 'comment'];
+// via(결정 경로, 자기 신고)와 expected_hash(낡은 결정 막기)는 승인 엔진과 같은 요청 모양이다. expected_hash 가 있으면 승격·거절 모두 지금 전략 해시와 같을 때만 처리한다(다르면 hash_mismatch).
+const KEYS = ['cmd', 'actor', 'kind', 'id', 'comment', 'via', 'expected_hash'];
 
-class Refused extends Error {}
+class Refused extends Error {
+  readonly code: string | undefined;
 
-const refuse = (message: string): never => {
-  throw new Refused(message);
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const refuse = (message: string, code?: string): never => {
+  throw new Refused(message, code);
 };
 
 /** 이 요청이 실험 결과 채널의 것인가: `promote`, `reviews`, 그리고 `experiment` 상태 전략의 `reject` */
@@ -41,7 +51,7 @@ function requireHuman(db: Db, actorId: unknown): string {
   if (typeof actorId !== 'string' || actorId === '') refuse('an actor id is required');
   const actor = db.get<{ kind: string }>('SELECT kind FROM actor WHERE id = ?', [actorId as string]);
   if (!actor) refuse(`unknown actor '${String(actorId)}'`);
-  if (actor!.kind !== 'human') refuse(`only human actors can decide an experiment; '${String(actorId)}' is '${actor!.kind}'`);
+  if (actor!.kind !== 'human') refuse(`only human actors can decide an experiment; '${String(actorId)}' is '${actor!.kind}'`, 'not_human');
   return actorId as string;
 }
 
@@ -56,6 +66,14 @@ export function createExperimentDecisionHandler(options: ExperimentDecisionOptio
       if (request['cmd'] === 'reviews') return { ok: true, ...listExperimentReviews(db), comparison_reviews: listStrategyReviews(db) };
       if (request['kind'] !== 'strategy_version') refuse("kind must be 'strategy_version'");
       const id = typeof request['id'] === 'string' && request['id'] !== '' ? request['id'] : refuse('an id is required');
+      const expected = request['expected_hash'];
+      // 화면(via:'web')은 사람이 본 전략의 해시를 반드시 실어야 한다. 보내지 않으면 승격·거절 모두 거부한다
+      if (expected === undefined && request['via'] === 'web') refuse('a web decision must carry expected_hash (the hash the person saw)', 'missing_hash');
+      if (expected !== undefined) {
+        if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) refuse('expected_hash must be a 64-character hex string', 'bad_request');
+        if (options.subjectHash === undefined) refuse('this channel cannot check expected_hash; leave it out', 'bad_request');
+        if (options.subjectHash!(actor, id) !== expected) refuse('the strategy changed since it was shown (expected_hash mismatch); show it again before deciding', 'hash_mismatch');
+      }
       const reason = typeof request['comment'] === 'string' && request['comment'].trim() !== '' ? request['comment'].trim() : refuse('a reason (--comment) is required');
       if (request['cmd'] === 'promote') {
         const result = db.writeTx((tx) => {
@@ -75,7 +93,7 @@ export function createExperimentDecisionHandler(options: ExperimentDecisionOptio
       }
       return refuse(`unknown command '${String(request['cmd'])}'`);
     } catch (error) {
-      if (error instanceof Refused) return { ok: false, error: error.message };
+      if (error instanceof Refused) return { ok: false, error: error.message, ...(error.code === undefined ? {} : { code: error.code }) };
       if (error instanceof StrategyRuleError) return { ok: false, error: error.message, code: error.code };
       if (error instanceof TransitionError) return { ok: false, error: error.message, code: error.code };
       if (error instanceof ExperimentActivationError) return { ok: false, error: error.message, code: error.code };

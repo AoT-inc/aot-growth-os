@@ -2,10 +2,11 @@
 // 정규화: 기간은 초(정수), 집합 성격의 목록(scope, impact, subject, action, resource)은 정렬, 규칙은 id 순.
 // 그래서 주석·공백·키 순서·규칙 순서는 정책 버전(content_hash)을 바꾸지 않는다.
 import {
-  checkBusinessHours, contentHash, IMPACTS, isE164, IssueCollector, isPlainObject, MEMORY_KINDS, POLICY_DECISIONS, SCOPES,
+  checkBusinessHours, contentHash, FREE_MAIL_DOMAINS, IMPACTS, isE164, isStrictDomain, IssueCollector, isPlainObject, MEMORY_KINDS, POLICY_DECISIONS, SCOPES,
   type BusinessHours, type Impact, type MemoryKind, type PlainObject, type PolicyDecisionValue, type Scope, type ValidationResult,
 } from '@aot/domain';
 
+import { humanOnlyKind, UNCLASSIFIED } from './always-human.ts';
 import { parseYaml, YamlError } from './yaml.ts';
 
 export const POLICY_FORMAT = 'aot-policy/v1';
@@ -33,7 +34,7 @@ export interface RiskyChangeParams {
 /**
  * 실제로 적용하는 승인 요건. 자기 승인은 문서의 파라미터가 아니라 `min_approvers` 에서 정해진다
  * (D3, 2026-10-19 결정): 승인자가 1인이면 오너(사람)의 자기 승인을 허용하고, 2인 이상이면 금지한다.
- * 허용해도 cooldown·재인증은 그대로 거친다. 에이전트 actor 는 어떤 경우에도 승인할 수 없다(승인 엔진이 인증 단계에서 거부).
+ * 허용해도 cooldown·재인증은 그대로 거친다. 에이전트 actor 는 승인 소켓으로는 어떤 경우에도 승인할 수 없다(승인 엔진이 인증 단계에서 거부). 예외 제안: 정책이 선언한 위임 범위 안의 위임 승인(ADR-0016, 소켓 밖 프로세스 내 호출).
  */
 export interface ApprovalParams extends RiskyChangeParams {
   self_approval: boolean;
@@ -86,6 +87,65 @@ export interface PhonePolicySection {
   transfer_targets: string[];
 }
 
+/**
+ * 위임(mandate) 한도 (ADR-0016, 제안). 모두 이 위임 하나에 대한 것이다.
+ * `max_rewrites_per_task` 만 0 을 허용한다(AI 가 다시 쓰게 할 수 없다). 나머지는 양수다.
+ */
+export interface MandateLimits {
+  /** 이 위임으로 한 승인 수 (24시간 창) */
+  max_per_day: number;
+  max_drafts_per_task: number;
+  max_recipients_per_draft: number;
+  max_payload_bytes: number;
+  /** 업무 cost_budget.max_usd 상한 */
+  max_task_usd: number;
+  /** AI 의 다시 쓰게 횟수. 넘으면 사람에게 간다 */
+  max_rewrites_per_task: number;
+  /** 위임 검토 run 비용 (하루) */
+  max_review_usd_per_day: number;
+}
+
+/**
+ * 위임이 보낼 수 있는 받는 사람 규칙 (D-B11). 모든 위임이 선언해야 한다.
+ *  - known_contacts: 고객 연락처(`contact` 표)에 active 로 있는 주소만 (권장 기본값)
+ *  - domains: 주소의 도메인이 목록과 정확히 같은 것만(소문자, 와일드카드·하위 도메인 없음). 공개 무료 메일 도메인은 넣을 수 없다
+ * 어느 쪽이든 suppressed 연락처는 위임으로 보내지 못한다.
+ */
+export type RecipientRule = { kind: 'known_contacts' } | { kind: 'domains'; domains: string[] };
+
+export interface MandateMatch {
+  /** `<도구>.<action>` 패턴 (`*` 와일드카드). 업무의 모든 external_effect 초안이 여기 들어야 한다 */
+  actions: string[];
+  /** 초안 대상 패턴 */
+  targets: string[];
+  /** 업무 명세가 그 도구에 선언한 범위. `public` 은 넣을 수 없다 */
+  scopes: Scope[];
+  /** 받는 사람 규칙 (필수) */
+  recipients: RecipientRule;
+}
+
+/** 위임 한 건 (ADR-0016 제안). 사람이 정책 배포로 정한 범위 안에서만 보유자(AI)가 승인할 수 있다 */
+export interface Mandate {
+  /** 정책 안에서 유일 */
+  id: string;
+  /** 위임을 받는 행위자 id (v1: 에이전트 행위자) */
+  holder: string;
+  /** v1: 초안 승인 업무(`task`)만 */
+  subjects: 'task'[];
+  match: MandateMatch;
+  limits: MandateLimits;
+  /** 초 — 위임 승인 뒤 전송까지. 이 동안 사람이 취소할 수 있다. risky_change.cooldown 이상 */
+  cooldown: number;
+  /** 사람이 쓴 판단 기준 (500자 이내) */
+  guidance: string;
+  /** `YYYY-MM-DD` — 그 날의 끝(UTC)까지 유효. 배포 승인 시각부터 90일 이내 */
+  expires: string;
+}
+
+export interface DelegationSection {
+  mandates: Mandate[];
+}
+
 export interface PolicyDocument {
   format: typeof POLICY_FORMAT;
   default: 'deny';
@@ -94,6 +154,8 @@ export interface PolicyDocument {
   risky_change: RiskyChangeParams;
   memory: { default_validity: Partial<Record<MemoryKind, number>> };
   phone?: PhonePolicySection;
+  /** 선택. 없으면(또는 mandates 가 비어 있으면) 위임은 꺼져 있다. 키가 없는 문서의 내용 해시는 이 섹션이 생기기 전과 같다 (ADR-0016 제안) */
+  delegation?: DelegationSection;
 }
 
 /** 값 범위 (D3: min_approvers ≥ 1). 상한은 오타로 승인이 불가능해지는 것을 막는 정도로 둔다. */
@@ -145,7 +207,7 @@ export function validatePolicyDocument(input: unknown): ValidationResult<PolicyD
     out.add('', 'type', 'a policy must be a mapping');
     return out.result(input as PolicyDocument);
   }
-  unknownKeys(input, ['format', 'default', 'limits', 'rules', 'risky_change', 'memory', 'phone'], '', out);
+  unknownKeys(input, ['format', 'default', 'limits', 'rules', 'risky_change', 'memory', 'phone', 'delegation'], '', out);
   if (input['format'] !== POLICY_FORMAT) out.add('format', 'format', `format must be '${POLICY_FORMAT}'`);
   if (input['default'] !== 'deny') out.add('default', 'default_deny', "default must be 'deny' (anything not matched by a rule is denied)");
 
@@ -154,8 +216,12 @@ export function validatePolicyDocument(input: unknown): ValidationResult<PolicyD
   const risky = checkRiskyChange(input['risky_change'], out);
   const memory = checkMemory(input['memory'], out);
   const phone = checkPhone(input['phone'], out);
+  const delegation = checkDelegation(input['delegation'], risky, out);
 
-  const document: PolicyDocument = { format: POLICY_FORMAT, default: 'deny', limits, rules, risky_change: risky, memory, ...(phone === null ? {} : { phone }) };
+  const document: PolicyDocument = {
+    format: POLICY_FORMAT, default: 'deny', limits, rules, risky_change: risky, memory,
+    ...(phone === null ? {} : { phone }), ...(delegation === null ? {} : { delegation }),
+  };
   return out.result(document);
 }
 
@@ -341,6 +407,180 @@ function checkPhone(value: unknown, out: IssueCollector): PhonePolicySection | n
     if (hours) section.business_hours = hours;
   }
   return section;
+}
+
+// ===== 위임 (ADR-0016, 제안) =====
+
+/** 위임 만료의 상한: 배포 승인 시각부터 일 수 */
+export const DELEGATION_MAX_DAYS = 90;
+const MANDATE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const HOLDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+export const MAX_GUIDANCE_CHARS = 500;
+
+/** 위임 만료 시각 (그 날 UTC 의 마지막 순간). 날짜 형식이 아니면 null */
+export function mandateExpiresAt(expires: string): string | null {
+  if (!DATE_ONLY.test(expires)) return null;
+  const date = new Date(`${expires}T23:59:59.999Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== expires) return null;
+  return date.toISOString();
+}
+
+const MANDATE_LIMIT_SPEC = {
+  max_per_day: { integer: true, min: 1, max: 1000, exclusiveMin: false },
+  max_drafts_per_task: { integer: true, min: 1, max: 20, exclusiveMin: false },
+  max_recipients_per_draft: { integer: true, min: 1, max: 100, exclusiveMin: false },
+  max_payload_bytes: { integer: true, min: 1, max: 262_144, exclusiveMin: false },
+  max_task_usd: { integer: false, min: 0, max: 1_000_000, exclusiveMin: true },
+  max_rewrites_per_task: { integer: true, min: 0, max: 10, exclusiveMin: false },
+  max_review_usd_per_day: { integer: false, min: 0, max: 1_000_000, exclusiveMin: true },
+} as const;
+
+function checkDelegation(value: unknown, risky: RiskyChangeParams, out: IssueCollector): DelegationSection | null {
+  if (value === undefined) return null;
+  if (!isPlainObject(value)) {
+    out.add('delegation', 'type', 'delegation must be a mapping');
+    return null;
+  }
+  unknownKeys(value, ['mandates'], 'delegation', out);
+  const list = value['mandates'];
+  if (!Array.isArray(list)) {
+    out.add('delegation.mandates', 'type', 'delegation.mandates must be a list');
+    return null;
+  }
+  if (list.length === 0) return null; // 위임이 하나도 없는 섹션은 섹션이 없는 것과 같다 (정규화: 키를 지운다)
+  // 위임 승인은 승인자 한 명 몫을 채우는 규칙만 정의한다 (D-B7): 2인 이상이 필요한 정책에서는 위임을 받지 않는다
+  if (risky.min_approvers !== 1) {
+    out.add('delegation', 'min_approvers', `delegation is only allowed when risky_change.min_approvers is 1 (it is ${risky.min_approvers}): a delegated approval fills one approver's share`);
+  }
+  const mandates: Mandate[] = [];
+  const seen = new Set<string>();
+  list.forEach((item: unknown, index) => {
+    const path = `delegation.mandates.${index}`;
+    if (!isPlainObject(item)) return void out.add(path, 'type', 'each mandate must be a mapping');
+    unknownKeys(item, ['id', 'holder', 'subjects', 'match', 'limits', 'cooldown', 'guidance', 'expires'], path, out);
+    const id = item['id'];
+    if (typeof id !== 'string' || !MANDATE_ID.test(id)) out.add(`${path}.id`, 'format', 'id must match [a-z0-9][a-z0-9-]*');
+    else if (seen.has(id)) out.add(`${path}.id`, 'duplicate', `duplicate mandate id '${id}'`);
+    else seen.add(id);
+    const holder = item['holder'];
+    if (typeof holder !== 'string' || !HOLDER_ID.test(holder)) out.add(`${path}.holder`, 'format', 'holder must be an actor id');
+    const subjects = item['subjects'];
+    if (Array.isArray(subjects) && subjects.some((entry) => entry !== 'task' && humanOnlyKind(entry) !== null && humanOnlyKind(entry) !== UNCLASSIFIED)) {
+      // 항상 사람이 정하는 결정(정책 배포·조직 변경·게시·상품 등록 …)은 위임 대상으로 적을 수 없다 (ADR-0016 Decision 5)
+      out.add(`${path}.subjects`, 'always_human', `subjects cannot name an always-human decision (${subjects.filter((entry) => humanOnlyKind(entry) !== null && entry !== 'task').map(String).join(', ')}): those are decided by a person only`);
+    } else if (!Array.isArray(subjects) || subjects.length === 0 || !subjects.every((entry) => entry === 'task')) {
+      out.add(`${path}.subjects`, 'enum', "subjects must be ['task'] (v1 delegates only draft-approval tasks)");
+    }
+    const match = checkMandateMatch(item['match'], `${path}.match`, out);
+    const limits = checkMandateLimits(item['limits'], `${path}.limits`, out);
+    const cooldown = parseDuration(item['cooldown']);
+    if (cooldown === null || cooldown > RISKY_CHANGE_RANGE.cooldown_seconds.max) {
+      out.add(`${path}.cooldown`, 'range', 'cooldown must be a duration like 1h (s|m|h|d) or 0, at most 30d');
+    } else if (cooldown < risky.cooldown) {
+      out.add(`${path}.cooldown`, 'range', `cooldown must be at least risky_change.cooldown (${risky.cooldown}s): a delegated approval must leave a person at least as long to cancel`);
+    }
+    const guidance = item['guidance'];
+    if (typeof guidance !== 'string' || guidance.trim() === '' || guidance.length > MAX_GUIDANCE_CHARS) {
+      out.add(`${path}.guidance`, 'range', `guidance is required: the human-written criteria, 1 to ${MAX_GUIDANCE_CHARS} characters`);
+    }
+    const expires = item['expires'];
+    if (typeof expires !== 'string' || mandateExpiresAt(expires) === null) out.add(`${path}.expires`, 'format', 'expires is required, a date like 2027-01-31');
+    mandates.push({
+      id: String(id), holder: String(holder), subjects: ['task'], match, limits, cooldown: cooldown ?? 0,
+      guidance: typeof guidance === 'string' ? guidance : '', expires: typeof expires === 'string' ? expires : '',
+    });
+  });
+  return { mandates: mandates.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };
+}
+
+function checkMandateMatch(value: unknown, path: string, out: IssueCollector): MandateMatch {
+  const match: MandateMatch = { actions: [], targets: [], scopes: [], recipients: { kind: 'known_contacts' } };
+  if (!isPlainObject(value)) {
+    out.add(path, 'required', 'match is required (actions, targets, scopes, recipients)');
+    return match;
+  }
+  unknownKeys(value, ['actions', 'targets', 'scopes', 'recipients'], path, out);
+  const strings = (key: 'actions' | 'targets', ok: (entry: string) => boolean, what: string): string[] => {
+    const raw = value[key];
+    if (!Array.isArray(raw) || raw.length === 0 || !raw.every((entry) => typeof entry === 'string' && entry.trim() !== '' && ok(entry))) {
+      out.add(`${path}.${key}`, 'type', `${key} must be a non-empty list of ${what}`);
+      return [];
+    }
+    return [...new Set(raw as string[])].sort();
+  };
+  match.actions = strings('actions', (entry) => entry.includes('.'), "'<tool>.<action>' patterns");
+  match.targets = strings('targets', () => true, 'target patterns');
+  const scopes = value['scopes'];
+  if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((entry) => (SCOPES as readonly unknown[]).includes(entry))) {
+    out.add(`${path}.scopes`, 'enum', `scopes must be a non-empty list of ${SCOPES.filter((scope) => scope !== 'public').join('|')}`);
+  } else if (scopes.includes('public')) {
+    out.add(`${path}.scopes`, 'public_scope', "scopes must not include 'public': public posting is always decided by a person");
+  } else {
+    match.scopes = [...new Set(scopes as Scope[])].sort();
+  }
+  match.recipients = checkRecipientRule(value['recipients'], `${path}.recipients`, out);
+  return match;
+}
+
+function checkRecipientRule(value: unknown, path: string, out: IssueCollector): RecipientRule {
+  const fallback: RecipientRule = { kind: 'known_contacts' };
+  if (value === undefined) {
+    out.add(path, 'required', "recipients is required: every mandate must say who it may send to (recipients: { kind: known_contacts } or { kind: domains, domains: [...] })");
+    return fallback;
+  }
+  if (!isPlainObject(value)) {
+    out.add(path, 'type', 'recipients must be a mapping with a kind');
+    return fallback;
+  }
+  if (value['kind'] === 'known_contacts') {
+    unknownKeys(value, ['kind'], path, out);
+    return fallback;
+  }
+  if (value['kind'] !== 'domains') {
+    out.add(`${path}.kind`, 'enum', "recipients.kind must be 'known_contacts' or 'domains'");
+    return fallback;
+  }
+  unknownKeys(value, ['kind', 'domains'], path, out);
+  const raw = value['domains'];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) {
+    out.add(`${path}.domains`, 'type', 'domains must be a list of 1 to 100 exact domains such as example.com');
+    return fallback;
+  }
+  const domains = new Set<string>();
+  raw.forEach((entry: unknown, index) => {
+    const at = `${path}.domains.${index}`;
+    const domain = typeof entry === 'string' ? entry.trim().toLowerCase() : null;
+    if (domain === null || !isStrictDomain(domain)) {
+      out.add(at, 'format', 'each domain must be an exact domain such as example.com (no wildcard, no @, no sub-domain pattern)');
+    } else if (FREE_MAIL_DOMAINS.includes(domain)) {
+      out.add(at, 'free_mail_domain', `'${domain}' is a public free-mail domain: allow-listing it would let anyone be a recipient. Use known_contacts instead`);
+    } else {
+      domains.add(domain);
+    }
+  });
+  return { kind: 'domains', domains: [...domains].sort() };
+}
+
+function checkMandateLimits(value: unknown, path: string, out: IssueCollector): MandateLimits {
+  const limits: MandateLimits = {
+    max_per_day: 1, max_drafts_per_task: 1, max_recipients_per_draft: 1, max_payload_bytes: 1, max_task_usd: 1, max_rewrites_per_task: 0, max_review_usd_per_day: 1,
+  };
+  if (!isPlainObject(value)) {
+    out.add(path, 'required', `limits is required (${Object.keys(MANDATE_LIMIT_SPEC).join(', ')})`);
+    return limits;
+  }
+  unknownKeys(value, Object.keys(MANDATE_LIMIT_SPEC), path, out);
+  for (const [key, spec] of Object.entries(MANDATE_LIMIT_SPEC)) {
+    const raw = value[key];
+    const below = typeof raw === 'number' && (spec.exclusiveMin ? raw <= spec.min : raw < spec.min);
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || (spec.integer && !Number.isInteger(raw)) || below || raw > spec.max) {
+      out.add(`${path}.${key}`, 'range', `${key} must be ${spec.integer ? 'an integer' : 'a number'} ${spec.exclusiveMin ? 'greater than' : 'at least'} ${spec.min} and at most ${spec.max}`);
+    } else {
+      (limits as unknown as Record<string, number>)[key] = raw;
+    }
+  }
+  return limits;
 }
 
 /** memory-item 규칙 5: 정책의 기본 만료 기간 → domain MemoryContext.defaultValiditySeconds */

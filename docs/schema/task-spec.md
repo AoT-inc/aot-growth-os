@@ -195,10 +195,11 @@
 | `task_spec_version` | `task` 컬럼 (명세 템플릿 버전) |
 | `strategy_version_id`, `policy_version_id` | `task` 컬럼 |
 | `tool_contract_version` | `task` 컬럼 (도구 어댑터 계약. (도구, action)별 멱등 선언 `{supported, retention_ms}` 포함. 해시는 아직 계산하지 않아 null) |
-| 승인된 입력·실행 인자 스냅샷 | `task.approved_snapshot`, 해시는 `task.approved_hash`, 승인은 `approval` (`subject_hash`) |
+| 승인된 입력·실행 인자 스냅샷 | `task.approved_snapshot`, 해시는 `task.approved_hash`, 승인은 `approval` (`subject_hash`). 초안 승인 업무([ADR-0015](../adr/0015-draft-before-approval.md))는 스냅샷·해시에 제안된 초안 목록(`drafts`: `payload_hash`·도구·action·대상·`step_id`·만료)이 함께 들어간다. 초안이 없으면 이전과 같다 |
 
 실행 시 재검증 (`queued → running` 직전, 외부 부작용 직전):
 1. 실행 인자 해시가 `approved_hash`와 같은가. 다르면 차단 후 재승인 요청.
+   - 초안 승인 업무는 해시에 제안된 초안이 들어간다. 부작용 직전(전송 단계)에는 요청 해시가 승인된 초안의 `payload_hash`이고 `expires_at` 전인지도 확인한다.
 2. 현재 정책이 승인 당시보다 엄격해졌는가. 그렇다면 **새 정책을 적용**한다. 과거 승인이 현재의 더 엄격한 정책을 무효화하지 못한다.
 3. 대상 리소스의 상태가 승인 당시 전제와 같은가(저장소 브랜치, 게시 대상 페이지 버전 등).
 4. 조직·전략·역할 버전 변경이 승인 범위를 벗어나는가. 벗어나면 재검토 요청 — 조용히 다른 작업을 실행하지 않는다.

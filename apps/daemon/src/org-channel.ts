@@ -85,8 +85,8 @@ export function draftProposalFromSignal(db: Db, clock: Clock, draft: { taskType:
   const unit = db.get('SELECT 1 AS one FROM org_unit WHERE slug = ? AND lifecycle = \'active\'', [unitSlug])
     ? unitSlug : { slug: unitSlug, name: unitSlug, responsibility: `${draft.taskType} 업무 담당` };
   return {
-    diff: { ops: [{ op: 'add_role', role: { slug: draft.roleSlug, description: `${draft.taskType} 업무를 맡는 역할 (재편 신호로 자동 생성한 초안)`, allowed_tools: JSON.parse(base!.allowed_tools) as unknown, unit } }] },
-    rationale: `최근 ${ORG_SIGNAL_THRESHOLDS.window_days}일 동안 '${draft.taskType}' 유형의 업무 ${count}건이 맞는 역할이 없어 unassigned 였다.`,
+    diff: { ops: [{ op: 'add_role', role: { slug: draft.roleSlug, description: `${draft.taskType} 업무 담당 (재편 신호로 자동 생성한 초안)`, allowed_tools: JSON.parse(base!.allowed_tools) as unknown, unit } }] },
+    rationale: `최근 ${ORG_SIGNAL_THRESHOLDS.window_days}일 동안 '${draft.taskType}' 유형의 업무 ${count}건이 맞는 역할이 없어 멈춰 있었다.`,
     evidence_refs: [`signals:unassigned:${draft.taskType}`],
     expected_effect: `'${draft.taskType}' 업무가 새 역할에 배정되어 처리된다.`,
     risk_assessment: { risks: ['새 역할의 결과 품질이 낮을 수 있다'], mitigations: ['시험 기간에는 이 업무 유형만 받는다', '안전성 실패·비용 초과는 즉시 중단·롤백된다'] },

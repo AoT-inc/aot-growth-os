@@ -29,12 +29,13 @@ function bound(state: Ledger, sent: { n: number }, body?: (request: ToolExecutio
   }) as ToolExecutor;
 }
 
-function gateway(verdict: ToolCallPolicyVerdict, executor: ToolExecutor, options: { externalInput?: boolean; spec?: GatewayToolSpec } = {}) {
+function gateway(verdict: ToolCallPolicyVerdict, executor: ToolExecutor, options: { externalInput?: boolean; spec?: GatewayToolSpec; effectMode?: 'send' | 'draft' } = {}) {
   const spec = options.spec ?? SPEC;
   return createToolGateway({
     runId: 'run-1', taskId: null, subject: 'generalist@v1', tools: [spec], executors: new Map([[spec.tool, executor]]),
     policy: { judge: () => verdict }, clock: new FakeClock(), constraints: { max_usd: 1 }, toolTimeoutMs: 1000, timers: new ManualGatewayTimers(),
     ...(options.externalInput === undefined ? {} : { externalInput: options.externalInput }),
+    ...(options.effectMode === undefined ? {} : { effectMode: options.effectMode }),
   });
 }
 
@@ -114,4 +115,74 @@ test('a ledger-bound executor is accepted only for side-effect tools with impact
   assert.throws(() => gateway(NEEDS_APPROVAL, executor, { spec: { tool: 'mailer', operation: 'send', scope: 'internal', sideEffect: false } }), /ledger-bound executor needs sideEffect=true/);
   assert.throws(() => gateway(NEEDS_APPROVAL, executor, { spec: { tool: 'mailer', operation: 'send', scope: 'internal', impact: 'write', sideEffect: true } }), /ledger-bound executor needs sideEffect=true and impact external_effect/);
   assert.doesNotThrow(() => gateway(NEEDS_APPROVAL, executor));
+});
+
+// ===== 초안 단계 (ADR-0015): effectMode 'draft' =====
+
+const ALLOW: ToolCallPolicyVerdict = { decision: 'allow' };
+
+/** 원장 입구가 받은 meta 를 기록하는 원장 */
+function metaLedger(seen: { meta: unknown[] }) {
+  return (tool: string, step: { stepId: string }, meta?: { influenced: boolean }) => {
+    seen.meta.push(meta);
+    return Promise.resolve({ state: 'confirmed' as const, tool, step });
+  };
+}
+
+test('draft mode: a ledger-bound executor runs even when the run is influenced by external input, and for allow as well as require_approval', async () => {
+  for (const verdict of [NEEDS_APPROVAL, ALLOW]) {
+    for (const externalInput of [false, true]) {
+      const state: Ledger = { calls: [], refuse: false };
+      const g = gateway(verdict, bound(state, { n: 0 }), { externalInput, effectMode: 'draft' });
+      assert.deepEqual(await g.call('mailer', {}), { ok: true, result: { sent: true } }, `${verdict.decision} external=${externalInput}`);
+      assert.deepEqual(state.calls, ['mailer:s1']);
+      const record = g.records()[0]!;
+      assert.equal(record.influenced_by_external_input, externalInput);
+      assert.match(record.reason ?? '', /draft mode: recorded as a draft, nothing is sent/);
+    }
+  }
+});
+
+test('draft mode: a side-effect tool that is not bound to the ledger is refused with approval_required, even when the policy allows it', async () => {
+  for (const verdict of [NEEDS_APPROVAL, ALLOW]) {
+    const ran = { n: 0 };
+    const g = gateway(verdict, plain(ran), { effectMode: 'draft' });
+    assert.deepEqual(await g.call('mailer', {}), { ok: false, error: 'approval_required' }, verdict.decision);
+    assert.equal(ran.n, 0, 'the executor was not called: a draft run sends nothing');
+    assert.match(g.records()[0]!.reason ?? '', /not bound to the effect ledger/);
+  }
+});
+
+test('draft mode: deny is still denied, and read tools are unaffected', async () => {
+  const state: Ledger = { calls: [], refuse: false };
+  assert.deepEqual(await gateway({ decision: 'deny', reason: 'no' }, bound(state, { n: 0 }), { effectMode: 'draft' }).call('mailer', {}), { ok: false, error: 'policy_denied' });
+  assert.deepEqual(state.calls, []);
+  const readSpec: GatewayToolSpec = { tool: 'lookup', operation: 'read', scope: 'internal', sideEffect: false };
+  const ran = { n: 0 };
+  assert.deepEqual(await gateway(ALLOW, plain(ran), { spec: readSpec, effectMode: 'draft' }).call('lookup', {}), { ok: true, result: { sent: true } });
+  assert.equal(ran.n, 1);
+  // 읽기 도구가 require_approval 이면 초안 단계에서도 막힌다 (승인 경로가 없다)
+  assert.deepEqual(await gateway(NEEDS_APPROVAL, plain({ n: 0 }), { spec: readSpec, effectMode: 'draft' }).call('lookup', {}), { ok: false, error: 'approval_required' });
+});
+
+test('send mode (the default) is unchanged: the ordinary rules apply when effectMode is omitted or send', async () => {
+  const ran = { n: 0 };
+  assert.deepEqual(await gateway(ALLOW, plain(ran), { effectMode: 'send' }).call('mailer', {}), { ok: true, result: { sent: true } });
+  assert.deepEqual(await gateway(ALLOW, bound({ calls: [], refuse: false }, { n: 0 }), { externalInput: true, effectMode: 'send' }).call('mailer', {}), { ok: false, error: 'approval_required' });
+});
+
+test('the gateway tells the executor whether the call is influenced by external input, and bindToEffectLedger forwards it to the ledger', async () => {
+  const seen: { meta: unknown[]; requests: boolean[] } = { meta: [], requests: [] };
+  const executor = bindToEffectLedger<ToolExecutionRequest, ToolExecutionResult, { stepId: string }, { state: 'confirmed' }>({
+    ledger: metaLedger(seen) as never,
+    run: async (request, perform) => {
+      seen.requests.push(request.influencedByExternalInput);
+      await perform('mailer', { stepId: 's1' });
+      return { result: {} };
+    },
+  }) as ToolExecutor;
+  await gateway(NEEDS_APPROVAL, executor, { externalInput: true, effectMode: 'draft' }).call('mailer', {});
+  await gateway(NEEDS_APPROVAL, executor, { externalInput: false }).call('mailer', {});
+  assert.deepEqual(seen.requests, [true, false]);
+  assert.deepEqual(seen.meta, [{ influenced: true }, { influenced: false }]);
 });

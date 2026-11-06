@@ -75,6 +75,10 @@ export interface ToolExecutionRequest {
    * 외부에 나가는 실행기(`fetch_url`)가 스스로 적용한다. 실행기는 이 값으로 권한을 넓히지 못한다(좁히기만 한다).
    */
   constraints: Readonly<ToolCallConstraints>;
+  /**
+   * 이 호출이 외부 입력의 영향 하에 있는가 (게이트웨이가 채운다, 에이전트는 못 바꾼다). 원장에 묶인 실행기가 초안에 표시를 남기는 데 쓴다 (ADR-0015).
+   */
+  influencedByExternalInput: boolean;
 }
 
 export interface ToolExecutionResult {
@@ -125,6 +129,11 @@ export interface ToolGatewayOptions {
   onCostProgress?: (event: CostProgressEvent) => void;
   /** run 입력에 외부 콘텐츠가 이미 들어 있으면 true: 처음부터 모든 호출을 외부 입력 영향 호출로 표시한다 */
   externalInput?: boolean;
+  /**
+   * 부작용 호출을 어떻게 다루는가 (ADR-0015). `send`(기본): 지금 방식. `draft`: 초안 단계 run — 원장에 묶인 실행기는 (외부 입력 영향이어도, 정책이 allow여도) 실행하고
+   * (원장 입구가 보내지 않고 초안으로 남긴다), 원장에 묶이지 않은 부작용 도구는 `approval_required` 로 거부한다. `deny` 는 그대로 막힌다.
+   */
+  effectMode?: 'send' | 'draft';
 }
 
 // ===== 기록 =====
@@ -226,6 +235,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
   const timers = options.timers ?? realGatewayTimers;
   const runSignal = options.signal ?? new AbortController().signal;
   const specs = indexTools(options);
+  const effectMode = options.effectMode ?? 'send';
   const executorConstraints = deepFreeze(structuredClone(constraints));
 
   const records: ToolCallRecord[] = [];
@@ -252,17 +262,17 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
 
   /** 그룹별 직렬화 대기열 (이 run 안에서만) */
   const serialChains = new Map<string, Promise<unknown>>();
-  const execute = (spec: GatewayToolSpec, executor: ToolExecutor, args: Readonly<JsonObject>): Promise<ExecOutcome> => {
+  const execute = (spec: GatewayToolSpec, executor: ToolExecutor, args: Readonly<JsonObject>, influenced: boolean): Promise<ExecOutcome> => {
     const group = spec.serialGroup;
-    if (group === undefined) return executeNow(spec, executor, args);
+    if (group === undefined) return executeNow(spec, executor, args, influenced);
     const previous = serialChains.get(group) ?? Promise.resolve();
     // 앞 호출이 끝난 뒤에 시작한다. 그 사이 run 이 취소되었으면 실행하지 않는다
-    const mine = previous.then((): Promise<ExecOutcome> | ExecOutcome => (runSignal.aborted ? { kind: 'cancelled', notStarted: true } : executeNow(spec, executor, args)));
+    const mine = previous.then((): Promise<ExecOutcome> | ExecOutcome => (runSignal.aborted ? { kind: 'cancelled', notStarted: true } : executeNow(spec, executor, args, influenced)));
     serialChains.set(group, mine.then(() => undefined, () => undefined));
     return mine;
   };
 
-  const executeNow = (spec: GatewayToolSpec, executor: ToolExecutor, args: Readonly<JsonObject>): Promise<ExecOutcome> => {
+  const executeNow = (spec: GatewayToolSpec, executor: ToolExecutor, args: Readonly<JsonObject>, influenced: boolean): Promise<ExecOutcome> => {
     const abort = new AbortController();
     const signal = AbortSignal.any([runSignal, abort.signal]);
     const timeoutMs = spec.timeoutMs ?? options.toolTimeoutMs;
@@ -283,7 +293,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
       runSignal.addEventListener('abort', onRunAbort, { once: true });
       let running: Promise<ToolExecutionResult>;
       try {
-        running = Promise.resolve(executor({ runId, tool: spec.tool, operation: spec.operation, args, signal, constraints: executorConstraints }));
+        running = Promise.resolve(executor({ runId, tool: spec.tool, operation: spec.operation, args, signal, constraints: executorConstraints, influencedByExternalInput: influenced }));
       } catch (error) {
         settle({ kind: 'error', error });
         return;
@@ -368,7 +378,15 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
       // 기록에는 정책이 실제로 말한 판정을 남긴다: 승인을 원장에 맡긴 호출은 require_approval 이 기록되고 사유에 그 사실이 붙는다
       let recorded: PolicyDecisionValue = 'allow';
       let deferredReason: string | undefined;
-      if (verdict.decision === 'require_approval') {
+      if (effectMode === 'draft' && spec.sideEffect) {
+        // 초안 단계 run (ADR-0015): 보내지 않는다. 원장에 묶인 실행기만 실행하고(원장 입구가 초안으로 남긴다) 나머지 부작용 도구는 막는다.
+        // 외부 입력 영향 하한은 여기서 적용하지 않는다 — 사람이 정확한 내용을 승인하므로 초안은 만들 수 있고, 초안에 표시가 남는다.
+        if (!isEffectLedgerBound(executor)) {
+          return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: 'draft mode: a side-effect tool that is not bound to the effect ledger cannot run in a draft run', response: refuse('approval_required') });
+        }
+        recorded = verdict.decision;
+        deferredReason = `${verdict.decision === 'allow' ? 'allow' : verdict.reason}; draft mode: recorded as a draft, nothing is sent`;
+      } else if (verdict.decision === 'require_approval') {
         // 승인 판정을 원장에 넘길 수 있는 것은 `bindToEffectLedger` 로 만든 실행기뿐이다 (effect-ledger.ts). 스펙의 표시가 아니다. 외부 입력의 영향을 받은 run 은 그래도 막는다(하한)
         const deferred = isEffectLedgerBound(executor) && !influenced;
         if (!deferred) return done({ ...base, outcome: 'approval_required', decision: 'require_approval', reason: verdict.reason, response: refuse('approval_required') });
@@ -377,7 +395,7 @@ export function createToolGateway(options: ToolGatewayOptions): RunToolGateway {
       }
       if (runSignal.aborted) return done({ ...base, outcome: 'run_cancelled', decision: recorded, response: refuse('run_cancelled') });
 
-      const outcome = await execute(spec, executor, snapshot);
+      const outcome = await execute(spec, executor, snapshot, influenced);
       const unitCost = spec.unitCost ?? {};
       switch (outcome.kind) {
         case 'timeout':

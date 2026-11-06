@@ -9,8 +9,11 @@
 //  - beforeEffect: 외부 부작용 전송 직전 (펜싱·heartbeat 와 같은 쓰기 트랜잭션). 거부되면 보내지 않는다.
 //                  처음 전송·같은 키 재전송이 거부되면 run 을 멈추고 running → needs_review,
 //                  `failed` 재전송(recovery §3 "정책 허용 시")이 거부되면 재전송만 하지 않는다
+// run 단계(ADR-0015): beforeRun 이 `execute`(지금 방식) / `draft`(보내지 않고 초안만) / `dispatch`(호스트가 승인된 초안을 그대로 전송)를 정한다.
+//                  beforeEffect 는 그 단계를 다시 받아 draft 단계는 무조건 거부하고, dispatch 단계는 `requestHash` 가 승인된 초안의 해시일 때만 허용한다.
 // 세 메서드는 동기이며 쓰기 트랜잭션 안에서 불린다. policy_decision 기록은 넘겨받은 `tx` 로 한다. 외부 호출을 하지 않는다.
 import type { Db } from '../db/types.ts';
+import type { EffectApprovalMode, RunPhase } from '../entities/enums.ts';
 import type { TaskRow } from '../entities/rows.ts';
 import type { TaskSpec } from '../spec/task-spec.ts';
 
@@ -40,9 +43,15 @@ export interface TaskRunGateRequest {
   /** 이번에 만들 task_run.attempt */
   attempt: number;
   now: string;
+  /**
+   * 이 업무의 외부 부작용 도구들이 선언한 승인 방식 (ADR-0015). `draft` 는 명세의 모든 `external_effect` 요청이 등록된 도구의 `approval: 'draft'` 동작일 때뿐이다.
+   * 없으면 `scope`(지금 동작).
+   */
+  effectApproval?: EffectApprovalMode;
 }
 
-export type TaskRunVerdict = { decision: 'allow' } | { decision: 'needs_review'; reason: string };
+/** `allow` 는 이번 run 의 단계를 함께 정한다 (ADR-0015). 초안 승인이 없는 기존 판정은 모두 `execute`. */
+export type TaskRunVerdict = { decision: 'allow'; phase: RunPhase } | { decision: 'needs_review'; reason: string };
 
 /** 'first': 처음 전송, 'retry_unknown': 멱등 지원 도구의 같은 키 재전송, 'resend_failed': `failed` 부작용의 재전송 */
 export type EffectDispatchKind = 'first' | 'retry_unknown' | 'resend_failed';
@@ -56,6 +65,10 @@ export interface TaskEffectGateRequest {
   target: string;
   dispatch: EffectDispatchKind;
   now: string;
+  /** 이 run 의 단계 (lease 에서). `draft` 단계는 무조건 거부한다 (ADR-0015) */
+  phase: RunPhase;
+  /** 보낼 요청의 해시(`external_effect.request_hash`). `dispatch` 단계는 승인된 초안의 `payload_hash` 와 같아야 한다 */
+  requestHash: string;
 }
 
 export type TaskEffectVerdict = { decision: 'allow' } | { decision: 'refuse'; reason: string };

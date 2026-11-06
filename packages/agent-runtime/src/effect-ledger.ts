@@ -10,8 +10,12 @@
 // 한계: 본문이 `perform` 없이 직접 외부에 접근하는 것까지 막지는 못한다. 실행기는 호스트가 조립하는 신뢰된 코드이고(에이전트는 닿지 못한다) 이 구조는 실수와 설정 오류를 잡는다.
 // 이 모듈은 게이트웨이 타입을 참조하지 않는다(순환 방지): 요청·결과 타입은 제네릭이다.
 
-/** 원장을 거쳐 부작용을 보내는 함수 (task-engine 의 `RunContext.performEffect` 와 구조가 같다) */
-export type EffectLedgerRunner<Step, Outcome> = (tool: string, step: Step) => Promise<Outcome>;
+/**
+ * 원장을 거쳐 부작용을 보내는 함수 (task-engine 의 `RunContext.performEffect` 와 구조가 같다).
+ * `meta.influenced`: 외부 입력이 영향을 준 호출인가 — 요청의 `influencedByExternalInput`(게이트웨이가 채운다)을 `bindToEffectLedger` 가 실어 준다.
+ * 초안 단계(ADR-0015)의 원장은 이 표시를 초안 행에 남기고, 전송 단계 원장은 쓰지 않는다.
+ */
+export type EffectLedgerRunner<Step, Outcome> = (tool: string, step: Step, meta?: { influenced: boolean }) => Promise<Outcome>;
 
 export interface LedgerPerform<Step, Outcome> {
   (tool: string, step: Step): Promise<Outcome>;
@@ -27,10 +31,12 @@ export function bindToEffectLedger<Req, Res, Step, Outcome>(options: {
 }): (request: Req) => Promise<Res> {
   const executor = async (request: Req): Promise<Res> => {
     let passed = 0;
+    // 영향 표시는 실행기 본문이 아니라 여기서 요청에서 읽어 넘긴다 (본문이 빠뜨려도 초안에 표시가 남는다)
+    const influenced = (request as { influencedByExternalInput?: unknown } | null)?.influencedByExternalInput === true;
     const perform = Object.assign(
       (tool: string, step: Step): Promise<Outcome> => {
         passed += 1;
-        return options.ledger(tool, step);
+        return options.ledger(tool, step, { influenced });
       },
       {
         noEffect: (reason: string): void => {

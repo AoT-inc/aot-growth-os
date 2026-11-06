@@ -62,7 +62,9 @@ export type EffectOutcome =
   | { state: 'confirmed'; effectId: string; responseRef: string | null; reused: boolean }
   | { state: 'failed'; effectId: string; reused: boolean }
   | { state: 'unknown'; effectId: string }
-  | { state: 'compensated'; effectId: string };
+  | { state: 'compensated'; effectId: string }
+  /** 초안 단계(draft) run: 보내지 않고 `effect_draft` 에 남겼다 (ADR-0015). 외부 응답은 없다 */
+  | { state: 'drafted'; draftId: string };
 
 export function effectKeyOf(taskId: string, stepId: string, request: unknown): string {
   return sha256(canonicalJson([taskId, stepId, request]));
@@ -134,6 +136,8 @@ export type DispatchStart =
  */
 export function beginDispatch(db: Db, clock: Clock, lease: Lease, effect: Pick<ExternalEffectRow, 'id' | 'state'>, gate: TaskPolicyGate): DispatchStart {
   const kinds: Partial<Record<ExternalEffectRow['state'], EffectDispatchKind>> = { planned: 'first', unknown: 'retry_unknown', failed: 'resend_failed' };
+  // 초안 단계 run 은 아무것도 보내지 않는다 (ADR-0015 I1, 방어: 정책 게이트의 draft 거부와 이중)
+  if (lease.phase === 'draft') throw new Error(`run ${lease.runId} is a draft-phase run; it must not dispatch external effects`);
   return db.writeTx((tx) => {
     heartbeatInTx(tx, clock, lease);
     const now = clock.nowIso();
@@ -157,7 +161,7 @@ export function beginDispatch(db: Db, clock: Clock, lease: Lease, effect: Pick<E
     const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [lease.taskId])!;
     const verdict = gate.beforeEffect(tx, {
       task, spec: JSON.parse(task.spec) as TaskSpec, runId: lease.runId, tool: row.tool, action: row.action, target: row.target,
-      dispatch, now,
+      dispatch, now, phase: lease.phase ?? 'execute', requestHash: row.request_hash,
     });
     if (verdict.decision !== 'allow') {
       if (dispatch === 'resend_failed') return { started: false, code: 'policy_refused', reason: verdict.reason, runStopped: false };

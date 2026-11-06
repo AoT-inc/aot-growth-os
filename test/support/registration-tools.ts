@@ -62,7 +62,7 @@ export function toolRun(root: string, evidence: EvidenceCapture): RegistrationTo
 }
 
 export const request = (tool: string, operation: string, args: JsonObject = {}, signal: AbortSignal = new AbortController().signal): ToolExecutionRequest => ({
-  runId: 'run-1', tool, operation, args, signal, constraints: { max_usd: 1 },
+  runId: 'run-1', tool, operation, args, signal, constraints: { max_usd: 1 }, influencedByExternalInput: false,
 });
 
 export type StubScanScenario =

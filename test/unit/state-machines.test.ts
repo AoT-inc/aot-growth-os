@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  assertTransition, checkTransition, EXTERNAL_EFFECT_MACHINE, isTaskTerminal, NON_AGENT_ACTORS, ORG_PROPOSAL_MACHINE,
+  assertTransition, checkTransition, EFFECT_DRAFT_MACHINE, EXTERNAL_EFFECT_MACHINE, isTaskTerminal, NON_AGENT_ACTORS, ORG_PROPOSAL_MACHINE,
   PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE, ROLE_MACHINE, STRATEGY_MACHINE,
   TASK_MACHINE, TransitionError, reachableFrom,
   type StateMachine, type TransitionActor,
@@ -49,6 +49,11 @@ const EFFECT_ALLOWED: Pair[] = [
   ['unknown', 'dispatched'], ['unknown', 'confirmed'], ['unknown', 'failed'], ['failed', 'dispatched'], ['confirmed', 'compensated'],
 ];
 
+// docs/schema/state-machines.md "외부 부작용 초안" 표 (ADR-0015)
+const DRAFT_ALLOWED: Pair[] = [
+  [null, 'pending'], ['pending', 'proposed'], ['pending', 'superseded'], ['proposed', 'superseded'], ['proposed', 'rejected'],
+];
+
 const ALL_ACTORS: TransitionActor[] = [...NON_AGENT_ACTORS, 'agent'];
 
 function acceptsSome(machine: StateMachine<string>, from: string | null, to: string): boolean {
@@ -66,6 +71,7 @@ const MACHINES: ReadonlyArray<readonly [string, StateMachine<string>, Pair[]]> =
   ['product registration', PRODUCT_REGISTRATION_MACHINE, REGISTRATION_ALLOWED],
   ['product lifecycle', PRODUCT_LIFECYCLE_MACHINE, LIFECYCLE_ALLOWED],
   ['external_effect', EXTERNAL_EFFECT_MACHINE, EFFECT_ALLOWED],
+  ['effect_draft', EFFECT_DRAFT_MACHINE, DRAFT_ALLOWED],
 ];
 
 for (const [name, machine, allowed] of MACHINES) {
@@ -121,9 +127,13 @@ test('task: needs_review exits need a human and an approval record', () => {
     assert.ok(!noApproval.ok && noApproval.code === 'approval_required', to);
     assert.ok(checkTransition(TASK_MACHINE, { from: 'needs_review', to, by: 'human', approvalId: 'approval-1' }).ok);
     for (const by of ['scheduler', 'validator', 'policy', 'system'] as const) {
-      assert.equal(checkTransition(TASK_MACHINE, { from: 'needs_review', to, by, approvalId: 'approval-1' }).ok, false);
+      // ADR-0016 (제안): 주체 policy 는 needs_review → queued 만, 위임 승인 참조와 함께 가능하다. 나머지 출구는 사람만
+      const allowed = by === 'policy' && to === 'queued';
+      assert.equal(checkTransition(TASK_MACHINE, { from: 'needs_review', to, by, approvalId: 'approval-1' }).ok, allowed, `${by} -> ${to}`);
     }
   }
+  const policyNoApproval = checkTransition(TASK_MACHINE, { from: 'needs_review', to: 'queued', by: 'policy' });
+  assert.ok(!policyNoApproval.ok && policyNoApproval.code === 'approval_required', 'the policy actor needs an approval reference too');
 });
 
 test('task: cancellation needs a reason and a human or the policy', () => {
@@ -220,6 +230,20 @@ test('every rule documents its allowed actors, and the table has no duplicate (f
         assert.ok(!seen.has(key), `${name}: duplicate ${key}`);
         seen.add(key);
       }
+    }
+  }
+});
+
+test('effect_draft: only the validator proposes, only a human rejects; superseded and rejected are final', () => {
+  for (const by of NON_AGENT_ACTORS) {
+    assert.equal(checkTransition(EFFECT_DRAFT_MACHINE, { from: 'pending', to: 'proposed', by }).ok, by === 'validator', `proposed by ${by}`);
+    assert.equal(checkTransition(EFFECT_DRAFT_MACHINE, { from: 'proposed', to: 'rejected', by }).ok, by === 'human', `rejected by ${by}`);
+    assert.equal(checkTransition(EFFECT_DRAFT_MACHINE, { from: null, to: 'pending', by }).ok, by === 'scheduler', `created by ${by}`);
+  }
+  for (const from of ['superseded', 'rejected'] as const) {
+    for (const to of EFFECT_DRAFT_MACHINE.states) {
+      const r = checkTransition(EFFECT_DRAFT_MACHINE, { from, to, by: 'human' });
+      assert.ok(!r.ok && r.code === 'terminal_state', `${from}->${to}`);
     }
   }
 });

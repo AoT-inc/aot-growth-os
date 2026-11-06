@@ -7,9 +7,10 @@
 // lease 를 잃은 뒤에는 결과도 부작용도 기록하지 않는다 (펜싱이 거부한다).
 import {
   DENY_ALL_TASK_POLICY_GATE,
-  type Clock, type Db, type ExternalEffectRow, type TaskPolicyGate, type TaskSpec, type TaskValidator,
+  parseTimeLimit, type Clock, type Db, type ExternalEffectRow, type RunPhase, type TaskPolicyGate, type TaskSpec, type TaskValidator,
 } from '@aot/domain';
 
+import { DEFAULT_DRAFT_TTL_MS, dispatchApprovedDrafts, effectApprovalOf, recordDraft } from './drafts.ts';
 import { performEffect, type EffectOutcome, type EffectStep, type EffectTool } from './effects.ts';
 import { EffectDeclarationError, EffectRefusedError, LeaseLostError, RunKilledError } from './errors.ts';
 import { validateEffectToolDeclaration, type DeclarationError } from './idempotency.ts';
@@ -37,6 +38,8 @@ export interface RunContext {
   readonly upstream: readonly UpstreamResult[];
   /** 직전 run 의 checkpoint (없으면 null) */
   readonly checkpoint: unknown;
+  /** 이 run 의 단계 (ADR-0015). `draft` 에서는 `performEffect` 가 보내지 않고 초안으로 남긴다 */
+  readonly phase: RunPhase;
   /** lease 를 잃으면 abort 된다 */
   readonly signal: AbortSignal;
   saveCheckpoint(value: unknown): void;
@@ -45,8 +48,11 @@ export interface RunContext {
   recordOutput(record: RunOutputRecord): void;
   /** 호스트 코드(도구 실행기)가 저장한 본문의 근거 행을 즉시 남기고 행 id 를 돌려준다 (lease 펜싱). 에이전트 어댑터에는 노출되지 않는다 */
   recordEvidence(item: HostEvidence): string;
-  /** 등록된 도구로 외부 부작용 수행 (recovery §3 규칙) */
-  performEffect(toolName: string, step: EffectStep): Promise<EffectOutcome>;
+  /**
+   * 등록된 도구로 외부 부작용 수행 (recovery §3 규칙). `draft` 단계에서는 아무것도 보내지 않고 초안을 남긴다 (결과 `drafted`).
+   * `meta.influenced`: 외부 입력이 영향을 준 호출인가 (초안 행에 표시가 남는다)
+   */
+  performEffect(toolName: string, step: EffectStep, meta?: { influenced?: boolean }): Promise<EffectOutcome>;
 }
 
 export interface TaskExecutor {
@@ -97,6 +103,10 @@ export interface WorkerOptions {
   routines?: RoutineScheduleOptions;
   /** lease 만료 인수가 시도 횟수를 소모하는가. 기본 false */
   leaseExpiryConsumesAttempt?: boolean;
+  /** 초안 기한(밀리초, ADR-0015 D8). 기본 72시간 */
+  draftTtlMs?: number;
+  /** 전송 단계 run 의 시간 제한 상한(ms). 명세의 `constraints.time_limit`(없으면 30분)과 비교해 짧은 쪽이 적용된다 */
+  dispatchTimeLimitMs?: number;
   timers?: Timers;
 }
 
@@ -124,6 +134,8 @@ export interface TickReport {
 /** 한 tick 에서 검증하는 업무 수의 상한 */
 export const VALIDATIONS_PER_TICK = 20;
 
+/** 전송 단계 run 의 기본 시간 제한 (30분, 데몬 `default_time_limit` 의 기본과 같다) */
+export const DEFAULT_DISPATCH_TIME_LIMIT_MS = 30 * 60_000;
 export const DEFAULT_RETRY_DELAY_MS = 60_000;
 export const DEFAULT_DEFER_DELAY_MS = 15 * 60_000;
 
@@ -226,14 +238,36 @@ export class TaskWorker {
     const claim = claimNextTask(db, {
       clock, gate: this.#gate, workerId, actorId, adapter, leaseMs: this.#params.leaseMs,
       ...(this.#options.adapterFor === undefined ? {} : { adapterFor: this.#options.adapterFor }),
+      effectApprovalOf: (spec) => effectApprovalOf(spec, this.#options.tools),
     });
     if (!claim.claimed) return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed: null };
     const executed = await this.#execute(claim.claimed);
     return { recovered, promoted, sentToReview: claim.sentToReview, validated, validationFailed, routines, executed };
   }
 
+  /**
+   * 전송 단계는 시간 제한을 받는다 (명세 `constraints.time_limit`, 없으면 30분; 옵션 `dispatchTimeLimitMs` 가 더 짧으면 그 값). 넘으면 `RunKilledError('time_limit')` 로 run 을 죽인다.
+   * 전송 중이던 효과는 run 이 닫힐 때 `dispatched → unknown` 이 되고(기존 원장 규칙: 멱등이면 같은 키로 재전송, 아니면 needs_review) `failed` 로 기록되지 않는다.
+   * 남은 전송 호출이 뒤늦게 돌아와도 lease 펜싱이 막는다(run 이 닫혔다).
+   */
+  async #dispatchWithinTimeLimit(lease: Lease, spec: TaskSpec) {
+    const { db, clock, tools } = this.#options;
+    const limitMs = Math.min(parseTimeLimit(spec.constraints.time_limit) ?? DEFAULT_DISPATCH_TIME_LIMIT_MS, this.#options.dispatchTimeLimitMs ?? Number.POSITIVE_INFINITY);
+    const sending = dispatchApprovedDrafts(db, clock, lease, tools ?? {}, this.#gate);
+    sending.catch(() => undefined); // 시간 제한으로 버려진 뒤의 늦은 거부는 펜싱이 막은 것이다
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new RunKilledError('time_limit', `the dispatch run exceeded its time limit of ${limitMs} ms`)), limitMs);
+    });
+    try {
+      return await Promise.race([sending, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async #execute(claimed: ClaimedTask): Promise<ExecutionReport> {
-    const { lease, spec, checkpoint, adapter, upstream } = claimed;
+    const { lease, spec, checkpoint, adapter, upstream, phase } = claimed;
     const { db, clock, executor, tools } = this.#options;
     const abort = new AbortController();
     // 부작용 직전 재검증이 거부하면 run 은 이미 닫혔다(killed, needs_review). 이후 쓰기는 펜싱이 막는다.
@@ -278,6 +312,7 @@ export class TaskWorker {
       adapter,
       upstream,
       checkpoint,
+      phase,
       signal: abort.signal,
       saveCheckpoint: (value) => guard(() => saveCheckpoint(db, clock, lease, value)),
       heartbeat: () => {
@@ -285,11 +320,14 @@ export class TaskWorker {
       },
       recordOutput: (record) => guard(() => recordRunOutput(db, clock, lease, record)),
       recordEvidence: (item) => guard(() => recordHostEvidence(db, clock, lease, item)),
-      performEffect: async (toolName, step) => {
+      performEffect: async (toolName, step, meta) => {
         const tool = tools?.[toolName];
         if (!tool) throw new Error(`external effect tool '${toolName}' is not registered`);
         if (abort.signal.aborted) throw new LeaseLostError(lease.runId, 'external effect after lease loss');
         try {
+          if (phase === 'draft') {
+            return recordDraft(db, clock, lease, tool, step, { ttlMs: this.#options.draftTtlMs ?? DEFAULT_DRAFT_TTL_MS, influenced: meta?.influenced === true });
+          }
           return await performEffect(db, clock, lease, tool, step, this.#gate);
         } catch (error) {
           lost(error);
@@ -304,7 +342,10 @@ export class TaskWorker {
     try {
       let output: { result: unknown };
       try {
-        output = await executor.execute(context);
+        // 전송 단계는 호스트 전송기가 맡는다. 에이전트 실행기(LLM)는 부르지 않는다 (ADR-0015 I2)
+        output = phase === 'dispatch'
+          ? { result: await this.#dispatchWithinTimeLimit(lease, spec) }
+          : await executor.execute(context);
       } catch (error) {
         if (lost(error) || abort.signal.aborted) return report('lease_lost');
         if (error instanceof RunKilledError) {

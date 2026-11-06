@@ -23,7 +23,7 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, type DockerCli, type OrphanCleanupResult } from '@aot/agent-runtime';
+import { checkDockerAvailable, cleanupOrphanContainers, isValidInstanceId, maskSecrets, type DockerCli, type JsonValue, type OrphanCleanupResult } from '@aot/agent-runtime';
 import type { Clock, Db, MeasurementSignal, TaskPolicyGate, ToolCallPolicy } from '@aot/domain';
 import { createMeasurementSignalSource, createTaskValidator, type EvaluatorDeps } from '@aot/evaluation';
 import {
@@ -32,9 +32,11 @@ import {
 import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, type TaskExecutor, type Timers } from '@aot/task-engine';
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
+import { createDelegateCycle, type DelegateCycle, type DelegateReviewer } from './delegate-cycle.ts';
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createConsentHandler, isConsentCommand } from './consent.ts';
+import { createContactsHandler, isContactsCommand } from './contacts.ts';
 import { createProductChannel, isProductCommand } from './product-channel.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
@@ -87,6 +89,8 @@ export interface AssembleOptions {
   retryDelayMs?: number;
   /** 어댑터가 미룬 run 의 retry_wait 대기 시간 (시도 소모 없음). 기본 15분 */
   deferDelayMs?: number;
+  /** 외부 부작용 초안의 기한(ms, ADR-0015). 기본 72시간 */
+  draftTtlMs?: number;
   timers?: Timers;
   /**
    * 검증·평가에 쓸 외부 포트 (출처 조회, LLM 검증기, 효과 측정). 주면 검증기를 조립해 `validating` 업무를 검증·전이한다.
@@ -120,6 +124,11 @@ export interface AssembleOptions {
    * 도구가 열려도 명세의 `allowed_tools`, 도구 호출별 정책 판정, 전화 정책(`phone:` 섹션; 없으면 모든 통화 거부)이 모두 통과해야 통화가 일어난다.
    */
   phone?: PhoneOptions;
+  /**
+   * 결정 위임 (ADR-0016, 제안). 위임(`delegation.mandates`)은 정책이 선언해야 켜진다 — 이 옵션은 위임 *검토자*(AI)를 연결할 뿐이다. 없으면 `Daemon.delegation.advance()` 는 이미 기록된 위임 승인을
+   * cooldown 뒤에 풀어 주기만 하고 새 검토를 하지 않는다(적격한 업무는 사람에게 남는다). 위임이 없는 정책에서는 어느 쪽이든 아무것도 쓰지 않는다.
+   */
+  delegate?: { reviewer?: DelegateReviewer; maxReviewsPerAdvance?: number };
 }
 
 /**
@@ -174,7 +183,9 @@ export interface Daemon {
   cycle: ExperimentCycle | null;
   /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
   phone: PhoneRuntime | null;
-  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
+  /** 위임 주기 (ADR-0016, 제안): 위임 승인 풀어 주기 + 적격 업무 검토. main 루프가 tick 뒤마다 `advance()` 를 부른다. 소켓에 닿지 않는다 */
+  delegation: DelegateCycle;
+  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `contacts` 는 고객 연락처 채널(D-B11), `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
    * 첫 tick 전에 부른다. 컨테이너 어댑터가 설정된 경우에만 Docker 가용성을 확인하고(없으면 DockerUnavailableError, 호스트 실행으로 대체하지 않는다)
@@ -190,7 +201,11 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   }
   const store = new PolicyStore({ dir: options.paths.policyStoreDir, templates: [DEFAULT_POLICY_TEMPLATE] });
   const gate = createPolicyGate({ store });
-  const engine = new ApprovalEngine({ db: options.db, clock: options.clock, store, totp: new TotpSecretStore(options.paths.totpDir) });
+  const engine = new ApprovalEngine({
+    db: options.db, clock: options.clock, store, totp: new TotpSecretStore(options.paths.totpDir),
+    // 초안 승인은 사람이 가려지지 않은 모든 바이트를 보고 하는 승인이다: CLI·화면과 같은 가리기(maskSecrets)로 가려지는 값이 있으면 승인하지 못한다 (ADR-0015)
+    maskPayload: (payload) => maskSecrets(payload as JsonValue),
+  });
   const toolCallPolicy = createToolCallPolicy({ db: options.db, store });
   const phone = options.phone === undefined ? null : createPhoneRuntime({ db: options.db, clock: options.clock, store, options: options.phone });
   const agentOptions = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
@@ -216,8 +231,15 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   };
   const measure = measurementSignals.length === 0 ? null : createMeasurementHandler({ db: options.db, clock: options.clock, signals: measurementSignals });
   const resolveEffects = createEffectResolutionHandler({ db: options.db, clock: options.clock, reauth: (tx, actorId, code, purpose) => engine.reauthenticateInTx(tx, actorId, code, purpose) });
-  const decide = createExperimentDecisionHandler({ db: options.db, clock: options.clock });
+  const decide = createExperimentDecisionHandler({
+    db: options.db, clock: options.clock,
+    subjectHash: (actor, strategyVersionId) => {
+      const shown = engine.handle({ cmd: 'show', actor, kind: 'strategy_version', id: strategyVersionId });
+      return shown.ok && typeof shown['hash'] === 'string' ? shown['hash'] : null;
+    },
+  });
   const consent = createConsentHandler({ db: options.db, clock: options.clock });
+  const contacts = createContactsHandler({ db: options.db, clock: options.clock });
   const org = createOrgChannel({ db: options.db, clock: options.clock });
   const productChannel = options.productChannel === undefined ? null : createProductChannel({
     db: options.db, clock: options.clock, gate, forbiddenRoots: options.productChannel.forbiddenRoots,
@@ -226,6 +248,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const handleChannelRequest = (request: unknown): unknown => {
     if (isEffectResolutionCommand(request)) return resolveEffects(request);
     if (isConsentCommand(request)) return consent(request);
+    if (isContactsCommand(request)) return contacts(request);
     if (isOrgCommand(request)) return org(request as Record<string, unknown>);
     if (isProductCommand(request)) return productChannel === null ? { ok: false, error: 'the product channel is not configured (set registration_tools)' } : productChannel(request);
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);
@@ -242,6 +265,11 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
       return active === null || active.policy === null ? undefined : memoryDefaultValidity(active.policy.document);
     },
   });
+  const delegation = createDelegateCycle({
+    engine,
+    reviewer: options.delegate?.reviewer,
+    ...(options.delegate?.maxReviewsPerAdvance === undefined ? {} : { maxReviewsPerAdvance: options.delegate.maxReviewsPerAdvance }),
+  });
   const worker = new TaskWorker({
     db: options.db,
     clock: options.clock,
@@ -256,6 +284,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     ...(options.lease === undefined ? {} : { lease: options.lease }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
     ...(options.deferDelayMs === undefined ? {} : { deferDelayMs: options.deferDelayMs }),
+    ...(options.draftTtlMs === undefined ? {} : { draftTtlMs: options.draftTtlMs }),
     ...(options.timers === undefined ? {} : { timers: options.timers }),
     ...(pack === null ? {} : { routines: { source: pack.templateSource } }),
   });
@@ -270,6 +299,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     measurementSignals,
     cycle,
     phone,
+    delegation,
     handleChannelRequest,
     async prepareAgentRuntime() {
       const docker = options.agent?.docker;

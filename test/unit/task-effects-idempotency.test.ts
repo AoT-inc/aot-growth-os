@@ -53,7 +53,7 @@ function counting(tool: EffectTool): EffectTool & { readonly keys: string[] } {
 
 /** lookup 이 없는 멱등 도구 */
 function noLookup(fake: FakeTool, retentionMs: number): EffectTool & { readonly keys: string[] } {
-  return counting({ name: fake.name, actions: { send: { idempotency: { supported: true, retention_ms: retentionMs } } }, send: asEffectTool(fake).send });
+  return counting({ name: fake.name, actions: { send: { approval: 'scope', idempotency: { supported: true, retention_ms: retentionMs } } }, send: asEffectTool(fake).send });
 }
 
 const spyGate = () => {
@@ -189,7 +189,7 @@ test('beyond the window, with lookup: found -> confirmed without sending; not fo
   const variants: [string, (f: FakeTool) => EffectTool][] = [
     ['idempotent', (f) => ({ ...asEffectTool(f), lookup: () => notFound })],
     ['unsupported + carrier none', (f) => ({
-      name: f.name, actions: { send: { idempotency: { supported: false }, effect_key_carrier: 'none' } }, send: asEffectTool(f).send, lookup: () => notFound,
+      name: f.name, actions: { send: { approval: 'scope', idempotency: { supported: false }, effect_key_carrier: 'none' } }, send: asEffectTool(f).send, lookup: () => notFound,
     })],
   ];
   for (const [label, make] of variants) {
@@ -381,7 +381,7 @@ async function adopted(t: Parameters<typeof seededDb>[0]) {
 
 test('declaration change on adoption: shorter retention tightens the row and the window is computed with it', async (t) => {
   const closed = await adopted(t);
-  const v2 = closed.withActions({ send: { idempotency: { supported: true, retention_ms: 100_000 } } }); // 창 50초 < 경과 60초
+  const v2 = closed.withActions({ send: { approval: 'scope', idempotency: { supported: true, retention_ms: 100_000 } } }); // 창 50초 < 경과 60초
   assert.equal((await performEffect(closed.db, closed.clock, closed.lease2, v2, STEP, ALLOW_ALL_GATE)).state, 'unknown');
   assert.equal(v2.keys.length, 0);
   assert.equal(Number(closed.row().supports_idempotency), 0, '강화된 창으로도 닫혔으니 닫힘 판정이 행에 남는다');
@@ -390,7 +390,7 @@ test('declaration change on adoption: shorter retention tightens the row and the
   assert.deepEqual(submitRun(closed.db, closed.clock, closed.lease2, {}), { outcome: 'effect_unknown', taskStatus: 'needs_review' });
 
   const open = await adopted(t);
-  const v2open = open.withActions({ send: { idempotency: { supported: true, retention_ms: 200_000 } } }); // 창 100초 > 경과 60초
+  const v2open = open.withActions({ send: { approval: 'scope', idempotency: { supported: true, retention_ms: 200_000 } } }); // 창 100초 > 경과 60초
   assert.equal((await performEffect(open.db, open.clock, open.lease2, v2open, STEP, ALLOW_ALL_GATE)).state, 'confirmed');
   assert.equal(v2open.keys.length, 1);
   assert.equal(Number(open.row().idempotency_retention_ms), 200_000);
@@ -398,7 +398,7 @@ test('declaration change on adoption: shorter retention tightens the row and the
 
 test('declaration change on adoption: v2 unsupported -> row (0, NULL), nothing sent, needs_review', async (t) => {
   const env = await adopted(t);
-  const v2 = env.withActions({ send: { idempotency: { supported: false } } });
+  const v2 = env.withActions({ send: { approval: 'scope', idempotency: { supported: false } } });
   assert.equal((await performEffect(env.db, env.clock, env.lease2, v2, STEP, ALLOW_ALL_GATE)).state, 'unknown');
   assert.equal(v2.keys.length, 0);
   assert.equal(Number(env.row().supports_idempotency), 0);
@@ -408,14 +408,14 @@ test('declaration change on adoption: v2 unsupported -> row (0, NULL), nothing s
 
 test('declaration change on adoption: v2 with a longer retention never loosens the row', async (t) => {
   const env = await adopted(t);
-  const v2 = env.withActions({ send: { idempotency: { supported: true, retention_ms: LONG * 2 } } });
+  const v2 = env.withActions({ send: { approval: 'scope', idempotency: { supported: true, retention_ms: LONG * 2 } } });
   assert.equal((await performEffect(env.db, env.clock, env.lease2, v2, STEP, ALLOW_ALL_GATE)).state, 'confirmed');
   assert.equal(Number(env.row().idempotency_retention_ms), LONG);
 });
 
 test('declaration change on adoption: v2 without the action does not throw; the unknown effect is adopted and tightened to (0, NULL)', async (t) => {
   const env = await adopted(t);
-  const v2 = env.withActions({ other: { idempotency: { supported: true, retention_ms: LONG } } });
+  const v2 = env.withActions({ other: { approval: 'scope', idempotency: { supported: true, retention_ms: LONG } } });
   assert.equal((await performEffect(env.db, env.clock, env.lease2, v2, STEP, ALLOW_ALL_GATE)).state, 'unknown');
   assert.equal(v2.keys.length, 0);
   assert.equal(env.row().task_run_id, env.lease2.runId, '인수는 롤백되지 않는다');
@@ -427,7 +427,7 @@ test('declaration change on adoption: v2 without the action does not throw; the 
 test('undeclared action on the first plan: EffectDeclarationError, no row, nothing sent; LeaseLostError wins when the lease is gone', async (t) => {
   const env = setup(t);
   const fake = createIdempotentFakeTool();
-  const tool = counting({ name: fake.name, actions: { other: { idempotency: { supported: false } } }, send: asEffectTool(fake).send });
+  const tool = counting({ name: fake.name, actions: { other: { approval: 'scope', idempotency: { supported: false } } }, send: asEffectTool(fake).send });
   const lease = env.claim();
   assert.throws(() => planEffect(env.db, env.clock, lease, tool, STEP), (error: unknown) => {
     assert.ok(error instanceof EffectDeclarationError);
@@ -447,7 +447,7 @@ test('undeclared action on an existing planned row: the throw rolls everything b
   const env = setup(t);
   const fake = createIdempotentFakeTool({ retentionMs: LONG });
   const good = noLookup(fake, LONG);
-  const bad: EffectTool = { name: fake.name, actions: { other: { idempotency: { supported: false } } }, send: good.send };
+  const bad: EffectTool = { name: fake.name, actions: { other: { approval: 'scope', idempotency: { supported: false } } }, send: good.send };
   const lease = env.claim();
   planEffect(env.db, env.clock, lease, good, STEP);
   assert.throws(() => planEffect(env.db, env.clock, lease, bad, STEP), EffectDeclarationError);
@@ -477,11 +477,11 @@ test('TaskWorker constructor: an invalid declaration or a tools-map key that dif
     return [];
   };
 
-  assert.deepEqual(codesOf({ 'notify-tool': { name: 'notify-tool', actions: { send: { idempotency: { supported: true, retention_ms: 1000 } } }, send } }), []);
-  assert.deepEqual(codesOf({ 'notify-tool': { name: 'notify-tool', actions: { send: { idempotency: { supported: true } as never } }, send } }), ['retention_required']);
+  assert.deepEqual(codesOf({ 'notify-tool': { name: 'notify-tool', actions: { send: { approval: 'scope', idempotency: { supported: true, retention_ms: 1000 } } }, send } }), []);
+  assert.deepEqual(codesOf({ 'notify-tool': { name: 'notify-tool', actions: { send: { approval: 'scope', idempotency: { supported: true } as never } }, send } }), ['retention_required']);
   assert.deepEqual(codesOf({ 'notify-tool': { name: 'notify-tool', actions: {}, send } }), ['actions_missing']);
-  assert.deepEqual(codesOf({ 'other-key': { name: 'notify-tool', actions: { send: { idempotency: { supported: false } } }, send } }), ['name_mismatch']);
-  assert.throws(build({ 'notify-tool': { name: 'notify-tool', actions: { send: { idempotency: { supported: false, retention_ms: 5 } as never } }, send } }), EffectDeclarationError);
+  assert.deepEqual(codesOf({ 'other-key': { name: 'notify-tool', actions: { send: { approval: 'scope', idempotency: { supported: false } } }, send } }), ['name_mismatch']);
+  assert.throws(build({ 'notify-tool': { name: 'notify-tool', actions: { send: { approval: 'scope', idempotency: { supported: false, retention_ms: 5 } as never } }, send } }), EffectDeclarationError);
 });
 
 test('a declined resend is persisted: stepping the clock back does not reopen the window (performEffect, then submitRun)', async (t) => {

@@ -2,9 +2,9 @@
 // 불리언 열은 0/1 정수다. 열 이름은 SQL 과 같다. (열거형 값은 enums.ts, 열 이름의 일치는 test/unit/entity-rows.test.ts 가 확인한다.)
 import type {
   AbortReason, ActorKind, ApprovalDecision, ApprovalSubjectKind, CallArtifactKind, CallArtifactSource, CallDirection, CallStatus, CatchUpMode, ChangeClass, CostCategory,
-  EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
+  EffectDraftState, EvalOutcome, EvidenceKind, ExternalEffectState, Impact, Lifecycle, MemoryKind, MemoryValidity,
   OrgProposalStatus, OrgVersionStatus, PolicyDecisionValue, ReauthMethod, ProductKind, ProductLifecycleStage,
-  ProductRegistrationStatus, PublicationStatus, SafetyResult, Scope, Sensitivity, StrategyStatus,
+  ProductRegistrationStatus, PublicationStatus, RunPhase, SafetyResult, Scope, Sensitivity, StrategyStatus,
   TaskRunOutcome, TaskStatus, TriggerKind, TrustOrigin, VerificationStatus,
 } from './enums.ts';
 
@@ -90,7 +90,7 @@ export type TaskTransitionRow = {
 }
 
 export type TaskRunRow = {
-  id: string; task_id: string; attempt: number; actor_id: string; adapter: string; started_at: Iso; ended_at: Iso | null;
+  id: string; task_id: string; attempt: number; actor_id: string; adapter: string; phase: RunPhase; started_at: Iso; ended_at: Iso | null;
   lease_owner: string; lease_expires_at: Iso; heartbeat_at: Iso; checkpoint: Json | null; outcome: TaskRunOutcome | null;
   result: Json | null; run_log_ref: string | null;
 }
@@ -99,6 +99,12 @@ export type ExternalEffectRow = {
   id: string; effect_key: string; task_id: string; task_run_id: string; tool: string; action: string; target: string;
   request_hash: string; state: ExternalEffectState; supports_idempotency: number;
   idempotency_retention_ms: number | null; response_ref: string | null; compensation_ref: string | null; planned_at: Iso; at: Iso;
+}
+
+export type EffectDraftRow = {
+  id: string; task_id: string; task_run_id: string; seq: number; tool: string; action: string; target: string; step_id: string;
+  payload: string; payload_hash: string; effect_key: string; influenced_by_external_input: number; state: EffectDraftState;
+  created_at: Iso; expires_at: Iso; at: Iso;
 }
 
 export type PolicyDecisionRow = {
@@ -121,6 +127,25 @@ export type CostEntryRow = {
 export type ApprovalRow = {
   id: string; subject_kind: ApprovalSubjectKind; subject_id: string; decision: ApprovalDecision;
   subject_hash: string | null; decided_by: string; comment: string | null; at: Iso;
+  /** 위임 승인(ADR-0016)일 때만. 사람 행과 옛 행은 null */
+  mandate_id: string | null; via: 'cli' | 'web' | 'delegate' | null;
+}
+
+/** 위임 검토 기록 (ADR-0016, append-only) */
+export type DelegateReviewRow = {
+  id: number; task_id: string; subject_hash: string; mandate_id: string; verdict: 'approve' | 'request_changes' | 'escalate';
+  reason: string; outcome: string; cost_usd: number; at: Iso;
+}
+
+/** 위임 정지·해제·철회 (ADR-0016, append-only). mandate_id null = 모든 위임 */
+export type DelegationControlRow = {
+  id: number; action: 'pause' | 'resume' | 'revoke'; mandate_id: string | null; actor_id: string; reason: string; at: Iso;
+}
+
+/** 고객 연락처 (결정 위임 D-B11). 사람만 쓴다. address 는 정규화된(소문자, 표시 이름 없음) 주소 */
+export type ContactStatus = 'active' | 'suppressed';
+export type ContactRow = {
+  address: string; label: string | null; status: ContactStatus; added_by: string; added_at: Iso; suppressed_by: string | null; suppressed_at: Iso | null;
 }
 
 export type HumanReauthRow = {

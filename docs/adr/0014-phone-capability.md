@@ -109,3 +109,6 @@ outcome은 상대방과의 대화에서 나온 요약이라 `external_untrusted`
 - **transcript 계약:** `phone.call.transcript.updated`의 `turns`는 증분이 아니라 *지금까지의 전체 대화(스냅샷)*이고, 더 길거나 같은 길이의 스냅샷이 이전 것을 대체한다. Vapi 이벤트 id는 턴 수와 내용 해시를 함께 써서 같은 길이의 수정을 중복으로 오인하지 않는다.
 - **구현하지 않은 것:** Retell·Twilio 어댑터, HMAC webhook 서명 검증(Vapi는 비밀 헤더만), 녹음 파일 저장, 요약↔transcript LLM 검증(포트는 있음), 에이전트 대상 인바운드의 업무 템플릿 연결(데몬 설정에는 라우팅 규칙만; 업무 생성기는 코드에서 주입), CRM 같은 후속 외부 상태 갱신 도구.
 - **알려진 한계:** webhook이 영영 오지 않고 provider 조회도 실패하면 마감(최대 통화시간 + 유예, 기본 5분)까지 업무가 `validating`에 머문다. 일일 통화량은 최근 24시간의 롤링 창이다(달력 하루가 아니다).
+
+## Amendment (2026-11-05): 전화는 `scope` 승인 (ADR-0015)
+§8의 번호 범위 승인은 그대로다. 전화의 세 동작(`call`·`transfer`·`hangup`)은 (도구, action) 선언에 `approval: 'scope'`를 적는다: 통화는 실시간 대화라 내용을 미리 확정할 수 없다. 초안 단계 run에서 `scope` 동작이 원장에 닿으면 던진다(설정 오류). 전화의 해시·시험(`phone-lifecycle`)은 바뀌지 않았다. [ADR-0015](0015-draft-before-approval.md).

@@ -27,6 +27,7 @@ import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolli
 
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
 import { readClaudeCodeConsent } from './consent.ts';
+import { delegateReviewerFromConfig, parseDelegateReviewerConfig } from './delegate-cycle.ts';
 import { daemonForbiddenRoots } from './forbidden-roots.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { advanceOrganization } from './org-cycle.ts';
@@ -41,6 +42,8 @@ import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts'
 interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
+  /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 뿐인데 시험 전용이라 데몬은 읽지 않고 시작을 거부한다 (delegate-cycle.ts) */
+  delegate_reviewer?: unknown;
   db_path: string;
   busy_timeout_ms?: number;
   worker_id: string;
@@ -52,6 +55,8 @@ interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   retry_delay_ms?: number;
   /** 어댑터가 미룬(사람 우선 게이트) run 의 retry_wait 대기 시간. 시도를 소모하지 않는다. 기본 15분 */
   defer_delay_ms?: number;
+  /** 외부 부작용 초안의 기한(ms, ADR-0015). 이 시간이 지나면 승인·해제·전송이 거부된다. 기본 72시간 */
+  draft_ttl_ms?: number;
   /** 기본: AOT_INSTANCE_DIR 또는 instance */
   instance_dir?: string;
   policy_store_dir?: string;
@@ -64,6 +69,9 @@ const MIGRATIONS = fileURLToPath(new URL('../../../migrations', import.meta.url)
 function loadConfig(): DaemonConfig {
   const path = process.argv[2] ?? process.env['AOT_DAEMON_CONFIG'] ?? join(process.env['AOT_INSTANCE_DIR'] ?? 'instance', 'daemon.config.json');
   const config = JSON.parse(readFileSync(path, 'utf8')) as DaemonConfig;
+  if (config.draft_ttl_ms !== undefined && (!Number.isSafeInteger(config.draft_ttl_ms) || config.draft_ttl_ms <= 0)) {
+    throw new Error(`${path}: draft_ttl_ms must be a positive integer (milliseconds)`);
+  }
   if (typeof config.db_path !== 'string' || typeof config.worker_id !== 'string') {
     throw new Error(`${path}: db_path and worker_id are required`);
   }
@@ -83,6 +91,7 @@ async function main(): Promise<void> {
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);
+  const delegateReviewer = delegateReviewerFromConfig(parseDelegateReviewerConfig(config.delegate_reviewer));
   const daemon = assembleDaemon({
     db,
     clock: systemClock,
@@ -101,9 +110,11 @@ async function main(): Promise<void> {
     ...(pack === undefined ? {} : { pack }),
     ...(cycle === undefined ? {} : { cycle }),
     ...(phone === undefined ? {} : { phone: phone.options }),
+    ...(delegateReviewer === undefined ? {} : { delegate: { reviewer: delegateReviewer } }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
     ...(config.defer_delay_ms === undefined ? {} : { deferDelayMs: config.defer_delay_ms }),
+    ...(config.draft_ttl_ms === undefined ? {} : { draftTtlMs: config.draft_ttl_ms }),
   });
   if (daemon.pack !== null && daemon.packSync !== null) {
     const { manifest, templates, signals } = daemon.pack;
@@ -155,6 +166,15 @@ async function main(): Promise<void> {
           for (const id of org.awaitingConfirmation) console.log(`org proposal ${id}: trial passed; waiting for a person to confirm (org confirm)`);
           for (const id of [...org.expired, ...org.superseded]) console.log(`org proposal ${id}: closed (expired or superseded)`);
           for (const f of org.failed) console.error(`org cycle failed${f.proposalId === null ? '' : ` ${f.proposalId}`}: ${f.error}`);
+        }
+        try {
+          // 결정 위임(ADR-0016, 제안): 위임 cooldown 이 끝난 승인을 풀고, 적격 업무를 검토한다. 위임이 없는 정책에서는 읽기만 한다
+          const delegated = await daemon.delegation.advance();
+          for (const r of delegated.released) console.log(`delegated approval released ${r.taskId}: mandate ${r.mandateId} (approval ${r.approvalId})`);
+          for (const d of delegated.decided) console.log(`delegate review ${d.taskId}: ${d.verdict} -> ${d.outcome}`);
+          if (delegated.unavailable > 0) console.error(`delegate reviewer unavailable: ${delegated.unavailable} review(s) postponed`);
+        } catch (error) {
+          console.error('delegation cycle failed:', error); // 위임 문제가 주간 사이클을 멈추지 않게 한다
         }
         if (phoneRuntime !== null) {
           // webhook 이 늦거나 오지 않은 통화를 provider 에 조회하고, 마감을 넘기면 닫는다 (업무 검증 보류가 영원히 이어지지 않게)

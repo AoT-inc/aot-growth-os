@@ -361,7 +361,25 @@ test('inconclusive: no strategy_record or lesson is created, the experiment wait
   assert.deepEqual([byAgent.ok, /only human actors/.test(byAgent.error)], [false, true]);
   assert.equal(statusOf(env.db, id), 'experiment');
 
-  const rejected = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'not enough observations to judge' }) as { ok: boolean; status: string };
+  // expected_hash 가 있으면 지금 전략 해시와 같을 때만 거절한다 (낡은 화면 막기): 다르면 hash_mismatch, 형식이 틀리면 bad_request, 아무것도 쓰지 않는다
+  const shown = env.send({ cmd: 'show', actor: OWNER, kind: 'strategy_version', id });
+  const hash = String(shown['hash']);
+  const stale = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'x', expected_hash: 'f'.repeat(64), via: 'web' }) as { ok: boolean; code: string };
+  assert.deepEqual([stale.ok, stale.code], [false, 'hash_mismatch']);
+  const malformed = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'x', expected_hash: 'abc' }) as { ok: boolean; code: string };
+  assert.deepEqual([malformed.ok, malformed.code], [false, 'bad_request']);
+  // 화면(via:'web')은 expected_hash 를 반드시 실어야 한다: 거절·승격 모두 없으면 missing_hash 로 거부하고 아무것도 쓰지 않는다
+  for (const cmd of ['reject', 'promote']) {
+    const missing = daemon.handleChannelRequest({ cmd, actor: OWNER, kind: 'strategy_version', id, comment: 'x', via: 'web' }) as { ok: boolean; code: string };
+    assert.deepEqual([cmd, missing.ok, missing.code], [cmd, false, 'missing_hash']);
+  }
+  const badWeb = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'x', expected_hash: 'G'.repeat(64), via: 'web' }) as { ok: boolean; code: string };
+  assert.deepEqual([badWeb.ok, badWeb.code], [false, 'bad_request']);
+  const staleAgent = daemon.handleChannelRequest({ cmd: 'reject', actor: AGENT, kind: 'strategy_version', id, comment: 'x', expected_hash: hash }) as { ok: boolean; code: string };
+  assert.deepEqual([staleAgent.ok, staleAgent.code], [false, 'not_human']);
+  assert.equal(statusOf(env.db, id), 'experiment');
+
+  const rejected = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'not enough observations to judge', expected_hash: hash, via: 'web' }) as { ok: boolean; status: string };
   assert.deepEqual([rejected.ok, rejected.status], [true, 'rejected']);
   const decision = findExperimentDecision(env.db, id)!;
   assert.deepEqual([decision.decision, decision.by, decision.actorId, decision.reason], ['rejected', 'human', OWNER, 'not enough observations to judge']);

@@ -23,6 +23,7 @@ import {
 } from './checks.ts';
 import { claimsFromResult, type ReportedClaim } from './claims.ts';
 import { costForRun, recordCost } from './cost.ts';
+import { DRAFT_SECRET_CHECK_ID, draftSecretFindings } from './draft-secrets.ts';
 import { EvidenceContentReader } from './evidence-contents.ts';
 import { buildIsolatedInput } from './isolation.ts';
 import { VerifierUnavailableError, type EffectObservation, type EffectSignalSource, type EvidenceReader, type LlmVerdict, type LlmVerifier, type SourceFetcher, type SourceText } from './ports.ts';
@@ -182,6 +183,14 @@ export async function evaluateRun(deps: EvaluatorDeps, request: EvaluateRunReque
 
   // 1층: 결정론적 검증
   const deterministic = await runDeterministicChecks(context, spec.validation.deterministic, deps.extraChecks);
+  // 초안(ADR-0015)이 있는 run 은 명세가 요구했는지와 무관하게 초안 payload 의 비밀 검사를 안전성 검사로 돌린다: 사람은 가려진 값을 승인할 수 없다
+  const draftSecrets = draftSecretFindings(db, run.id);
+  if (draftSecrets.length > 0) {
+    deterministic.checks.push({
+      id: DRAFT_SECRET_CHECK_ID, status: 'fail', safety: true,
+      note: `secret-like value or secret-named key in a draft (kind, count and key path only): ${draftSecrets.join('; ')}`.slice(0, 400),
+    });
+  }
   const allChecksPass = deterministic.checks.every((check) => check.status === 'pass');
 
   // 2층: 컨텍스트 분리 LLM 검증 (앞 층이 모두 통과했을 때만)

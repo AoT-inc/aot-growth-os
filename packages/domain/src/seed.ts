@@ -148,3 +148,34 @@ export function taskCreationPrerequisites(db: Db): TaskCreationPrerequisites {
   if (!db.get("SELECT 1 AS one FROM role WHERE lifecycle IN ('trial', 'active') LIMIT 1")) missing.push('assignable_role');
   return { ok: missing.length === 0, missing };
 }
+
+/**
+ * 위임 보유자 행위자 (ADR-0016, 제안). 결정을 맡는 AI 의 신원이다: 에이전트 행위자 `approval-delegate` 와 도구 없는 역할 `approval-delegate@v1`.
+ * `org-management`(제안 전용, ADR-0011)와 분리한다. 이름에 `approv` 가 들어 있어 조직 제안으로는 같은 이름의 역할을 흉내 낼 수 없다(org.ts FORBIDDEN_WORDS).
+ */
+export const APPROVAL_DELEGATE = { actor: 'approval-delegate', role: 'role-approval-delegate', slug: 'approval-delegate' } as const;
+
+/**
+ * 위임 보유자 행위자와 역할을 멱등으로 만든다. 쓰기 트랜잭션 안에서만 부른다. 기본 시드(`seedPhaseA`)는 이것을 만들지 않는다 —
+ * 위임을 선언한 정책(`delegation.mandates`)을 사람이 배포할 때 승인 엔진이 같은 트랜잭션에서 만든다(위임이 없는 DB 는 지금과 같다).
+ * 역할은 시드 부서(`core`)가 있을 때만 만든다(`org_unit_id` NOT NULL). 도구 목록은 비어 있다. org_version 스냅샷은 바꾸지 않는다.
+ */
+export function ensureApprovalDelegate(tx: Db, clock: Clock): { actorCreated: boolean; roleCreated: boolean } {
+  if (!tx.inWriteTx) throw new Error('ensureApprovalDelegate must be called inside a write transaction');
+  const now = clock.nowIso();
+  const actorCreated = tx.get('SELECT 1 AS one FROM actor WHERE id = ?', [APPROVAL_DELEGATE.actor]) === undefined;
+  if (actorCreated) {
+    tx.run('INSERT INTO actor (id, kind, name, adapter, created_at) VALUES (?, ?, ?, NULL, ?)', [APPROVAL_DELEGATE.actor, 'agent', 'approval-delegate', now]);
+  }
+  const hasRole = tx.get('SELECT 1 AS one FROM role WHERE id = ?', [APPROVAL_DELEGATE.role]) !== undefined;
+  const unit = tx.get<{ id: string }>('SELECT id FROM org_unit WHERE id = ?', [SEED_IDS.unit]);
+  let roleCreated = false;
+  if (!hasRole && unit !== undefined) {
+    tx.run(
+      'INSERT INTO role (id, org_unit_id, slug, description, allowed_tools, lifecycle, version, trial_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)',
+      [APPROVAL_DELEGATE.role, unit.id, APPROVAL_DELEGATE.slug, '사람이 정책으로 위임한 범위 안에서 초안 승인 업무를 검토하는 역할 (도구 없음, ADR-0016 제안)', '[]', 'active', 1, now],
+    );
+    roleCreated = true;
+  }
+  return { actorCreated, roleCreated };
+}

@@ -12,6 +12,7 @@ import type { Db, EvidenceRow, TaskRunRow } from '@aot/domain';
 
 import type { EvidenceContentReader } from './evidence-contents.ts';
 import { evidenceClaimsFromResult, parseRegistrationReport, referencedEvidenceIds, type RegistrationReport } from './registration-report.ts';
+import { draftSecretFindings } from './draft-secrets.ts';
 import { findSecretShapes } from './secret-patterns.ts';
 import { parseSecretScanSummary, type ScanScope, type SecretScanSummary } from './secret-scan-summary.ts';
 
@@ -35,6 +36,8 @@ export interface RegistrationCheckOutcome {
   note: string;
   evidence?: ReadonlyMap<string, { verified: boolean; note: string }>;
 }
+
+const draftCount = (db: Db, runId: string): number => Number(db.get<{ n: number }>('SELECT count(*) AS n FROM effect_draft WHERE task_run_id = ?', [runId])?.n ?? 0);
 
 const NO_READER = 'no evidence reader is configured, so the stored content cannot be checked';
 const cut = (text: string, max = 400): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
@@ -77,12 +80,16 @@ export async function checkEvidenceRefsResolvable(input: RegistrationCheckInput)
 }
 
 export async function checkNoSecretInOutputs(input: RegistrationCheckInput): Promise<RegistrationCheckOutcome> {
-  if (input.contents === undefined) return { status: 'unknown', note: NO_READER };
   const findings: string[] = [];
   const describe = (where: string, text: string): void => {
     const shapes = findSecretShapes(text);
     if (shapes.length > 0) findings.push(`${where}: ${shapes.map((shape) => `${shape.kind} x${shape.count}`).join(', ')}`);
   };
+  // 초안 승인 업무(ADR-0015): 이 run 이 남긴 외부 부작용 초안의 payload 도 훑는다. 비밀처럼 보이는 값이 있으면 안전성 실패 — 사람에게 승인 불가로 보인다. 저장소 리더가 없어도 DB 에서 읽는다
+  const draftFindings = draftSecretFindings(input.db, input.run.id);
+  findings.push(...draftFindings);
+  if (findings.length > 0) return { status: 'fail', note: cut(`secret-like value(s) found (kind and count only, never the value): ${findings.join('; ')}`) };
+  if (input.contents === undefined) return { status: 'unknown', note: NO_READER };
   if (input.run.result !== null) describe('run result', input.run.result);
   let unread = 0;
   let scanned = 0;
@@ -103,7 +110,7 @@ export async function checkNoSecretInOutputs(input: RegistrationCheckInput): Pro
   }
   if (findings.length > 0) return { status: 'fail', note: cut(`secret-like value(s) found (kind and count only, never the value): ${findings.join('; ')}`) };
   if (unread > 0) return { status: 'unknown', note: `${unread} evidence row(s) could not be read, so they were not scanned for secret-like values` };
-  return { status: 'pass', note: `no secret-like value in the run result or in ${scanned} stored evidence content(s) (agent-reported citation rows have no stored content; their reference text was checked)` };
+  return { status: 'pass', note: `no secret-like value in the run result${draftCount(input.db, input.run.id) > 0 ? ', the draft payload(s)' : ''} or in ${scanned} stored evidence content(s) (agent-reported citation rows have no stored content; their reference text was checked)` };
 }
 
 export function checkReadOnlyCalls(input: Pick<RegistrationCheckInput, 'db' | 'run'>): RegistrationCheckOutcome {

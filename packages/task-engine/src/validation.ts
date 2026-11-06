@@ -7,7 +7,7 @@
 //   inconclusive  → needs_review   (증거 부족. 사용자 결정 2026-10-21)
 // 평가 기록과 전이는 별개 트랜잭션이다(검증에 외부 접근이 있어 트랜잭션 밖에서 하므로). 둘 사이에서 죽어도 평가는 UNIQUE 로 흡수되므로
 // 다음 tick 의 재검증이 같은 평가를 돌려받아 전이만 이어서 한다.
-import { CALL_MACHINE, type Clock, type Db, type EvaluationRow, type TaskRow, type TaskRunRow, type TaskSpec, type TaskStatus, type TaskValidationVerdict, type TaskValidator } from '@aot/domain';
+import { CALL_MACHINE, transitionDrafts, type Clock, type Db, type EvaluationRow, type TaskRow, type TaskRunRow, type TaskSpec, type TaskStatus, type TaskValidationVerdict, type TaskValidator } from '@aot/domain';
 
 import { StaleStateError } from './errors.ts';
 import { isoAfter } from './params.ts';
@@ -83,7 +83,20 @@ export async function validateTask(db: Db, options: ValidationOptions, taskId: s
         throw new Error(`verdict (${verdict.outcome}, safety ${verdict.safety}) differs from the recorded evaluation (${evaluation.outcome}, safety ${evaluation.safety})`);
       }
       const current = tx.get<Pick<TaskRow, 'attempts' | 'max_attempts'>>('SELECT attempts, max_attempts FROM task WHERE id = ?', [taskId])!;
-      const route = routeVerdict(current, verdict);
+      let route = routeVerdict(current, verdict);
+      const pendingDrafts = Number(tx.get<{ n: number }>("SELECT count(*) AS n FROM effect_draft WHERE task_run_id = ? AND state = 'pending'", [run.id])!.n);
+      if (pendingDrafts > 0) {
+        if (verdict.outcome === 'pass' && verdict.safety === 'pass') {
+          route = { to: 'needs_review', reason: `drafts_awaiting_approval: ${pendingDrafts} drafts; a person approves the exact content` };
+          transitionDrafts(tx, { taskId, from: ['pending'], to: 'proposed', by: 'validator', now, runId: run.id });
+        } else {
+          transitionDrafts(tx, { taskId, from: ['pending'], to: 'superseded', by: 'validator', now, runId: run.id });
+        }
+      }
+      // 초안 단계 run 이 초안을 하나도 남기지 못했는데 완료로 갈 수는 없다 (모든 호출이 거부됐거나 에이전트가 쓰지 않았다): 사람이 본다
+      if (pendingDrafts === 0 && run.phase === 'draft' && route.to === 'completed') {
+        route = { to: 'needs_review', reason: 'no_drafts: the draft run left no drafts, so nothing can be approved or sent (every external-effect call may have been refused: out of scope, too many drafts, or not written); a person decides' };
+      }
       transitionTask(tx, {
         taskId, from: 'validating', to: route.to, by: 'validator', now, reason: route.reason.slice(0, 500),
         ...(route.to === 'retry_wait'

@@ -107,6 +107,13 @@ function mandateWidenings(a: Mandate, b: Mandate): string[] {
     const added = grown(key);
     if (added.length > 0) reasons.push(`${label} match.${key} widened by ${added.map((entry) => `'${entry}'`).join(', ')}`);
   }
+  const before = a.match.recipients;
+  const after = b.match.recipients;
+  if (before.kind !== after.kind) reasons.push(`${label} match.recipients changed ${before.kind} -> ${after.kind}`);
+  else if (before.kind === 'domains' && after.kind === 'domains') {
+    const added = after.domains.filter((domain) => !before.domains.includes(domain));
+    if (added.length > 0) reasons.push(`${label} match.recipients widened by ${added.map((domain) => `'${domain}'`).join(', ')}`);
+  }
   for (const key of Object.keys(b.limits) as (keyof Mandate['limits'])[]) {
     if (b.limits[key] > a.limits[key]) reasons.push(`${label} limits.${key} raised ${a.limits[key]} -> ${b.limits[key]}`);
   }

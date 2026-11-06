@@ -1,5 +1,8 @@
 // @aot/domain 공개 API 진입점. 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
 // 시계 주입(Clock), SQLite 접근 계층(Db), 엔터티 타입, 상태 전이 허용표, task_spec·팩 manifest 검증, 실험 전략 제안(strategy_version, A6-U14)과 실험 활성화·종료 기록의 키·조회(A6-U15).
+export {
+  contactStatuses, domainOfAddress, FREE_MAIL_DOMAINS, isStrictDomain, listContacts, normalizeAddress, recipientAddressesOf, type RecipientAddresses,
+} from './contacts.ts';
 export { canonicalJson, contentHash, sha256Hex } from './canonical.ts';
 export { FakeClock, systemClock, type Clock } from './clock.ts';
 export { createDb } from './db/create-db.ts';

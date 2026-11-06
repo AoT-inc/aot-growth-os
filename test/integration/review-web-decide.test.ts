@@ -221,3 +221,12 @@ test('an item the AI handed to a person shows the AI reason as a fact line on it
   assert.match(home, /AI가 넘긴 이유 가격 이야기가 들어 있어 사람이 봐야 합니다/);
   assert.ok(!/AI가 처리함/.test(home), 'nothing was handled by the AI');
 });
+
+test('an item handed over because of an unknown recipient says so in words on its card, with no command on the screen', async (t) => {
+  const r = await rig(t, (x) => delegationEnv(x, [{}], { file: true }));
+  const { taskId } = await draftedFor(r.env, { requests: [{ to: ['stranger@example.com'], subject: 'Hello', text: 'First line' }] });
+  assert.equal(decide(r.env, taskId).ok, false);
+  const home = textOf((await r.get('/')).text);
+  assert.match(home, /AI가 넘긴 이유 처음 보는 받는 사람 1명/);
+  assert.ok(!/contacts (add|import|suppress)|aot-approve/.test(home), 'no CLI command on the screen');
+});

@@ -142,6 +142,12 @@ export type DelegationControlRow = {
   id: number; action: 'pause' | 'resume' | 'revoke'; mandate_id: string | null; actor_id: string; reason: string; at: Iso;
 }
 
+/** 고객 연락처 (결정 위임 D-B11). 사람만 쓴다. address 는 정규화된(소문자, 표시 이름 없음) 주소 */
+export type ContactStatus = 'active' | 'suppressed';
+export type ContactRow = {
+  address: string; label: string | null; status: ContactStatus; added_by: string; added_at: Iso; suppressed_by: string | null; suppressed_at: Iso | null;
+}
+
 export type HumanReauthRow = {
   id: number; actor_id: string; method: ReauthMethod; time_step: number; purpose: string; at: Iso;
 }

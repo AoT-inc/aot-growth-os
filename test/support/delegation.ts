@@ -23,9 +23,17 @@ export interface MandateOptions {
   cooldown?: string;
   guidance?: string;
   expires?: string;
+  /** 받는 사람 규칙(D-B11). 기본 known_contacts. `null` 이면 규칙 줄을 쓰지 않는다(거부 시험용) */
+  recipients?: { kind: 'known_contacts' } | { kind: 'domains'; domains: string[] } | null;
 }
 
 const quoted = (items: readonly string[]): string => `[${items.map((item) => `'${item}'`).join(', ')}]`;
+
+function recipientLines(rule: MandateOptions['recipients']): string[] {
+  if (rule === null || rule === undefined) return [];
+  if (rule.kind === 'known_contacts') return ['        recipients: { kind: known_contacts }'];
+  return [`        recipients: { kind: domains, domains: ${quoted(rule.domains)} }`];
+}
 
 /** 위임 한 건의 YAML 줄들 (정책 `delegation.mandates` 의 항목, 들여쓰기 4칸 목록) */
 export function mandateLines(options: MandateOptions = {}): string {
@@ -41,6 +49,7 @@ export function mandateLines(options: MandateOptions = {}): string {
     `        actions: ${quoted(options.actions ?? ['notify-tool.send'])}`,
     `        targets: ${quoted(options.targets ?? ['mailbox:*'])}`,
     `        scopes: [${(options.scopes ?? ['customer']).join(', ')}]`,
+    ...recipientLines(options.recipients === undefined ? { kind: 'known_contacts' } : options.recipients),
     '      limits:',
     ...Object.entries(limits).map(([key, value]) => `        ${key}: ${value}`),
     `      cooldown: ${options.cooldown ?? '1h'}`,
@@ -56,9 +65,10 @@ export function delegationPolicyText(mandates: readonly MandateOptions[] = [{}],
 }
 
 /** 위임 보유자 행위자를 만든 정책 환경. `policy` 가 주어지면(기본: 위임 하나) 승인 절차 없이 배포한다 */
-export function delegationEnv(t: TestContext, mandates: readonly MandateOptions[] = [{}], options: { file?: boolean } = {}): PolicyEnv {
-  const env = policyEnv(t, options);
+export function delegationEnv(t: TestContext, mandates: readonly MandateOptions[] = [{}], options: { file?: boolean; contacts?: readonly string[] } = {}): PolicyEnv {
+  const env = policyEnv(t, options.file === undefined ? {} : { file: options.file });
   env.db.writeTx((tx) => ensureApprovalDelegate(tx, env.clock));
+  for (const address of options.contacts ?? DEFAULT_CONTACTS) addContact(env.db, env.clock.nowIso(), address);
   env.db.writeTx((tx) => {
     const parsed = env.store.archive(delegationPolicyText(mandates));
     tx.run('INSERT INTO policy_version (id, content_hash, change_class, approved_by, deployed_at, rollback_of) VALUES (?, ?, ?, ?, ?, NULL)', [
@@ -66,6 +76,17 @@ export function delegationEnv(t: TestContext, mandates: readonly MandateOptions[
     ]);
   });
   return env;
+}
+
+/** 시험 기본 연락처: 기본 예시 payload 의 받는 사람 */
+export const DEFAULT_CONTACTS: readonly string[] = ['customer@example.com'];
+
+/** 연락처 표에 직접 넣는다(시험 전용 — 실제로는 사람이 승인 소켓 `contacts` 로만 쓴다) */
+export function addContact(db: Db, at: string, address: string, status: 'active' | 'suppressed' = 'active'): void {
+  db.writeTx((tx) => tx.run(
+    'INSERT OR REPLACE INTO contact (address, label, status, added_by, added_at, suppressed_by, suppressed_at) VALUES (?, NULL, ?, ?, ?, ?, ?)',
+    [address, status, 'actor-owner', at, status === 'suppressed' ? 'actor-owner' : null, status === 'suppressed' ? at : null],
+  ));
 }
 
 export interface Drafted {

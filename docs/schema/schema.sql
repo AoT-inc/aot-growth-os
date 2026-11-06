@@ -397,6 +397,19 @@ CREATE TABLE delegation_control (
 );
 CREATE INDEX delegation_control_at ON delegation_control(at);
 
+-- 고객 연락처 (결정 위임 D-B11, ADR-0016). 위임 승인이 받는 사람을 확인하는 근거. 사람만 쓴다(승인 소켓의 `contacts` 명령). 에이전트·검토 화면·위임 보유자는 쓰기 경로가 없다.
+-- address 는 정규화된 주소(소문자, 표시 이름 없음). suppressed 는 위임으로 보낼 수 없고(사람이 직접 승인은 가능), 다시 active 로 되돌리는 경로는 v1 에 없다.
+CREATE TABLE contact (
+  address        TEXT PRIMARY KEY CHECK (address = lower(address) AND address = trim(address) AND instr(address, '@') > 1),
+  label          TEXT,
+  status         TEXT NOT NULL CHECK (status IN ('active','suppressed')),
+  added_by       TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 (애플리케이션 규칙)
+  added_at       TEXT NOT NULL,
+  suppressed_by  TEXT REFERENCES actor(id),
+  suppressed_at  TEXT,
+  CHECK ((status = 'suppressed') = (suppressed_at IS NOT NULL))
+);
+
 -- ===== 평가 (ADR-0007) =====
 CREATE TABLE evaluation (
   id           TEXT PRIMARY KEY,

@@ -103,6 +103,7 @@ delegation:
         actions: ['mail.send']             # (도구.action), 업무의 모든 external_effect 초안이 여기 들어야 한다
         targets: ['mailbox:example']       # 패턴(`*` 와일드카드)
         scopes: [customer]                 # public 은 넣을 수 없다(검증 거부)
+        recipients: { kind: known_contacts }   # 필수(D-B11). 또는 { kind: domains, domains: [example.com] }. 무료 메일 도메인은 거부
       limits:
         max_per_day: 5                     # 이 위임으로 한 승인 수(24시간 창)
         max_drafts_per_task: 1
@@ -221,7 +222,7 @@ delegation:
 | D-B8 | 위임 만료 상한 | 90일 | 30일 / 무기한 |
 | D-B9 | 처리 요약 보관 | 7일 | 30일 |
 | D-B10 | 정지·철회를 정책 배포 없이 런타임에 | 허용(강화 방향만). 해제는 TOTP | 정책 변경으로만 |
-| D-B11 (열림) | 위임에 받는 사람 도메인 한도를 둘까 (예: `example.com` 으로만) | 아직 없음 — 구현하지 않았다. 지금은 `max_recipients_per_draft`·`targets` 패턴만 막는다. 오너 결정 필요 | `match`에 `recipient_domains` 허용 목록 추가 |
+| D-B11 (결정 2026-11-06) | 위임에 받는 사람 한도를 둘까 | **오너 결정: 둔다. 모든 위임이 받는 사람 규칙을 선언해야 한다**(없으면 정책 파싱·배포 거부). `match.recipients: { kind: known_contacts }`(권장 기본) 또는 `{ kind: domains, domains: [...] }`(기업 고객용, 소문자·정확히 같은 도메인만, 와일드카드 없음, 공개 무료 메일 도메인은 거부). to·cc·bcc·reply_to 의 모든 주소를 정규화해 규칙과 `contact` 표에 대조하고, 모르거나 읽을 수 없거나 수신 거부(suppressed)된 주소가 하나라도 있으면 거절이 아니라 **사람에게 넘긴다**("처음 보는 받는 사람 1명"). 코드의 결정론 검사이며 AI 출력은 못 바꾼다 | 규칙 없이 `max_recipients_per_draft` 만 / 도메인만 |
 
 ## 7. 구현 기록
 - 트랙 A(화면 결정), 트랙 B(엔진·정책 위임), 트랙 C(요약·취소·정지·실패 코드 매핑·실제 엔진 통합 시험)를 구현했다. 자세한 내용은 [ADR-0016](../adr/0016-decision-delegation.md)의 구현 기록과 [review-web.md](../operations/review-web.md).
@@ -237,4 +238,9 @@ delegation:
 5. **stub 검토자는 데몬 설정으로 읽히지 않는다**(`allowStub` 플래그, 시험 전용).
 6. 시험: 위임 시험의 검토 순서 의존(같은 `updated_at` 이면 uuid 순)을 시각을 못 박아 없앴다.
 
-열린 오너 결정: 받는 사람 도메인 한도(D-B11). 구현하지 않았다.
+## 구현 기록 — 받는 사람 규칙 (D-B11, 2026-11-06)
+- **정책**: `delegation.mandates[].match.recipients` 필수. `known_contacts` 또는 `domains`(소문자 정규화, 정확히 같은 도메인만, `*`·하위 도메인·`@`·IDN 거부, 공개 무료 메일 도메인 코드 상수 `FREE_MAIL_DOMAINS` 거부). 규칙을 `domains`↔`known_contacts` 로 바꾸거나 도메인을 더하면 위험 변경(TOTP 배포). 규칙 없는 옛 위임 정책은 이제 배포할 수 없다(위임은 꺼져 있던 기능이라 영향 없음).
+- **적격**(`packages/policy/src/delegation.ts` `recipientRuleViolation`): 초안마다 to/cc/bcc/`reply_to`(헤더의 Reply-To 포함)를 `normalizeAddress`(앞뒤 공백, 소문자, 표시 이름 제거, 엄격 파싱 — 주소 둘 이상·코멘트·비 ASCII·표시 이름 속 `@` 는 읽을 수 없음)로 정규화해 센다. 모르는 주소·읽을 수 없는 주소는 모르는 것, `suppressed` 는 규칙 종류와 상관없이 막는다. 실패 코드 `recipient_rule`, 이유는 "처음 보는 받는 사람 N명" 등 한국어 한 줄. 엔진이 기록 트랜잭션에서 적격을 다시 확인하므로 AI 출력이 이 검사를 바꿀 수 없다. cooldown 동안 연락처가 수신 거부로 바뀌면 `releaseDelegated` 가 내보내지 않고 사람에게 넘긴 이유를 한 번 남긴다.
+- **연락처 표** `contact`(주소, 이름, `active|suppressed`, 추가한 사람·시각, 정지한 사람·시각): 승인 소켓 `contacts add|import|suppress|list`(`apps/daemon/src/contacts.ts`)만 쓴다. 사람 행위자만, 에이전트·위임 보유자는 `not_human`, 검토 화면은 읽기 전용 DB, 위임 보유자 경로(`delegateDecide`)에는 쓰기가 없다. 추가·일괄·정지는 `event(source='contacts')` 로 감사한다. `suppress` 는 TOTP 없이 즉시, 되돌리는 경로는 v1 에 없다(정지된 주소는 add·import 가 건드리지 못한다). import 는 CSV 또는 줄마다 하나, 잘못된 줄이 하나라도 있으면 아무것도 넣지 않는다.
+- **화면**: 정책 카드 첫 줄 `AI 위임 추가: …, 등록된 고객에게만, 하루 최대 20건`, 규칙 변경은 `받는 사람 규칙 변경`. 넘긴 카드는 기존 "AI가 넘긴 이유" 줄에 위 이유가 나온다. 화면에 CLI 명령은 없다.
+- **한계**: 같은 내용(해시)으로 이미 사람에게 넘긴 업무는 연락처를 나중에 넣어도 AI가 다시 검토하지 않는다(사람이 정하거나 다시 쓰게). 연락처 관리 화면은 아직 없다(CLI 만, D-A2 와 같은 이유).

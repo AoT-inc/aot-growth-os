@@ -71,4 +71,9 @@ ADR-0011(§2·§3 "`approved`는 사람의 `approval` 기록으로만")과 ADR-0
 - 위임을 추가·확대하는 정책 변경(`classifyChange` 이유가 `delegation ...`)은 지금 정책의 `reauth_before_effect` 가 꺼져 있어도 배포에 TOTP 가 필요하다.
 - 가짜 검토자(stub)는 시험 전용이다. 데몬 설정 `delegate_reviewer` 로는 읽히지 않고(`parseDelegateReviewerConfig` 가 `allowStub: true` 없이는 거부), 운영 조립은 플래그를 주지 않는다.
 - 승인 화면(ADR-0015)은 정확한 주소와 payload 의 모든 필드를 보이고, 다 볼 수 없으면 승인 버튼을 내지 않는다. 정책 제안 카드는 위임·전화 섹션 변경을 첫 줄에 말한다.
-- **열린 오너 결정**: 위임에 받는 사람 도메인 한도(`recipient_domains` 같은 허용 목록)를 둘지. 구현하지 않았다.
+
+## 구현 기록 — 받는 사람 규칙 (D-B11, 오너 결정 2026-11-06)
+- 모든 위임은 `match.recipients`(`known_contacts` 또는 `domains`)를 선언해야 하고, 없으면 정책 파싱·배포가 거부된다. `domains` 는 정확히 같은 소문자 도메인만이며 공개 무료 메일 도메인은 거부한다.
+- 적격 검사가 초안의 to·cc·bcc·reply_to 모든 주소를 엄격히 정규화해 규칙과 새 `contact` 표에 대조한다. 모르거나 읽을 수 없거나 수신 거부된 주소가 있으면 사람에게 넘긴다(거절 아님, 이유는 한국어 한 줄). 엔진이 기록 트랜잭션과 cooldown 뒤 해제 때 다시 확인하므로 AI 출력은 이 검사를 못 바꾼다.
+- `contact` 는 사람만 승인 소켓의 `contacts add|import|suppress|list` 로 쓴다(감사 `event`). 정지는 TOTP 없이 즉시이고 되돌릴 수 없다. 에이전트·화면·위임 보유자는 쓰는 길이 없다.
+- 자세한 내용은 [계획 §6 D-B11](../plans/decision-delegation.md).

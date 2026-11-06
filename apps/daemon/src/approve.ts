@@ -14,6 +14,8 @@
 //     delegation status | pause [<위임 id>] | resume [<위임 id>] [--totp-stdin] | revoke [<위임 id>]   [--comment 글]
 //             (ADR-0016 제안, 결정 위임. status: 위임 상태·오늘 쓴 한도. pause: 위임(생략하면 전체)을 멈춘다 — TOTP 없음. resume: 해제 — TOTP 필요(표준 입력 한 줄).
 //              revoke: 철회 — 되돌릴 수 없다(생략하면 지금 정책의 모든 위임). 위임 자체는 정책 파일의 `delegation` 섹션으로만 정하고 `approve policy` 로 배포한다)
+//     contacts add <주소> [--label 이름] | import --file <CSV 또는 줄마다 하나인 파일> | suppress <주소> | list
+//             (결정 위임 D-B11. 위임이 보낼 수 있는 고객 연락처. 사람만. suppress 는 TOTP 없이 즉시이고 되돌리는 경로가 없다. import 는 잘못된 줄이 하나라도 있으면 아무것도 넣지 않는다)
 //     totp-enroll [--totp-dir DIR]   (이 기기에서 실행. 비밀을 instance/totp/<actor> 에 0600 으로 만들고 등록 URI 를 한 번 보여 준다)
 //     promote strategy <id> --comment 사유     (A6-U16. 결과가 pass 로 기록된 실험을 experiment → active 로 올린다. 사람만, 이전 active 는 retired. 사유 필수)
 //     reject  strategy <id> --comment 사유     (proposed 는 승인 엔진이, experiment 는 결과 채널이 처리한다: experiment → rejected. experiment 는 사유 필수)
@@ -321,12 +323,29 @@ async function main(): Promise<void> {
       };
       break;
     }
+    case 'contacts': {
+      const op = kindArg ?? fail('contacts needs an operation: add|import|suppress|list');
+      if (op === 'list') {
+        if (id !== undefined) fail('usage: contacts list');
+        request = { cmd, actor, op };
+      } else if (op === 'import') {
+        if (id !== undefined) fail('usage: contacts import --file <file>');
+        const file = flag('file') ?? fail('contacts import needs --file <csv or one address per line>');
+        if (statSync(file).size > 1_000_000) fail('contacts import: the file is larger than 1 MB');
+        request = { cmd, actor, op, text: readFileSync(file, 'utf8') };
+      } else if (op === 'add' || op === 'suppress') {
+        if (id === undefined || positional[3] !== undefined) fail(`usage: contacts ${op} <address>${op === 'add' ? ' [--label <name>]' : ''}`);
+        const label = flag('label');
+        request = { cmd, actor, op, address: id, ...(op === 'add' && label !== undefined ? { label } : {}) };
+      } else fail('contacts needs an operation: add|import|suppress|list');
+      break;
+    }
     case 'promote':
       needKind();
       request = { cmd, actor, kind, id, comment: comment ?? fail('promote needs --comment <reason>') };
       break;
     default:
-      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|request-changes|delegation|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
+      fail('usage: approve.ts [--socket PATH] [--actor ID] whoami|list|show|approve|release|cancel|reject|request-changes|delegation|contacts|promote|reviews|totp-enroll|measure|measurements|effects|resolve-effect|consent|product|org ...');
   }
   // 결정 경로를 감사용으로 남긴다 (자기 신고 값). 승인 엔진이 처리하는 명령에만 싣는다 — 다른 채널(상품·조직·측정 등)은 모르는 필드를 거부한다
   if (ENGINE_COMMANDS.includes(String(request['cmd']))) request = { ...request, via: 'cli' };

@@ -153,14 +153,18 @@ test('a policy proposal that only widens delegation never reads as "the same as 
   const addedPage = await added.get('/approvals/policy_version/policy-widen');
   assert.equal(addedPage.status, 200);
   const addedFirst = firstLevel(addedPage.text);
-  assert.ok(addedFirst.includes('AI 위임 추가: 모든 작업, 하루 최대 1000건'), addedFirst);
+  assert.ok(addedFirst.includes('AI 위임 추가: 모든 작업, 등록된 고객에게만, 하루 최대 1000건'), addedFirst);
   assert.ok(!addedFirst.includes('현재 정책과 같은 내용'), 'a widening is never "the same"');
-  assert.ok(textOf((await added.get('/')).text).includes('AI 위임 추가: 모든 작업, 하루 최대 1000건'), 'the home card says it too');
+  assert.ok(textOf((await added.get('/')).text).includes('AI 위임 추가: 모든 작업, 등록된 고객에게만, 하루 최대 1000건'), 'the home card says it too');
   // 있던 위임을 넓힌다: 한도 상향
   const raised = await startRig(t, { before: widen((text) => text.replace('max_per_day: 5', 'max_per_day: 900').replace("actions: ['notify-tool.send']", "actions: ['notify-tool.send', '*.*']")) });
   const raisedFirst = firstLevel((await raised.get('/approvals/policy_version/policy-widen')).text);
   assert.ok(raisedFirst.includes("AI 위임 'routine-notice' 하루 최대 승인 건수 상향: 5 → 900") && raisedFirst.includes("작업 확대: '*.*'"), raisedFirst);
   assert.ok(!raisedFirst.includes('현재 정책과 같은 내용'));
+  // 받는 사람 규칙은 첫 줄에 그대로 말한다: 도메인 목록, 그리고 규칙을 바꾸는 변경
+  const domains = await startRig(t, { before: widen((text) => text.replace('recipients: { kind: known_contacts }', "recipients: { kind: domains, domains: ['shop.example.com'] }")) });
+  const domainsFirst = firstLevel((await domains.get('/approvals/policy_version/policy-widen')).text);
+  assert.ok(domainsFirst.includes("AI 위임 'routine-notice' 받는 사람 규칙 변경: 등록된 고객만 → 도메인 지정"), domainsFirst);
   // 위임을 줄이는 변경도 "같은 내용" 이 아니다
   const narrowed = await startRig(t, { before: widen((text) => text.replace('max_per_day: 5', 'max_per_day: 2')) });
   const narrowedFirst = firstLevel((await narrowed.get('/approvals/policy_version/policy-widen')).text);

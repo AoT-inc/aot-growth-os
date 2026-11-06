@@ -10,7 +10,7 @@ import { canonicalJson, ensureApprovalDelegate, HOST_DISPATCH_ADAPTER } from '@a
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
 import { DelegateReviewerUnavailableError, type DelegateReviewer, type DelegateReviewRequest } from '../../apps/daemon/src/delegate-cycle.ts';
-import { approvalsOf, controlsOf, DELEGATE, delegationPolicyText, MANDATE, reviewsOf } from '../support/delegation.ts';
+import { addContact, approvalsOf, controlsOf, DEFAULT_CONTACTS, DELEGATE, delegationPolicyText, MANDATE, reviewsOf } from '../support/delegation.ts';
 import { draftsOf } from '../support/drafts.ts';
 import { manualTimers, taskStatus } from '../support/engine.ts';
 import { EXAMPLE_URL, FakeFetcher, validationSpec } from '../support/evaluation.ts';
@@ -30,9 +30,10 @@ interface Rig {
   reviewCalls: DelegateReviewRequest[];
 }
 
-function rig(t: TestContext, options: { script?: Script; searchFirst?: boolean; mandate?: Parameters<typeof delegationPolicyText>[0]; noReviewer?: boolean } = {}): Rig {
+function rig(t: TestContext, options: { script?: Script; searchFirst?: boolean; mandate?: Parameters<typeof delegationPolicyText>[0]; noReviewer?: boolean; contacts?: readonly string[] } = {}): Rig {
   const env = policyEnv(t);
   env.db.writeTx((tx) => ensureApprovalDelegate(tx, env.clock));
+  for (const address of options.contacts ?? DEFAULT_CONTACTS) addContact(env.db, env.clock.nowIso(), address);
   const parsed = env.store.archive(delegationPolicyText(options.mandate ?? [{}]));
   env.db.writeTx((tx) => tx.run("INSERT INTO policy_version (id, content_hash, change_class, approved_by, deployed_at, rollback_of) VALUES (?, ?, 'risky', '[\"actor-owner\"]', ?, NULL)", [
     parsed.versionId, parsed.hash, env.clock.nowIso(),
@@ -345,4 +346,65 @@ test('without a delegation section the cycle does nothing at all: no review call
   assert.equal(r.env.db.get('SELECT count(*) AS n FROM delegate_review')?.['n'], 0);
   const hash = showHash(r, taskId);
   assert.equal(r.env.send({ cmd: 'approve', actor: OWNER, kind: 'task', id: taskId, hash })['state'], 'cooldown');
+});
+
+test('D-B11: an unknown recipient never reaches the AI and goes to a person; adding the contact later does not re-open the AI path for the same content', async (t) => {
+  const r = rig(t, { contacts: [] });
+  const taskId = newTask(r);
+  await draftUntilReview(r, taskId);
+  const [draft] = draftsOf(r.env.db, taskId);
+
+  const report = await r.daemon.delegation.advance();
+  assert.equal(r.reviewCalls.length, 0, 'the reviewer was not called');
+  assert.deepEqual(report.decided.map((d) => [d.verdict, d.outcome]), [['escalate', 'recipient_rule']]);
+  assert.equal(reviewsOf(r.env.db, taskId)[0]!.reason, '처음 보는 받는 사람 1명');
+  assert.equal(approvalsOf(r.env.db, taskId).length, 0, 'handed over, not rejected');
+  assert.equal(taskStatus(r.env.db, taskId), 'needs_review');
+
+  // 에이전트는 연락처를 쓸 수 없다. 사람이 소켓으로 넣는다
+  const refused = r.daemon.handleChannelRequest({ cmd: 'contacts', actor: AGENT, op: 'add', address: 'customer@example.com' }) as { ok: boolean; code?: string };
+  assert.deepEqual([refused.ok, refused.code], [false, 'not_human']);
+  assert.equal(r.env.db.get('SELECT count(*) AS n FROM contact')?.['n'], 0);
+  const added = r.daemon.handleChannelRequest({ cmd: 'contacts', actor: OWNER, op: 'add', address: 'Customer@Example.com' }) as { ok: boolean };
+  assert.equal(added.ok, true);
+
+  // 이미 사람에게 넘긴 같은 내용은 다시 검토하지 않는다(해시 기준). 사람이 평소대로 정한다
+  assert.deepEqual((await r.daemon.delegation.advance()).decided, []);
+  assert.equal(r.reviewCalls.length, 0);
+  const hash = showHash(r, taskId);
+  assert.equal(r.env.send({ cmd: 'approve', actor: OWNER, kind: 'task', id: taskId, hash })['ok'], true);
+  r.env.clock.advance(HOUR);
+  assert.equal(r.env.send({ cmd: 'release', actor: OWNER, kind: 'task', id: taskId, totp: r.env.code(OWNER) })['state'], 'queued');
+  await r.daemon.worker.tick();
+  assert.equal(r.fake.sent.length, 1);
+  assert.equal(canonicalJson(r.fake.sent[0]!.request), draft!.payload, 'byte for byte the approved draft');
+});
+
+test('D-B11: a suppressed contact is handed to a person with its own reason and nothing is sent', async (t) => {
+  const r = rig(t);
+  const taskId = newTask(r);
+  await draftUntilReview(r, taskId);
+  const suppressed = r.daemon.handleChannelRequest({ cmd: 'contacts', actor: OWNER, op: 'suppress', address: 'customer@example.com' }) as { ok: boolean };
+  assert.equal(suppressed.ok, true);
+  const report = await r.daemon.delegation.advance();
+  assert.deepEqual(report.decided.map((d) => [d.verdict, d.outcome]), [['escalate', 'recipient_rule']]);
+  assert.equal(reviewsOf(r.env.db, taskId)[0]!.reason, '수신을 막아 둔 받는 사람 1명');
+  assert.equal(r.fake.sent.length, 0);
+});
+
+test('D-B11: a contact suppressed during the cooldown keeps the approved task from being released; a person decides', async (t) => {
+  const r = rig(t);
+  const taskId = newTask(r);
+  await draftUntilReview(r, taskId);
+  assert.equal((await r.daemon.delegation.advance()).decided[0]!.outcome, 'recorded');
+  const suppressed = r.daemon.handleChannelRequest({ cmd: 'contacts', actor: OWNER, op: 'suppress', address: 'customer@example.com' }) as { ok: boolean };
+  assert.equal(suppressed.ok, true);
+  r.env.clock.advance(HOUR);
+  assert.equal((await r.daemon.delegation.advance()).released.length, 0);
+  assert.equal(taskStatus(r.env.db, taskId), 'needs_review');
+  assert.equal(reviewsOf(r.env.db, taskId).at(-1)!.outcome, 'recipient_rule');
+  assert.match(reviewsOf(r.env.db, taskId).at(-1)!.reason, /수신을 막아 둔 받는 사람 1명/);
+  await r.daemon.delegation.advance();
+  assert.equal(reviewsOf(r.env.db, taskId).length, 2, 'the reason is recorded once');
+  assert.equal(r.fake.sent.length, 0);
 });

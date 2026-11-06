@@ -46,7 +46,7 @@ test('a valid mandate is parsed and normalized: sorted lists, durations in secon
   assert.deepEqual(mandates.map((m) => m.id), ['alpha-mail', 'zeta-mail']);
   assert.equal(mandates[0]!.cooldown, 7200);
   assert.equal(mandates[1]!.cooldown, 3600);
-  assert.deepEqual(mandates[1]!.match, { actions: ['mail.send', 'notify-tool.send'], targets: ['mailbox:a', 'mailbox:b'], scopes: ['customer', 'internal'] });
+  assert.deepEqual(mandates[1]!.match, { actions: ['mail.send', 'notify-tool.send'], targets: ['mailbox:a', 'mailbox:b'], scopes: ['customer', 'internal'], recipients: { kind: 'known_contacts' } });
   assert.deepEqual(mandates[0]!.subjects, ['task']);
   assert.equal(mandates[0]!.expires, '2026-12-31');
   assert.equal(mandates[0]!.holder, 'approval-delegate');
@@ -145,4 +145,44 @@ test('change class table: every widening of a mandate is risky, every narrowing 
   ];
   for (const [name, over] of narrow) assert.equal(classifyChange(base, withMandate(over)).changeClass, 'normal', name);
   assert.equal(classifyChange(base, withMandate({ limits: { max_per_day: 1, max_task_usd: 1 } })).changeClass, 'normal', 'lowering limits narrows');
+});
+
+// ===== 받는 사람 규칙 (D-B11) =====
+
+test('a mandate without a recipient rule is refused', () => {
+  assert.deepEqual(errors(delegationPolicyText([{ recipients: null }])), ['delegation.mandates.0.match.recipients:required']);
+});
+
+test('recipient rules: known_contacts and exact, normalized domains are accepted', () => {
+  const known = ok(delegationPolicyText([{ recipients: { kind: 'known_contacts' } }])).delegation!.mandates[0]!.match.recipients;
+  assert.deepEqual(known, { kind: 'known_contacts' });
+  const domains = ok(delegationPolicyText([{ recipients: { kind: 'domains', domains: [' Shop.Example.COM ', 'example.com', 'example.com'] } }])).delegation!.mandates[0]!.match.recipients;
+  assert.deepEqual(domains, { kind: 'domains', domains: ['example.com', 'shop.example.com'] });
+});
+
+test('public free-mail domains are refused in a domains rule, whatever the case', () => {
+  for (const domain of ['gmail.com', 'NAVER.com', 'daum.net', 'hanmail.net', 'kakao.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me']) {
+    assert.deepEqual(errors(delegationPolicyText([{ recipients: { kind: 'domains', domains: ['example.com', domain] } }])), ['delegation.mandates.0.match.recipients.domains.1:free_mail_domain'], domain);
+  }
+});
+
+test('domains rules refuse wildcards, addresses, sub-domain patterns, empty lists and unknown kinds', () => {
+  for (const domain of ['*.example.com', '*', '@example.com', 'a@example.com', '.example.com', 'example', 'exa mple.com', 'example.com/x']) {
+    assert.deepEqual(errors(delegationPolicyText([{ recipients: { kind: 'domains', domains: [domain] } }])), ['delegation.mandates.0.match.recipients.domains.0:format'], domain);
+  }
+  assert.deepEqual(errors(delegationPolicyText([{ recipients: { kind: 'domains', domains: [] } }])), ['delegation.mandates.0.match.recipients.domains:type']);
+  const text = delegationPolicyText([{}]).replace('recipients: { kind: known_contacts }', 'recipients: { kind: anyone }');
+  assert.deepEqual(errors(text), ['delegation.mandates.0.match.recipients.kind:enum']);
+});
+
+test('changing the recipient rule is a risky change only when it widens', () => {
+  const base = ok(delegationPolicyText([{ recipients: { kind: 'domains', domains: ['a.example.com'] } }]));
+  const same = ok(delegationPolicyText([{ recipients: { kind: 'domains', domains: ['a.example.com'] } }]));
+  const wider = ok(delegationPolicyText([{ recipients: { kind: 'domains', domains: ['a.example.com', 'b.example.com'] } }]));
+  const narrower = ok(delegationPolicyText([{ recipients: { kind: 'domains', domains: ['a.example.com'] } }]));
+  const kind = ok(delegationPolicyText([{ recipients: { kind: 'known_contacts' } }]));
+  assert.equal(classifyChange(base, same).reasons.some((r) => r.includes('recipients')), false);
+  assert.equal(classifyChange(base, wider).reasons.some((r) => r.includes('match.recipients widened')), true);
+  assert.equal(classifyChange(wider, narrower).reasons.some((r) => r.includes('recipients')), false);
+  assert.equal(classifyChange(base, kind).reasons.some((r) => r.includes('match.recipients changed')), true);
 });

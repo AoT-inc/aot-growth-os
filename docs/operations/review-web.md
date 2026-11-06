@@ -85,11 +85,11 @@ npm run review-web -- --config instance/daemon.config.json --actor <사람 행�
 사람이 TOTP 로 배포한 정책의 `delegation` 안에서만 AI(`approval-delegate`)가 초안 승인 업무를 대신 승인한다(ADR-0016). 화면은 이를 **결정이 아닌 요약**으로 다룬다.
 
 - 위임 승인이 지금도 유효한 업무(엔진 `show` 의 `approval.mandate_id`)는 홈의 결정 카드·묶음에서 빠진다. 상세 주소(`/approvals/task/<id>`)로 들어오면 "AI가 처리한 일입니다 — AI가 처리함에서 보세요".
-- 위임이 멈추거나 철회·만료·정책 변경으로 효력을 잃으면 그 업무는 다시 결정 카드로 돌아오고, 「확인할 것」 줄이 "AI가 넘긴 이유: 위임이 멈추거나 바뀌어 사람이 다시 확인해야 합니다"로 바뀐다. AI가 사람에게 넘긴 업무도 같은 줄에 AI의 이유(`delegate_review.reason`, 한국어 한 줄)를 보인다.
+- 위임이 멈추거나 철회·만료·정책 변경으로 효력을 잃으면 그 업무는 다시 결정 카드로 돌아오고, 「확인할 것」 줄이 "AI가 넘긴 이유: 위임이 멈추거나 바뀌어 사람이 다시 확인해야 합니다"로 바뀐다. AI가 사람에게 넘긴 업무도 같은 줄에 AI의 이유(`delegate_review.reason`, 한국어 한 줄)를 보인다. 받는 사람 때문에 넘긴 경우(D-B11)는 `처음 보는 받는 사람 1명`, `수신을 막아 둔 받는 사람 1명`, `허용된 도메인이 아닌 받는 사람 N명` 같은 이유다. 연락처는 이 화면에서 보지도 쓰지도 않는다(승인 소켓의 `contacts` 명령만).
 - 읽는 것: `approval.mandate_id`(위임 승인 행), `delegate_review`, 엔진 `show`/`delegation status`. 쓰는 것은 다른 결정과 똑같이 버튼 → `POST /decide` → 소켓(`cancel`, `delegation pause|resume`)이다. 화면은 AI 결정 요청(`delegate_decide`)을 보낼 수 없다.
 - 위임이 없는 정책에서는 홈·`/delegated` 가 "AI가 처리함"을 내지 않는다(`/delegated` 는 "지금은 AI에게 맡긴 일이 없습니다").
 - 사람이 위임 승인을 취소하든 거절하든 변경을 요청하든, 엔진은 그 위임을 자동으로 멈춘다(응답에 `delegation_paused`). 다시 켜기는 사람 + TOTP 다.
-- 정책 제안 카드(`/approvals/policy_version/<id>`)는 한도·규칙·승인 절차뿐 아니라 **`delegation`·`phone`·기억 만료 섹션**까지 비교한다. 위임을 넓히는 변경은 첫 줄에 `AI 위임 추가: 모든 작업, 하루 최대 1000건` 처럼(`classifyChange` 이유를 사람 말로) 나오고, 넓어지지 않는 위임 변경도 `AI 위임이 바뀝니다`로 나온다. `현재 정책과 같은 내용`은 모든 섹션이 같을 때만이다. 위임을 추가·확대하는 정책은 지금 정책이 `reauth_before_effect: false` 여도 배포(`release`)에 항상 TOTP 가 필요하다.
+- 정책 제안 카드(`/approvals/policy_version/<id>`)는 한도·규칙·승인 절차뿐 아니라 **`delegation`·`phone`·기억 만료 섹션**까지 비교한다. 위임을 넓히는 변경은 첫 줄에 `AI 위임 추가: 모든 작업, 등록된 고객에게만, 하루 최대 1000건` 처럼(받는 사람 규칙이 들어간다, D-B11. 규칙을 바꾸면 `받는 사람 규칙 변경: 등록된 고객만 → 도메인 지정`)(`classifyChange` 이유를 사람 말로) 나오고, 넓어지지 않는 위임 변경도 `AI 위임이 바뀝니다`로 나온다. `현재 정책과 같은 내용`은 모든 섹션이 같을 때만이다. 위임을 추가·확대하는 정책은 지금 정책이 `reauth_before_effect: false` 여도 배포(`release`)에 항상 TOTP 가 필요하다.
 - 가짜 검토자(stub)는 시험용이다: 데몬 설정 `delegate_reviewer` 에 `{"kind":"stub"}` 을 두면 데몬이 시작을 거부한다(`verdict: "approve"` 면 적격한 모든 업무를 사람 없이 승인하기 때문). 시험 코드만 `parseDelegateReviewerConfig(value, { allowStub: true })` 로 연다. 운영 조립(`main.ts`)은 이 플래그를 주지 않는다.
 - 실제 AI 검토자는 아직 없다(`DelegateReviewer` 포트와 stub 뿐): 그래서 운영에서 위임을 선언해도 AI 승인은 아직 일어나지 않고, 이 요약은 비어 있다. 데모(`scripts/review-web-demo.ts`)는 승인 행을 직접 심어 이 화면을 보여 준다.
 

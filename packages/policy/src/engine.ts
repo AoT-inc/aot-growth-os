@@ -32,7 +32,7 @@ import {
 } from './approval.ts';
 import { classifyChange } from './change.ts';
 import {
-  delegationAuthority, delegationEligibility, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, MAX_DELEGATE_REASON_CHARS, readDelegationControls, rewritesUsed,
+  delegationAuthority, delegationEligibility, recipientRuleViolation, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, MAX_DELEGATE_REASON_CHARS, readDelegationControls, rewritesUsed,
   type Eligibility, type EligibilityCode,
 } from './delegation.ts';
 import { DELEGATION_MAX_DAYS, humanApprovalParams, mandateExpiresAt, riskyApprovalParams, type ApprovalParams, type Mandate, type ParsedPolicy, type PolicyDocument } from './document.ts';
@@ -926,6 +926,18 @@ export class ApprovalEngine {
         if (!status.ok || status.mandateId == null || status.quorumApprovalId === null) return null;
         const mandate = mandatesOf(ctx.document).find((m) => m.id === status.mandateId);
         if (mandate === undefined) return null;
+        // cooldown 동안 연락처가 수신 거부로 바뀌었거나 사라졌으면(D-B11) 내보내지 않는다. 승인 기록은 남고 사람이 정한다
+        for (const draft of ctx.drafts) {
+          const violation = recipientRuleViolation(tx, mandate.match.recipients, JSON.parse(draft.payload));
+          if (violation === null) continue;
+          const last = tx.get<{ outcome: string; subject_hash: string }>('SELECT outcome, subject_hash FROM delegate_review WHERE task_id = ? ORDER BY id DESC LIMIT 1', [id]);
+          if (last?.outcome !== 'recipient_rule' || last.subject_hash !== ctx.hash) {
+            tx.run('INSERT INTO delegate_review (task_id, subject_hash, mandate_id, verdict, reason, outcome, cost_usd, at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)', [
+              id, ctx.hash, mandate.id, 'escalate', `기다리는 사이 받는 사람이 바뀌었습니다: ${violation}`.slice(0, MAX_DELEGATE_REASON_CHARS), 'recipient_rule', now,
+            ]);
+          }
+          return null;
+        }
         this.#queue(tx, ctx.task, mandate.holder, status.quorumApprovalId, {}, `released after the delegation cooldown (mandate ${mandate.id})`, 'policy');
         return { taskId: id, mandateId: mandate.id, approvalId: status.quorumApprovalId };
       });

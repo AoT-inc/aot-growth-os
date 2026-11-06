@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 
 import { canonicalJson, draftSendStates, getOrgProposal, maskedPathsOf, messagePreviewOf, proposedDraftsOf, type DraftSendState, type OrgProposalRow } from '@aot/domain';
 import { evaluateOrgTrial } from '@aot/evaluation';
-import { classifyChange, orgProposalStaleness, type Mandate, type PolicyDocument } from '@aot/policy';
+import { classifyChange, orgProposalStaleness, type Mandate, type PolicyDocument, type RecipientRule } from '@aot/policy';
 import { listUnresolvedEffects } from '@aot/task-engine';
 
 import { listExperimentReviews } from '../cycle.ts';
@@ -631,14 +631,20 @@ const LIMIT_KO: Readonly<Record<string, string>> = {
   max_per_day: '하루 최대 승인 건수', max_drafts_per_task: '업무당 초안 수', max_recipients_per_draft: '메일당 받는 사람 수', max_payload_bytes: '초안 크기(바이트)',
   max_task_usd: '업무당 비용(USD)', max_rewrites_per_task: '다시 쓰게 횟수', max_review_usd_per_day: '하루 검토 비용(USD)',
 };
-const MATCH_KO: Readonly<Record<string, string>> = { actions: '작업', targets: '대상', scopes: '범위' };
+const MATCH_KO: Readonly<Record<string, string>> = { actions: '작업', targets: '대상', scopes: '범위', recipients: '받는 사람 도메인' };
+const RULE_KO: Readonly<Record<string, string>> = { known_contacts: '등록된 고객만', domains: '도메인 지정' };
 const isWildcard = (patterns: readonly string[]): boolean => patterns.some((p) => p === '*' || p === '*.*');
 
 /** 위임 한 건을 사람 말로: "모든 작업, 하루 최대 1000건" */
 export function mandateText(mandate: Mandate): string {
   const actions = isWildcard(mandate.match.actions) ? '모든 작업' : mandate.match.actions.join(', ');
   const targets = isWildcard(mandate.match.targets) ? '' : `, 대상 ${mandate.match.targets.join('/')}`;
-  return `${actions}${targets}, 하루 최대 ${mandate.limits.max_per_day}건`;
+  return `${actions}${targets}, ${recipientText(mandate.match.recipients)}, 하루 최대 ${mandate.limits.max_per_day}건`;
+}
+
+/** 받는 사람 규칙을 사람 말로 (D-B11) */
+export function recipientText(rule: RecipientRule): string {
+  return rule.kind === 'known_contacts' ? '등록된 고객에게만' : `${rule.domains.map((domain) => `@${domain}`).join(', ')} 주소에만`;
 }
 
 /** classifyChange 의 이유(영문)를 사람 말로. 위임·전화 섹션은 여기서, 한도·규칙·승인 절차는 policyChanges 가 따로 말한다 */
@@ -652,6 +658,7 @@ function sectionChanges(current: PolicyDocument, next: PolicyDocument): string[]
     else if ((m = /^delegation mandate '(.+)' added$/.exec(reason)) !== null) out.push(added(m[1]!));
     else if ((m = /^delegation mandate '(.+)' holder changed (.+) -> (.+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 담당 변경: ${m[2]} → ${m[3]}`);
     else if ((m = /^delegation mandate '(.+)' match\.(\w+) widened by (.+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' ${MATCH_KO[m[2]!] ?? m[2]} 확대: ${m[3]}`);
+    else if ((m = /^delegation mandate '(.+)' match\.recipients changed (\w+) -> (\w+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 받는 사람 규칙 변경: ${RULE_KO[m[2]!] ?? m[2]} → ${RULE_KO[m[3]!] ?? m[3]}`);
     else if ((m = /^delegation mandate '(.+)' limits\.(\w+) raised (\S+) -> (\S+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' ${LIMIT_KO[m[2]!] ?? m[2]} 상향: ${m[3]} → ${m[4]}`);
     else if ((m = /^delegation mandate '(.+)' cooldown shortened (\S+) -> (\S+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 취소 대기 시간 단축: ${m[2]} → ${m[3]}`);
     else if ((m = /^delegation mandate '(.+)' expires extended (\S+) -> (\S+)$/.exec(reason)) !== null) out.push(`AI 위임 '${m[1]}' 만료일 연장: ${m[2]} → ${m[3]}`);

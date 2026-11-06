@@ -11,14 +11,14 @@ export { ApprovalChannelError, MAX_REQUEST_BYTES, prepareSocketDir, sendApproval
 export { classifyChange, type PolicyChange } from './change.ts';
 export {
   ALWAYS_HUMAN, delegationAuthority, delegationEligibility, DELEGABLE_SUBJECTS, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, mandateUsability, MAX_DELEGATE_REASON_CHARS,
-  readDelegationControls, rewritesUsed,
+  readDelegationControls, recipientRuleViolation, rewritesUsed,
   type AlwaysHuman, type DelegationTaskContext, type Eligibility, type EligibilityCode, type MandateStop, type MandateUsability,
 } from './delegation.ts';
 export { recordDecision, type DecisionRecord } from './decisions.ts';
 export {
   DELEGATION_MAX_DAYS, mandateExpiresAt, MAX_GUIDANCE_CHARS, memoryDefaultValidity, parseDuration, parsePolicy, PHONE_RECORDING_MODES, POLICY_FORMAT, policyHash, policyVersionIdOf,
   RISKY_CHANGE_RANGE, validatePolicyDocument,
-  type DelegationSection, type Mandate, type MandateLimits, type MandateMatch, type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits,
+  type DelegationSection, type Mandate, type MandateLimits, type MandateMatch, type RecipientRule, type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits,
   type PolicyRule, type RiskyChangeParams,
 } from './document.ts';
 export {

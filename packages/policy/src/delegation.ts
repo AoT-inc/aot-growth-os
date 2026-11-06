@@ -4,11 +4,11 @@
 //  - 적격은 "모두 참"이어야 한다. 거짓인 첫 조건이 "사람에게 온 이유"(한 줄, 한국어)가 되어 delegate_review 에 남는다.
 //  - 항상 사람(코드 상수, 정책으로 못 바꾼다): ALWAYS_HUMAN. v1 의 subjects 는 `task` 뿐이라 나머지는 형식상으로도 위임할 수 없다.
 import {
-  messagePreviewOf, type Db, type DelegationControlRow, type DraftSendState, type EffectDraftRow, type TaskRow, type TaskSpec,
+  contactStatuses, domainOfAddress, messagePreviewOf, normalizeAddress, recipientAddressesOf, type Db, type DelegationControlRow, type DraftSendState, type EffectDraftRow, type TaskRow, type TaskSpec,
 } from '@aot/domain';
 
 import type { DelegationAuthority } from './approval.ts';
-import { mandateExpiresAt, type Mandate, type PolicyDocument } from './document.ts';
+import { mandateExpiresAt, type Mandate, type PolicyDocument, type RecipientRule } from './document.ts';
 import { globMatch, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
 
 /** 위임으로도 사람이 맡는 결정 (ADR-0016 Decision 5). 코드 상수이며 정책으로 바꾸지 못한다 */
@@ -90,7 +90,7 @@ export function delegationAuthority(db: Db, document: PolicyDocument, now: strin
 
 export type EligibilityCode =
   | 'no_mandate' | 'mandate_inactive' | 'wrong_state' | 'not_draft_task' | 'no_drafts' | 'policy_denied' | 'always_human' | 'already_approved' | 'human_decided'
-  | 'out_of_mandate' | 'too_many_drafts' | 'draft_expired' | 'masked' | 'send_started' | 'external_input' | 'unknown_shape' | 'recipients' | 'payload_size'
+  | 'out_of_mandate' | 'too_many_drafts' | 'draft_expired' | 'masked' | 'send_started' | 'external_input' | 'unknown_shape' | 'recipients' | 'recipient_rule' | 'payload_size'
   | 'requester_is_holder' | 'daily_limit' | 'task_budget' | 'review_budget' | 'holder_unavailable';
 
 export type Eligibility =
@@ -164,6 +164,37 @@ function generalChecks(tx: Db, ctx: DelegationTaskContext): Extract<Eligibility,
   return null;
 }
 
+/**
+ * 받는 사람 규칙 검사 (D-B11, 결정론). to·cc·bcc 와 reply_to 의 모든 주소를 정규화해 위임의 규칙과 연락처 표에 대조한다.
+ *  - 읽을 수 없는 주소는 모르는 주소다. 수신 거부(suppressed)는 규칙 종류와 상관없이 막는다
+ * 통과하면 null, 아니면 사람에게 보이는 한 줄 이유(한국어). AI 출력은 여기에 영향을 주지 못한다.
+ */
+export function recipientRuleViolation(tx: Db, rule: RecipientRule, payload: unknown): string | null {
+  const found = recipientAddressesOf(payload);
+  if (found === null) return '받는 사람을 확인할 수 없는 모양의 초안입니다';
+  const entries = [...found.recipients, ...found.replyTo];
+  const addresses = new Set<string>();
+  let unreadable = found.malformed;
+  for (const entry of entries) {
+    const address = normalizeAddress(entry);
+    if (address === null) unreadable += 1;
+    else addresses.add(address);
+  }
+  const statuses = contactStatuses(tx, [...addresses]);
+  let suppressed = 0;
+  let unknown = 0;
+  for (const address of addresses) {
+    const status = statuses.get(address);
+    if (status === 'suppressed') suppressed += 1;
+    else if (rule.kind === 'known_contacts' ? status !== 'active' : !rule.domains.includes(domainOfAddress(address))) unknown += 1;
+  }
+  const parts: string[] = [];
+  if (unknown > 0) parts.push(`${rule.kind === 'known_contacts' ? '처음 보는' : '허용된 도메인이 아닌'} 받는 사람 ${unknown}명`);
+  if (unreadable > 0) parts.push(`주소를 읽을 수 없는 받는 사람 ${unreadable}명`);
+  if (suppressed > 0) parts.push(`수신을 막아 둔 받는 사람 ${suppressed}명`);
+  return parts.length === 0 ? null : parts.join(', ');
+}
+
 /** 위임 하나에 대한 조건. depth = 통과한 조건 수 (가장 멀리 간 위임을 고르는 데 쓴다) */
 function mandateChecks(
   tx: Db, ctx: DelegationTaskContext, mandate: Mandate, controls: readonly DelegationControlRow[], now: string,
@@ -198,6 +229,8 @@ function mandateChecks(
     if (preview.recipients.length > mandate.limits.max_recipients_per_draft) {
       return fail(3, 'recipients', `받는 사람 ${preview.recipients.length}명 — 위임 한도 ${mandate.limits.max_recipients_per_draft}명`);
     }
+    const violation = recipientRuleViolation(tx, mandate.match.recipients, JSON.parse(draft.payload));
+    if (violation !== null) return fail(3, 'recipient_rule', violation);
     const bytes = Buffer.byteLength(draft.payload, 'utf8');
     if (bytes > mandate.limits.max_payload_bytes) return fail(3, 'payload_size', `초안 크기 ${bytes}바이트 — 위임 한도 ${mandate.limits.max_payload_bytes}바이트`);
   }

@@ -36,6 +36,7 @@ import { createDelegateCycle, type DelegateCycle, type DelegateReviewer } from '
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createConsentHandler, isConsentCommand } from './consent.ts';
+import { createContactsHandler, isContactsCommand } from './contacts.ts';
 import { createProductChannel, isProductCommand } from './product-channel.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
@@ -184,7 +185,7 @@ export interface Daemon {
   phone: PhoneRuntime | null;
   /** 위임 주기 (ADR-0016, 제안): 위임 승인 풀어 주기 + 적격 업무 검토. main 루프가 tick 뒤마다 `advance()` 를 부른다. 소켓에 닿지 않는다 */
   delegation: DelegateCycle;
-  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
+  /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `contacts` 는 고객 연락처 채널(D-B11), `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
   handleChannelRequest(request: unknown): unknown;
   /**
    * 첫 tick 전에 부른다. 컨테이너 어댑터가 설정된 경우에만 Docker 가용성을 확인하고(없으면 DockerUnavailableError, 호스트 실행으로 대체하지 않는다)
@@ -238,6 +239,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     },
   });
   const consent = createConsentHandler({ db: options.db, clock: options.clock });
+  const contacts = createContactsHandler({ db: options.db, clock: options.clock });
   const org = createOrgChannel({ db: options.db, clock: options.clock });
   const productChannel = options.productChannel === undefined ? null : createProductChannel({
     db: options.db, clock: options.clock, gate, forbiddenRoots: options.productChannel.forbiddenRoots,
@@ -246,6 +248,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const handleChannelRequest = (request: unknown): unknown => {
     if (isEffectResolutionCommand(request)) return resolveEffects(request);
     if (isConsentCommand(request)) return consent(request);
+    if (isContactsCommand(request)) return contacts(request);
     if (isOrgCommand(request)) return org(request as Record<string, unknown>);
     if (isProductCommand(request)) return productChannel === null ? { ok: false, error: 'the product channel is not configured (set registration_tools)' } : productChannel(request);
     if (isMeasurementCommand(request)) return measure === null ? { ok: false, error: 'no measurement signal is defined (configure a pack with measurement_signals)' } : measure(request);

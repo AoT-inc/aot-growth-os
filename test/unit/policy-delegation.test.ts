@@ -477,6 +477,11 @@ test('deploying a policy with a mandate: expiry must be within 90 days of the ap
   assert.equal(human.code, 'policy_denied', 'v1 mandates belong to an agent actor');
   const unknown = env.send({ cmd: 'approve', actor: OWNER, kind: 'policy_version', policy_text: delegationPolicyText([{ holder: 'nobody-here' }]) });
   assert.equal(unknown.code, 'policy_denied');
+  const noRule = env.send({ cmd: 'approve', actor: OWNER, kind: 'policy_version', policy_text: delegationPolicyText([{ recipients: null }]) });
+  assert.notEqual(noRule['ok'], true, 'D-B11: a mandate without a recipient rule is refused at deployment');
+  assert.match(String(noRule['error']), /recipients/);
+  const freeMail = env.send({ cmd: 'approve', actor: OWNER, kind: 'policy_version', policy_text: delegationPolicyText([{ recipients: { kind: 'domains', domains: ['gmail.com'] } }]) });
+  assert.notEqual(freeMail['ok'], true, 'D-B11: a free-mail domain list is refused at deployment');
   assert.equal(env.db.get('SELECT count(*) AS n FROM approval WHERE subject_kind = ?', ['policy_version'])?.['n'], 0, 'a refused deployment leaves no approval row');
 
   const text = delegationPolicyText([{ expires: '2027-01-15' }]);

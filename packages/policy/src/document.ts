@@ -2,7 +2,7 @@
 // 정규화: 기간은 초(정수), 집합 성격의 목록(scope, impact, subject, action, resource)은 정렬, 규칙은 id 순.
 // 그래서 주석·공백·키 순서·규칙 순서는 정책 버전(content_hash)을 바꾸지 않는다.
 import {
-  checkBusinessHours, contentHash, IMPACTS, isE164, IssueCollector, isPlainObject, MEMORY_KINDS, POLICY_DECISIONS, SCOPES,
+  checkBusinessHours, contentHash, FREE_MAIL_DOMAINS, IMPACTS, isE164, isStrictDomain, IssueCollector, isPlainObject, MEMORY_KINDS, POLICY_DECISIONS, SCOPES,
   type BusinessHours, type Impact, type MemoryKind, type PlainObject, type PolicyDecisionValue, type Scope, type ValidationResult,
 } from '@aot/domain';
 
@@ -104,6 +104,14 @@ export interface MandateLimits {
   max_review_usd_per_day: number;
 }
 
+/**
+ * 위임이 보낼 수 있는 받는 사람 규칙 (D-B11). 모든 위임이 선언해야 한다.
+ *  - known_contacts: 고객 연락처(`contact` 표)에 active 로 있는 주소만 (권장 기본값)
+ *  - domains: 주소의 도메인이 목록과 정확히 같은 것만(소문자, 와일드카드·하위 도메인 없음). 공개 무료 메일 도메인은 넣을 수 없다
+ * 어느 쪽이든 suppressed 연락처는 위임으로 보내지 못한다.
+ */
+export type RecipientRule = { kind: 'known_contacts' } | { kind: 'domains'; domains: string[] };
+
 export interface MandateMatch {
   /** `<도구>.<action>` 패턴 (`*` 와일드카드). 업무의 모든 external_effect 초안이 여기 들어야 한다 */
   actions: string[];
@@ -111,6 +119,8 @@ export interface MandateMatch {
   targets: string[];
   /** 업무 명세가 그 도구에 선언한 범위. `public` 은 넣을 수 없다 */
   scopes: Scope[];
+  /** 받는 사람 규칙 (필수) */
+  recipients: RecipientRule;
 }
 
 /** 위임 한 건 (ADR-0016 제안). 사람이 정책 배포로 정한 범위 안에서만 보유자(AI)가 승인할 수 있다 */
@@ -481,12 +491,12 @@ function checkDelegation(value: unknown, risky: RiskyChangeParams, out: IssueCol
 }
 
 function checkMandateMatch(value: unknown, path: string, out: IssueCollector): MandateMatch {
-  const match: MandateMatch = { actions: [], targets: [], scopes: [] };
+  const match: MandateMatch = { actions: [], targets: [], scopes: [], recipients: { kind: 'known_contacts' } };
   if (!isPlainObject(value)) {
-    out.add(path, 'required', 'match is required (actions, targets, scopes)');
+    out.add(path, 'required', 'match is required (actions, targets, scopes, recipients)');
     return match;
   }
-  unknownKeys(value, ['actions', 'targets', 'scopes'], path, out);
+  unknownKeys(value, ['actions', 'targets', 'scopes', 'recipients'], path, out);
   const strings = (key: 'actions' | 'targets', ok: (entry: string) => boolean, what: string): string[] => {
     const raw = value[key];
     if (!Array.isArray(raw) || raw.length === 0 || !raw.every((entry) => typeof entry === 'string' && entry.trim() !== '' && ok(entry))) {
@@ -505,7 +515,47 @@ function checkMandateMatch(value: unknown, path: string, out: IssueCollector): M
   } else {
     match.scopes = [...new Set(scopes as Scope[])].sort();
   }
+  match.recipients = checkRecipientRule(value['recipients'], `${path}.recipients`, out);
   return match;
+}
+
+function checkRecipientRule(value: unknown, path: string, out: IssueCollector): RecipientRule {
+  const fallback: RecipientRule = { kind: 'known_contacts' };
+  if (value === undefined) {
+    out.add(path, 'required', "recipients is required: every mandate must say who it may send to (recipients: { kind: known_contacts } or { kind: domains, domains: [...] })");
+    return fallback;
+  }
+  if (!isPlainObject(value)) {
+    out.add(path, 'type', 'recipients must be a mapping with a kind');
+    return fallback;
+  }
+  if (value['kind'] === 'known_contacts') {
+    unknownKeys(value, ['kind'], path, out);
+    return fallback;
+  }
+  if (value['kind'] !== 'domains') {
+    out.add(`${path}.kind`, 'enum', "recipients.kind must be 'known_contacts' or 'domains'");
+    return fallback;
+  }
+  unknownKeys(value, ['kind', 'domains'], path, out);
+  const raw = value['domains'];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) {
+    out.add(`${path}.domains`, 'type', 'domains must be a list of 1 to 100 exact domains such as example.com');
+    return fallback;
+  }
+  const domains = new Set<string>();
+  raw.forEach((entry: unknown, index) => {
+    const at = `${path}.domains.${index}`;
+    const domain = typeof entry === 'string' ? entry.trim().toLowerCase() : null;
+    if (domain === null || !isStrictDomain(domain)) {
+      out.add(at, 'format', 'each domain must be an exact domain such as example.com (no wildcard, no @, no sub-domain pattern)');
+    } else if (FREE_MAIL_DOMAINS.includes(domain)) {
+      out.add(at, 'free_mail_domain', `'${domain}' is a public free-mail domain: allow-listing it would let anyone be a recipient. Use known_contacts instead`);
+    } else {
+      domains.add(domain);
+    }
+  });
+  return { kind: 'domains', domains: [...domains].sort() };
 }
 
 function checkMandateLimits(value: unknown, path: string, out: IssueCollector): MandateLimits {

@@ -410,7 +410,7 @@ test('a person cancelling a delegated approval pauses that mandate automatically
   const env = delegationEnv(t);
   const { taskId } = await draftedFor(env);
   assert.equal(decide(env, taskId, 'approve').ok, true);
-  const cancelled = env.send({ cmd: 'cancel', actor: OWNER, kind: 'task', id: taskId, comment: 'not this one', via: 'web' });
+  const cancelled = env.send({ cmd: 'cancel', actor: OWNER, kind: 'task', id: taskId, comment: 'not this one', expected_hash: hashOf(env, taskId), via: 'web' });
   assert.equal(cancelled['ok'], true);
   assert.equal(cancelled['delegation_paused'], MANDATE);
   assert.deepEqual(controlsOf(env.db), [{ action: 'pause', mandate_id: MANDATE, actor_id: OWNER, reason: '사람이 위임 결정을 취소함' }]);
@@ -524,7 +524,7 @@ test('a person rejecting or requesting changes on a delegated approval pauses th
   const env = delegationEnv(t);
   const a = await draftedFor(env);
   assert.equal(decide(env, a.taskId, 'approve').ok, true);
-  const rejected = env.send({ cmd: 'reject', actor: OWNER, kind: 'task', id: a.taskId, comment: 'no', via: 'web' });
+  const rejected = env.send({ cmd: 'reject', actor: OWNER, kind: 'task', id: a.taskId, comment: 'no', expected_hash: hashOf(env, a.taskId), via: 'web' });
   assert.equal(rejected['ok'], true);
   assert.equal(rejected['delegation_paused'], MANDATE);
   assert.deepEqual(controlsOf(env.db), [{ action: 'pause', mandate_id: MANDATE, actor_id: OWNER, reason: '사람이 위임 결정을 거절함' }]);

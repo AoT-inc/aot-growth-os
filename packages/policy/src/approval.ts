@@ -11,6 +11,7 @@
 import type { ApprovalSubjectKind, Db, EffectDraftRow, PublicationRow, StrategyVersionRow, TaskRow, TaskSpec } from '@aot/domain';
 import { contentHash, draftSubjectEntries } from '@aot/domain';
 
+import { humanOnlyKind } from './always-human.ts';
 import { type ApprovalParams } from './document.ts';
 
 export type ApprovalState =
@@ -41,7 +42,8 @@ export interface ApprovalStatus {
  * 승인 계산은 이 포트를 통해서만 위임 행을 센다. 포트가 없으면 에이전트 행은 하나도 세지 않는다.
  */
 export interface DelegationAuthority {
-  accepts(row: { mandateId: string; decidedBy: string; at: string }): boolean;
+  /** `subject` 가 항상 사람인 대상(또는 분류할 수 없는 대상)이면 위임이 있어도 false 여야 한다 (ADR-0016 Decision 5) */
+  accepts(row: { mandateId: string; decidedBy: string; at: string; subject: { kind: string; id: string } }): boolean;
   /** 위임의 cooldown(초). 위임이 정책에 없으면 null */
   cooldownOf(mandateId: string): number | null;
 }
@@ -97,8 +99,8 @@ export function approvalStatus(db: Db, query: ApprovalQuery): ApprovalStatus {
       // 위임 승인: 위임이 지금 유효하고 승인자 한 명 몫(min_approvers == 1)일 때만, 요청자가 보유자가 아닐 때만 센다. 사람 승인이 없을 때 정족수가 된다(아래)
       if (row.mandate_id === null) {
         continue; // 위임 표시가 없는 에이전트 행은 예전처럼 아무것도 아니다 (승인으로 세지 않고 설명에도 나오지 않는다)
-      } else if (!query.authority || query.params.min_approvers !== 1
-        || !query.authority.accepts({ mandateId: row.mandate_id, decidedBy: row.decided_by, at: row.at })) {
+      } else if (!query.authority || query.params.min_approvers !== 1 || humanOnlyKind(query.kind) !== null
+        || !query.authority.accepts({ mandateId: row.mandate_id, decidedBy: row.decided_by, at: row.at, subject: { kind: query.kind, id: query.id } })) {
         ignoredDelegated += 1;
       } else if (row.subject_hash !== query.hash) {
         stale += 1;

@@ -6,6 +6,7 @@ import {
   type BusinessHours, type Impact, type MemoryKind, type PlainObject, type PolicyDecisionValue, type Scope, type ValidationResult,
 } from '@aot/domain';
 
+import { humanOnlyKind, UNCLASSIFIED } from './always-human.ts';
 import { parseYaml, YamlError } from './yaml.ts';
 
 export const POLICY_FORMAT = 'aot-policy/v1';
@@ -465,7 +466,10 @@ function checkDelegation(value: unknown, risky: RiskyChangeParams, out: IssueCol
     const holder = item['holder'];
     if (typeof holder !== 'string' || !HOLDER_ID.test(holder)) out.add(`${path}.holder`, 'format', 'holder must be an actor id');
     const subjects = item['subjects'];
-    if (!Array.isArray(subjects) || subjects.length === 0 || !subjects.every((entry) => entry === 'task')) {
+    if (Array.isArray(subjects) && subjects.some((entry) => entry !== 'task' && humanOnlyKind(entry) !== null && humanOnlyKind(entry) !== UNCLASSIFIED)) {
+      // 항상 사람이 정하는 결정(정책 배포·조직 변경·게시·상품 등록 …)은 위임 대상으로 적을 수 없다 (ADR-0016 Decision 5)
+      out.add(`${path}.subjects`, 'always_human', `subjects cannot name an always-human decision (${subjects.filter((entry) => humanOnlyKind(entry) !== null && entry !== 'task').map(String).join(', ')}): those are decided by a person only`);
+    } else if (!Array.isArray(subjects) || subjects.length === 0 || !subjects.every((entry) => entry === 'task')) {
       out.add(`${path}.subjects`, 'enum', "subjects must be ['task'] (v1 delegates only draft-approval tasks)");
     }
     const match = checkMandateMatch(item['match'], `${path}.match`, out);

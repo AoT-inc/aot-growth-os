@@ -81,7 +81,11 @@ test('validation rejects: unknown keys, public scope, missing/invalid expires, b
   assert.ok(errors(base({ guidance: '' })).includes('delegation.mandates.0.guidance:range'));
   assert.ok(errors(base({ guidance: 'x'.repeat(501) })).includes('delegation.mandates.0.guidance:range'));
   assert.ok(errors(delegationPolicyText([{ id: 'dup' }, { id: 'dup' }])).includes('delegation.mandates.1.id:duplicate'));
-  assert.ok(errors(base().replace('subjects: [task]', 'subjects: [task, publication]')).includes('delegation.mandates.0.subjects:enum'), 'v1 delegates only draft-approval tasks');
+  assert.ok(errors(base().replace('subjects: [task]', 'subjects: [task, publication]')).includes('delegation.mandates.0.subjects:always_human'), 'always-human decisions cannot be named');
+  for (const name of ['policy_deploy', 'org_proposal', 'strategy_version', 'product_decision', 'effect_resolution', 'scope_approval_task', 'policy_version', 'delegation_resume']) {
+    assert.ok(errors(base().replace('subjects: [task]', `subjects: [${name}]`)).includes('delegation.mandates.0.subjects:always_human'), name);
+  }
+  assert.ok(errors(base().replace('subjects: [task]', 'subjects: [something-new]')).includes('delegation.mandates.0.subjects:enum'), 'an unknown subject is refused too (v1 delegates only draft-approval tasks)');
   assert.ok(errors(base({ id: 'Bad_ID' })).includes('delegation.mandates.0.id:format'));
   assert.ok(errors(base({ holder: 'bad holder' })).includes('delegation.mandates.0.holder:format'));
   assert.ok(errors(base({ actions: ['send'] })).includes('delegation.mandates.0.match.actions:type'), "actions are '<tool>.<action>' patterns");

@@ -1,5 +1,5 @@
 // 공유 계약 (docs/plans/decision-delegation.md §5): `expected_hash`(reject·cancel·request_changes·release), `via`, 거부 응답의 `code`.
-// 화면(트랙 C)이 이 모양에 맞춰 보낸다: 해시가 다르면 hash_mismatch 로 거부하고, 해시를 보내지 않으면 예전처럼 동작한다.
+// 화면(트랙 C)이 이 모양에 맞춰 보낸다: 해시가 다르면 hash_mismatch 로 거부하고, 화면(via:'web')은 해시를 반드시 보내야 하고(없으면 missing_hash), CLI 는 보내지 않으면 예전처럼 동작한다.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -20,7 +20,7 @@ const code = (response: { code?: unknown }): unknown => response.code;
 test('the refusal code list is exactly the shared contract', () => {
   assert.deepEqual([...REFUSAL_CODES], [
     'hash_mismatch', 'wrong_state', 'send_started', 'masked', 'expired', 'policy_denied', 'self_approval', 'cooldown',
-    'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request',
+    'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request', 'missing_hash',
   ]);
 });
 
@@ -197,4 +197,51 @@ test('every coded refusal is one of the shared codes', async (t) => {
     assert.equal(response.ok, false, JSON.stringify(probe));
     if (response.code !== undefined) assert.ok((REFUSAL_CODES as readonly string[]).includes(response.code), `${JSON.stringify(probe)} -> ${response.code}`);
   }
+});
+
+// ===== 화면(via:'web')은 expected_hash 필수 =====
+
+test('a web decision without expected_hash is refused with missing_hash for every decision command, and nothing changes', async (t) => {
+  const env = policyEnv(t);
+  const a = await draftedTask(env, { dedupeKey: 'a' });
+  const id = a.taskId;
+  const noHash: Array<Record<string, unknown>> = [
+    { cmd: 'reject', actor: OWNER, kind: 'task', id, via: 'web' },
+    { cmd: 'cancel', actor: OWNER, kind: 'task', id, via: 'web' },
+    { cmd: 'request_changes', actor: OWNER, kind: 'task', id, comment: 'shorter', via: 'web' },
+    { cmd: 'release', actor: OWNER, kind: 'task', id, totp: env.code(OWNER), via: 'web' },
+    { cmd: 'reject', actor: OWNER, kind: 'policy_version', id: 'policy-x', via: 'web' },
+    { cmd: 'cancel', actor: OWNER, kind: 'strategy_version', id: 'strategy-x', via: 'web' },
+    { cmd: 'release', actor: OWNER, kind: 'org_proposal', id: 'org-x', via: 'web' },
+  ];
+  for (const request of noHash) {
+    const refused = env.send(request);
+    assert.deepEqual([refused.ok, code(refused)], [false, 'missing_hash'], JSON.stringify(request));
+  }
+  assert.equal(taskStatus(env.db, id), 'needs_review');
+  assert.equal(approvalsOf(env.db, id).length, 0);
+  assert.equal(env.db.get('SELECT count(*) AS n FROM human_reauth')?.['n'], 0, 'the TOTP code was not consumed');
+  // 같은 요청에 해시를 실으면 처리된다
+  assert.equal(env.send({ cmd: 'reject', actor: OWNER, kind: 'task', id, expected_hash: hashOf(env, 'task', id), via: 'web' })['ok'], true);
+});
+
+test('a web approve must carry a 64-hex hash; a malformed expected_hash is refused whatever the path', async (t) => {
+  const env = policyEnv(t);
+  const a = await draftedTask(env, { dedupeKey: 'a' });
+  const id = a.taskId;
+  for (const bad of ['', 'abc', 'G'.repeat(64), 'A'.repeat(64), 42]) {
+    assert.equal(code(env.send({ cmd: 'approve', actor: OWNER, kind: 'task', id, hash: bad, via: 'web' })), 'bad_request', `approve ${JSON.stringify(bad)}`);
+    for (const via of ['web', 'cli', undefined]) {
+      assert.equal(code(env.send({ cmd: 'cancel', actor: OWNER, kind: 'task', id, expected_hash: bad, ...(via === undefined ? {} : { via }) })), 'bad_request', `cancel ${JSON.stringify(bad)} via ${via}`);
+    }
+  }
+  assert.equal(approvalsOf(env.db, id).length, 0);
+});
+
+test('the CLI keeps working without expected_hash (it sends one only when --expected-hash is given); read-only commands never need it', async (t) => {
+  const env = policyEnv(t);
+  const a = await draftedTask(env, { dedupeKey: 'a' });
+  for (const cmd of ['whoami', 'list']) assert.equal(env.send({ cmd, actor: OWNER, via: 'web' })['ok'], true, `${cmd} is not a decision`);
+  assert.equal(env.send({ cmd: 'show', actor: OWNER, kind: 'task', id: a.taskId, via: 'web' })['ok'], true);
+  assert.equal(env.send({ cmd: 'cancel', actor: OWNER, kind: 'task', id: a.taskId, via: 'cli' })['ok'], true);
 });

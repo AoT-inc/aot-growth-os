@@ -10,7 +10,7 @@ export {
 export { ApprovalChannelError, MAX_REQUEST_BYTES, prepareSocketDir, sendApprovalRequest, startApprovalServer, type ApprovalHandler, type ApprovalServer } from './channel.ts';
 export { classifyChange, type PolicyChange } from './change.ts';
 export {
-  ALWAYS_HUMAN, delegationAuthority, delegationEligibility, DELEGABLE_SUBJECTS, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, mandateUsability, MAX_DELEGATE_REASON_CHARS,
+  ALWAYS_HUMAN, humanOnlyKind, taskHumanOnly, UNCLASSIFIED, delegationAuthority, delegationEligibility, DELEGABLE_SUBJECTS, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, mandateUsability, MAX_DELEGATE_REASON_CHARS,
   readDelegationControls, recipientRuleViolation, rewritesUsed,
   type AlwaysHuman, type DelegationTaskContext, type Eligibility, type EligibilityCode, type MandateStop, type MandateUsability,
 } from './delegation.ts';

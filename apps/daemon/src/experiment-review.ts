@@ -67,6 +67,8 @@ export function createExperimentDecisionHandler(options: ExperimentDecisionOptio
       if (request['kind'] !== 'strategy_version') refuse("kind must be 'strategy_version'");
       const id = typeof request['id'] === 'string' && request['id'] !== '' ? request['id'] : refuse('an id is required');
       const expected = request['expected_hash'];
+      // 화면(via:'web')은 사람이 본 전략의 해시를 반드시 실어야 한다. 보내지 않으면 승격·거절 모두 거부한다
+      if (expected === undefined && request['via'] === 'web') refuse('a web decision must carry expected_hash (the hash the person saw)', 'missing_hash');
       if (expected !== undefined) {
         if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) refuse('expected_hash must be a 64-character hex string', 'bad_request');
         if (options.subjectHash === undefined) refuse('this channel cannot check expected_hash; leave it out', 'bad_request');

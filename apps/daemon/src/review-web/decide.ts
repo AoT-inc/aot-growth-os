@@ -52,6 +52,7 @@ const FAILURES: Readonly<Record<string, Failure>> = {
   reauth_failed: { headline: 'OTP 코드가 맞지 않습니다.', short: 'OTP 코드 틀림', next: ['again'] },
   reauth_locked: { headline: '잠시 뒤 다시 하세요(5분).', short: 'OTP 입력 잠김', next: ['again'] },
   not_human: { headline: '이 결정은 사람만 할 수 있습니다. 화면을 시작할 때 준 행위자가 사람인지 확인하세요.', short: '사람만 결정할 수 있음', next: ['home'] },
+  missing_hash: { headline: '화면이 본 내용의 확인 값이 빠져 결정을 보내지 않았습니다. 화면을 새로 열어 주세요.', short: '확인 값이 빠짐', next: ['fresh'] },
   bad_request: { headline: '요청이 맞지 않아 처리하지 못했습니다.', short: '요청이 맞지 않음', next: ['fresh'] },
   stale_form: { headline: '이 화면이 오래돼서 결정을 보내지 않았습니다.', short: '화면이 오래됨', next: ['fresh'] },
   gone: { headline: '이미 다른 결정이 났거나 더 이상 결정할 일이 아닙니다.', short: '이미 처리됨', next: ['home'] },

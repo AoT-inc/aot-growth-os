@@ -368,6 +368,13 @@ test('inconclusive: no strategy_record or lesson is created, the experiment wait
   assert.deepEqual([stale.ok, stale.code], [false, 'hash_mismatch']);
   const malformed = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'x', expected_hash: 'abc' }) as { ok: boolean; code: string };
   assert.deepEqual([malformed.ok, malformed.code], [false, 'bad_request']);
+  // 화면(via:'web')은 expected_hash 를 반드시 실어야 한다: 거절·승격 모두 없으면 missing_hash 로 거부하고 아무것도 쓰지 않는다
+  for (const cmd of ['reject', 'promote']) {
+    const missing = daemon.handleChannelRequest({ cmd, actor: OWNER, kind: 'strategy_version', id, comment: 'x', via: 'web' }) as { ok: boolean; code: string };
+    assert.deepEqual([cmd, missing.ok, missing.code], [cmd, false, 'missing_hash']);
+  }
+  const badWeb = daemon.handleChannelRequest({ cmd: 'reject', actor: OWNER, kind: 'strategy_version', id, comment: 'x', expected_hash: 'G'.repeat(64), via: 'web' }) as { ok: boolean; code: string };
+  assert.deepEqual([badWeb.ok, badWeb.code], [false, 'bad_request']);
   const staleAgent = daemon.handleChannelRequest({ cmd: 'reject', actor: AGENT, kind: 'strategy_version', id, comment: 'x', expected_hash: hash }) as { ok: boolean; code: string };
   assert.deepEqual([staleAgent.ok, staleAgent.code], [false, 'not_human']);
   assert.equal(statusOf(env.db, id), 'experiment');

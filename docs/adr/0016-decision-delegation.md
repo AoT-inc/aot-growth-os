@@ -77,3 +77,8 @@ ADR-0011(§2·§3 "`approved`는 사람의 `approval` 기록으로만")과 ADR-0
 - 적격 검사가 초안의 to·cc·bcc·reply_to 모든 주소를 엄격히 정규화해 규칙과 새 `contact` 표에 대조한다. 모르거나 읽을 수 없거나 수신 거부된 주소가 있으면 사람에게 넘긴다(거절 아님, 이유는 한국어 한 줄). 엔진이 기록 트랜잭션과 cooldown 뒤 해제 때 다시 확인하므로 AI 출력은 이 검사를 못 바꾼다.
 - `contact` 는 사람만 승인 소켓의 `contacts add|import|suppress|list` 로 쓴다(감사 `event`). 정지는 TOTP 없이 즉시이고 되돌릴 수 없다. 에이전트·화면·위임 보유자는 쓰는 길이 없다.
 - 자세한 내용은 [계획 §6 D-B11](../plans/decision-delegation.md).
+
+## 구현 기록 — 심층 방어 보강 (2026-11-06, 보안 검토 체크리스트 작성 중 발견)
+- **`expected_hash` 필수화 (화면)**: 엔진은 `via:'web'` 인 `approve`(`hash` 64 소문자 hex)·`reject`·`cancel`·`request_changes`·`release` 에 `expected_hash` 가 없으면 거부 코드 `missing_hash`, 형식이 틀리면(어느 경로든) `bad_request` 로 거부한다. 실험 승격·거절 채널(`experiment-review.ts`)도 같다. 화면은 `missing_hash` 를 한국어 한 줄로 안내한다. CLI(`via:'cli'`)는 `--expected-hash` 를 줄 때만 대조하는 지금 동작을 유지한다(사람이 `show` 를 읽고 직접 치는 도구). 해시 개념이 없는 화면 결정(상품 반려·재검증, 조직 확정, 효과 확인, 위임 정지·재개)은 대상이 아니다. 거부 코드 목록(`REFUSAL_CODES`)에 `missing_hash` 가 늘었다.
+- **`ALWAYS_HUMAN` 을 조회하는 분류로**: 목록과 분류 함수 `humanOnlyKind` 를 `always-human.ts` 로 옮겼다(문서 파서도 쓰므로 순환을 피함). 결정 종류(정책 배포·조직 변경·전략·게시·상품 등록·효과 확정·위임 해제)는 항상 사람이고, 모르는 종류는 `unclassified` 로 사람 전용이다(fail closed). 업무 수준(삭제 영향·public·범위 승인·외부 입력 초안·사람이 결정한 업무)은 `taskHumanOnly`. 입구 네 곳이 모두 조회한다: `delegateDecide`, `releaseDelegated`, 위임 행을 세는 승인 계산(`approvalStatus` + `DelegationAuthority.accepts` 가 대상을 받는다), 정책 파싱(`subjects` 에 항상 사람 결정을 적으면 `always_human` 오류). 위임 승인 행이 DB 에 들어 있어도 이런 대상에서는 정족수가 아니다.
+- 시험: `test/unit/policy-always-human.test.ts`(분류, 위임 행 무시, 구현을 끄면 실패하는 것 확인), `policy-expected-hash.test.ts`, `policy-delegation-document.test.ts`, `test/integration/daemon-experiment-review.test.ts`.

@@ -75,7 +75,7 @@ test('fingerprint changes with the button, the requests, the hashes and the OTP 
 });
 
 test('the failure text comes from the engine code only: every contract code has one Korean conclusion and a next step, and English engine text never becomes the headline', () => {
-  const codes = ['hash_mismatch', 'wrong_state', 'send_started', 'masked', 'expired', 'policy_denied', 'self_approval', 'cooldown', 'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request'];
+  const codes = ['hash_mismatch', 'wrong_state', 'send_started', 'masked', 'expired', 'policy_denied', 'self_approval', 'cooldown', 'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request', 'missing_hash'];
   for (const code of codes) {
     const failure = failureOf({ label: '업무', outcome: 'refused', code, error: 'the task changed since it was shown (expected_hash mismatch)' });
     assert.match(failure.headline, /[가-힣]/, code);

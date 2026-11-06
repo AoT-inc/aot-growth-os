@@ -13,7 +13,7 @@
 //  - 초안 승인 업무(ADR-0015): 업무 승인 대상 해시가 제안된 초안(`effect_draft` proposed)을 묶는다. `show` 가 초안 본문과 해시를 보여 주고, 승인·해제는 만료된 초안이 있으면 거부한다.
 //    `reject` 는 초안을 `rejected` 로, 새 명령 `request_changes` 는 승인 행(`changes_requested`)을 남기고 초안을 `superseded` 로 만든 뒤 업무를 다시 큐에 넣는다(초안을 다시 쓰게 한다).
 //  - 거부 응답은 `{ ok:false, error, code? }` 다. `code` 는 기계가 읽는 사유(RefusalCode)이고 `error` 는 사람이 읽는 영어 문장이다 (검토 화면이 코드로 안내를 고른다)
-//  - 낡은 결정 막기: `approve` 는 `hash` 를, `reject`·`cancel`·`request_changes`·`release` 는 선택 필드 `expected_hash` 를 지금 대상 해시와 대조한다 (없으면 대조하지 않는다).
+//  - 낡은 결정 막기: `approve` 는 `hash` 를, `reject`·`cancel`·`request_changes`·`release` 는 선택 필드 `expected_hash` 를 지금 대상 해시와 대조한다 (화면 via:'web' 은 필수 — 없으면 missing_hash. CLI 는 없으면 대조하지 않는다).
 //    `via`('cli'|'web', 자기 신고 값)는 승인 행에 감사용으로 남는다
 //  - 결정 위임(ADR-0016, 제안 — 오너 결정 D-B1): 정책이 `delegation.mandates` 를 선언했을 때만, 위임 보유자(AI)가 프로세스 안 메서드 `delegateDecide` 로 초안 승인 업무를 승인·다시 쓰게·사람에게
 //    넘긴다. 소켓 명령이 아니다(`CMDS` 에 없다) — 소켓은 계속 사람 전용이다. 적격(delegation.ts)을 같은 트랜잭션에서 다시 확인하고, 위임 승인은 `show` 해시(초안 포함)에 묶인다.
@@ -31,8 +31,9 @@ import {
   approvalStatus, publicationSubject, reauthPurpose, recordReauth, ReauthError, strategySubject, strategySubjectHash, taskRequester, taskSubject, taskSubjectHash, type ApprovalState, type DelegationAuthority, type TaskSubject,
 } from './approval.ts';
 import { classifyChange } from './change.ts';
+import { humanOnlyKind } from './always-human.ts';
 import {
-  delegationAuthority, delegationEligibility, recipientRuleViolation, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, MAX_DELEGATE_REASON_CHARS, readDelegationControls, rewritesUsed,
+  delegationAuthority, delegationEligibility, recipientRuleViolation, taskHumanOnly, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, MAX_DELEGATE_REASON_CHARS, readDelegationControls, rewritesUsed,
   type Eligibility, type EligibilityCode,
 } from './delegation.ts';
 import { DELEGATION_MAX_DAYS, humanApprovalParams, mandateExpiresAt, riskyApprovalParams, type ApprovalParams, type Mandate, type ParsedPolicy, type PolicyDocument } from './document.ts';
@@ -72,7 +73,7 @@ export type ApprovalCommand =
 /** 거부 사유 코드 (공유 계약 §5). 검토 화면이 안내를 고르는 데 쓴다 */
 export const REFUSAL_CODES = [
   'hash_mismatch', 'wrong_state', 'send_started', 'masked', 'expired', 'policy_denied', 'self_approval', 'cooldown',
-  'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request',
+  'reauth_required', 'reauth_failed', 'reauth_locked', 'not_human', 'bad_request', 'missing_hash',
 ] as const;
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
 
@@ -272,7 +273,7 @@ export class ApprovalEngine {
     return approvalId;
   }
 
-  /** `show` 가 보여 준 해시(expected_hash)와 지금 해시가 다르면 거부한다. 해시를 보내지 않았으면 대조하지 않는다 */
+  /** `show` 가 보여 준 해시(expected_hash)와 지금 해시가 다르면 거부한다. 해시를 보내지 않았으면(CLI 만 가능, 화면은 parseCommand 가 이미 거부) 대조하지 않는다 */
   #expect(expected: string | undefined, actual: string | null, what: string): void {
     if (expected !== undefined && expected !== actual) refuse(`the ${what} changed since it was shown (expected_hash mismatch); show it again before deciding`, 'hash_mismatch');
   }
@@ -851,6 +852,8 @@ export class ApprovalEngine {
     if (typeof input?.task_id !== 'string' || typeof input.hash !== 'string' || !DELEGATE_VERDICTS.includes(input.verdict) || reason === '') {
       return { ok: false, code: 'bad_request', error: 'task_id, hash, verdict (approve|request_changes|escalate) and a reason are required' };
     }
+    // 항상 사람인 결정은 위임으로 받지 않는다: 대상 종류(여기서는 업무)를 ALWAYS_HUMAN 에 대조하고, 분류할 수 없으면 사람 전용으로 본다 (fail closed)
+    if (humanOnlyKind('task') !== null) return { ok: false, code: 'always_human', error: 'this decision is always made by a person' };
     const cost = typeof input.cost_usd === 'number' && Number.isFinite(input.cost_usd) && input.cost_usd > 0 ? input.cost_usd : 0;
     return this.#o.db.writeTx((tx): DelegateDecideResult => {
       let ctx: TaskApprovalContext;
@@ -872,6 +875,13 @@ export class ApprovalEngine {
         return { ok: false, code: eligibility.code, error: eligibility.reason };
       }
       const mandate = eligibility.mandate;
+      // 방어선: 적격 검사가 통과시켰더라도 업무 수준의 항상 사람 분류가 사람 전용이면 기록하지 않는다
+      const humanOnly = taskHumanOnly(tx, ctx.document, ctx.task.id);
+      if (humanOnly !== null) {
+        const why = '항상 사람이 정하는 결정이라 AI가 처리할 수 없습니다';
+        record(mandate.id, 'escalate', why, 'always_human');
+        return { ok: false, code: 'always_human', error: why };
+      }
       if (input.hash !== ctx.hash) {
         const why = 'AI가 본 내용이 그 사이 바뀌었습니다';
         record(mandate.id, 'escalate', why, 'hash_mismatch', input.hash);
@@ -921,6 +931,7 @@ export class ApprovalEngine {
         }
         const now = this.#now();
         if (ctx.task.status !== 'needs_review' || ctx.task.approved_hash !== ctx.hash) return null;
+        if (humanOnlyKind('task') !== null || taskHumanOnly(tx, ctx.document, id) !== null) return null; // 항상 사람인 결정은 위임 승인으로 열지 않는다
         if (ctx.drafts.some((draft) => now >= draft.expires_at) || [...ctx.masked.values()].some((paths) => paths.length > 0)) return null;
         const status = approvalStatus(tx, { kind: 'task', id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now, checkReauth: false, authority: ctx.authority });
         if (!status.ok || status.mandateId == null || status.quorumApprovalId === null) return null;
@@ -1157,11 +1168,14 @@ function parseCommand(raw: unknown): ApprovalCommand {
   const id = c['id'] as string;
   if (cmd === 'approve') {
     if (typeof c['hash'] !== 'string') refuse('hash is required (from `show`)', 'bad_request');
+    if (c['via'] === 'web' && !HASH_ARG.test(c['hash'] as string)) refuse('hash must be the 64-hex hash from `show`', 'bad_request');
     return { cmd, actor, kind: kind as 'task' | 'publication' | 'strategy_version' | 'org_proposal', id, hash: c['hash'] as string, ...optional('comment'), ...via };
   }
   if (cmd === 'show') return { cmd, actor, kind, id, ...via };
-  // 낡은 결정 막기: reject·cancel·request_changes·release 는 선택 필드 expected_hash(show 의 hash)를 받는다
+  // 낡은 결정 막기: reject·cancel·request_changes·release 는 expected_hash(show 의 hash)를 받는다. 틀린 모양은 어느 경로든 거부하고,
+  // 화면(via:'web')은 사람이 본 내용을 기준으로 결정하므로 반드시 실어야 한다 (없으면 missing_hash). CLI 는 --expected-hash 를 줄 때만 대조한다
   if (c['expected_hash'] !== undefined && (typeof c['expected_hash'] !== 'string' || !HASH_ARG.test(c['expected_hash']))) refuse('expected_hash must be the 64-hex hash from `show`', 'bad_request');
+  if (c['expected_hash'] === undefined && c['via'] === 'web') refuse('a web decision must carry expected_hash (the hash the person saw)', 'missing_hash');
   const expecting: { expected_hash?: string } = c['expected_hash'] === undefined ? {} : { expected_hash: c['expected_hash'] as string };
   if (cmd === 'request_changes') {
     if (kind !== 'task') refuse('request_changes applies to a task (kind task)', 'bad_request');

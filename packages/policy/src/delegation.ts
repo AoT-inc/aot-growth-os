@@ -7,28 +7,13 @@ import {
   contactStatuses, domainOfAddress, messagePreviewOf, normalizeAddress, recipientAddressesOf, type Db, type DelegationControlRow, type DraftSendState, type EffectDraftRow, type TaskRow, type TaskSpec,
 } from '@aot/domain';
 
+import { humanOnlyKind, type HumanOnly } from './always-human.ts';
 import type { DelegationAuthority } from './approval.ts';
 import { mandateExpiresAt, type Mandate, type PolicyDocument, type RecipientRule } from './document.ts';
-import { globMatch, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
+import { evaluateRequest, globMatch, requestsFromSpec, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
 
-/** 위임으로도 사람이 맡는 결정 (ADR-0016 Decision 5). 코드 상수이며 정책으로 바꾸지 못한다 */
-export const ALWAYS_HUMAN = [
-  'policy_deploy',         // 정책 배포(위임 변경 포함)
-  'org_proposal',          // 조직 변경 제안 전부와 시험 확정
-  'strategy_version',      // 실험 전략 승인·승격
-  'product_decision',      // 상품 등록 결정
-  'effect_resolution',     // 효과 확정(resolve-effect)
-  'publication',           // 게시
-  'scope_approval_task',   // 초안이 아닌 범위 승인 업무(전화·customer 읽기 등)
-  'delete_impact',         // 영향에 delete 가 있는 업무
-  'external_input_draft',  // 외부 입력이 쓴 초안
-  'human_decided_task',    // 사람이 한 번 결정한 업무
-  'delegation_resume',     // 위임 정지 해제
-] as const;
-export type AlwaysHuman = (typeof ALWAYS_HUMAN)[number];
-
-/** v1 에서 위임할 수 있는 승인 대상 */
-export const DELEGABLE_SUBJECTS = ['task'] as const;
+// 항상 사람인 결정의 목록·분류는 always-human.ts (document.ts 도 쓰므로 따로 둔다). 여기서 다시 내보낸다
+export { ALWAYS_HUMAN, DELEGABLE_SUBJECTS, humanOnlyKind, UNCLASSIFIED, type AlwaysHuman, type HumanOnly } from './always-human.ts';
 
 /** 하루 창 (위임 승인 수, 검토 비용) */
 export const DELEGATION_WINDOW_MS = 24 * 3_600_000;
@@ -78,7 +63,9 @@ export function delegationAuthority(db: Db, document: PolicyDocument, now: strin
   const byId = new Map(mandates.map((mandate) => [mandate.id, mandate]));
   const controls = readDelegationControls(db);
   return {
-    accepts: ({ mandateId, decidedBy, at }) => {
+    accepts: ({ mandateId, decidedBy, at, subject }) => {
+      // 항상 사람인 대상(또는 분류할 수 없는 대상)의 위임 행은 어떤 위임이 있어도 세지 않는다 (fail closed)
+      if (humanOnlyKind(subject.kind) !== null || taskHumanOnly(db, document, subject.id) !== null) return false;
       const mandate = byId.get(mandateId);
       return mandate !== undefined && mandate.holder === decidedBy && mandateUsability(document, mandate, controls, now, at).usable;
     },
@@ -119,6 +106,29 @@ function humanDecided(tx: Db, taskId: string): boolean {
     `SELECT 1 AS one FROM approval a JOIN actor ON actor.id = a.decided_by
      WHERE a.subject_kind = 'task' AND a.subject_id = ? AND actor.kind = 'human' LIMIT 1`, [taskId],
   ) !== undefined;
+}
+
+/**
+ * 이 업무가 항상 사람이 정하는 업무인가 (ALWAYS_HUMAN 의 업무 수준 분류, 결정론). 사람 전용이면 그 분류, 위임 대상이면 null.
+ * 업무를 읽을 수 없거나 모양을 모르면 UNCLASSIFIED (fail closed). 위임 행을 세는 길, delegateDecide, releaseDelegated 가 모두 조회한다.
+ * (초안이 하나도 없는 업무는 여기서 막지 않는다: 그건 적격 검사의 no_drafts 이고, 초안 승인 업무가 아니면 아래 scope_approval_task 로 막힌다)
+ */
+export function taskHumanOnly(tx: Db, document: PolicyDocument, taskId: string): HumanOnly | null {
+  try {
+    const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [taskId]);
+    if (task === undefined) return 'unclassified';
+    const spec = JSON.parse(task.spec) as TaskSpec;
+    if (!Array.isArray(spec?.allowed_tools)) return 'unclassified';
+    if (spec.allowed_tools.some((entry) => entry.impact === 'delete')) return 'delete_impact';
+    if (spec.allowed_tools.some((entry) => entry.scope === 'public')) return 'publication';
+    const approvals = requestsFromSpec(spec).map((request) => ({ request, verdict: evaluateRequest(document, request) })).filter((v) => v.verdict.decision === 'require_approval');
+    if (approvals.length === 0 || approvals.some((v) => v.request.impact !== 'external_effect')) return 'scope_approval_task';
+    if (tx.get('SELECT 1 AS one FROM effect_draft WHERE task_id = ? AND influenced_by_external_input = 1 LIMIT 1', [taskId]) !== undefined) return 'external_input_draft';
+    if (humanDecided(tx, taskId)) return 'human_decided_task';
+    return null;
+  } catch {
+    return 'unclassified';
+  }
 }
 
 /** AI 의 다시 쓰게 횟수 (이 위임, 이 업무) */

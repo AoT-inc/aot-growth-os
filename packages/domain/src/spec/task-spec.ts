@@ -409,11 +409,21 @@ function checkAllowedTools(value: unknown, out: IssueCollector): void {
         out.add(joinPath(path, 'target'), 'phone_target', `'${item['tool']}' needs a target: an E.164 number (+821000000001) or a prefix ending in * (+8210555*); the person approves this range`);
       }
     }
+    // 메일 도구는 보내는 사람 키(target)를 반드시 밝힌다 (ADR-0017 §3): 사람이 승인 화면에서 어느 주소로 보내는지 본다
+    if (typeof item['tool'] === 'string' && MAIL_TARGET_TOOLS.includes(item['tool'])) {
+      const target = item['target'];
+      if (typeof target !== 'string' || !MAIL_TARGET.test(target)) {
+        out.add(joinPath(path, 'target'), 'mail_target', `'${item['tool']}' needs a target 'mail:<sender key>' (lowercase letters, digits and hyphens, up to 32 characters; the key names a sender in the daemon's mail.senders)`);
+      }
+    }
   });
 }
 
 /** 번호 범위를 target 으로 선언해야 하는 전화 도구 */
 export const PHONE_TARGET_TOOLS: readonly string[] = ['phone_call', 'phone_transfer'];
+/** 보내는 사람 키를 target 으로 선언해야 하는 메일 도구 */
+export const MAIL_TARGET_TOOLS: readonly string[] = ['mail_send'];
+const MAIL_TARGET = /^mail:[a-z0-9][a-z0-9-]{0,31}$/;
 const PHONE_TARGET_EXACT = /^\+[1-9][0-9]{6,14}$/;
 const PHONE_TARGET_PREFIX = /^\+[1-9][0-9]{0,13}\*$/;
 

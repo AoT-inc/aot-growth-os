@@ -27,7 +27,7 @@ export {
   type DraftSendState, type DraftSubjectEntry, type DraftTransitionRequest, type MessagePreview,
 } from './drafts.ts';
 export {
-  PHONE_TARGET_TOOLS, EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,
+  PHONE_TARGET_TOOLS, MAIL_TARGET_TOOLS, EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,
   EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS,
   MAX_MEMORY_INPUTS, MAX_TASK_RESULT_TOTAL_BYTES, MEMORY_INPUT_KIND, MEMORY_LATEST_SELECTOR, MEMORY_REF_PREFIX, parseMemoryRef, resolveExpectedQuotes, SYSTEM_FILLED_FIELDS, TASK_RESULT_INPUT_KIND, TASK_RESULT_REF_PREFIX, taskIdOfResultRef, validateTaskSpec,
   type CostBudget, type ExpectedQuote, type TaskConstraints, type TaskInput, type TaskSpec, type TaskSpecDraft, type TaskSpecStage,
@@ -113,6 +113,11 @@ export {
 export type {
   PhonePort, PhoneStartCallRequest, PhoneStartCallResult, PhoneTransferRequest, PhoneWebhookRequest, PhoneWebhookResult,
 } from './ports/phone-port.ts';
+// 메일 (ADR-0017): payload 검증·렌더링·반송 반영과 전송 포트
+export { MAIL_LIMITS, MAIL_PAYLOAD_KEYS, mailRecipients, validateMailPayload, type MailPayload, type MailPayloadCheck, type MailPayloadIssue } from './mail/payload.ts';
+export { formatMailDate, messageIdOf, renderMailMessage, type RenderMailInput } from './mail/mime.ts';
+export { applyMailFeedback, MAIL_EVENT_SOURCE, MAIL_FEEDBACK_KINDS, type MailFeedback, type MailFeedbackKind } from './mail/feedback.ts';
+export type { MailRejectStage, MailSendResult, MailTransport, OutboundMail } from './ports/mail-transport.ts';
 export {
   DENY_ALL_PHONE_CALL_POLICY,
   type PhoneCallGrant, type PhoneCallPolicy, type PhoneCallPolicyRequest, type PhoneCallPolicyVerdict,

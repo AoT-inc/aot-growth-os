@@ -158,3 +158,16 @@ Auto-Submitted: auto-generated
 
 - 단위: payload 검증(키·주소·cc 도메인·길이·제어 문자), 렌더링 왕복(디코드 = payload, 한글 제목 조각 경계, `\n→\r\n`), 설정 해석(모르는 키·비밀 환경 변수·루프백 규칙·무료 메일 보내는 사람), 부작용 도구 결과 매핑(표 §6 각 행), 수신 거부·하루 상한, 반송 반영, 명세 `mail_target`, 오류 문자열에 비밀 없음.
 - 통합(가짜 SMTP 서버, `node:net`, 루프백만): 초안 run → 승인 → 전송 → 서버가 받은 바이트가 승인 payload 와 같음; RCPT 5.1.1 → `failed` + 수신 거부 + 아무 메시지도 성립 안 함; 끝 점 뒤 끊김 → `unknown` → `needs_review`, 재전송 0; 승인 뒤 수신 거부 → 전송 0; STARTTLS 를 내세우지 않는 서버 → 인증 전에 `failed`; AUTH PLAIN 이 TLS 없이 나가지 않음. STARTTLS 왕복은 `openssl` 이 있으면 임시 자체 서명 인증서로 시험하고 없으면 건너뛴다. 실제 네트워크는 쓰지 않는다.
+
+## 13. 구현 기록 (2026-11-07)
+
+설계와 달라졌거나 설계가 정하지 않았던 곳(모두 더 좁히는 방향):
+- `cc` 가 `to` 나 다른 `cc` 와 같은 주소면 거부한다. 제목·본문은 C1 제어 문자와 U+2028/2029 도 거부한다(제목은 짝 없는 서로게이트·`U+FFFD` 도).
+- 제목이 ASCII 70자 이하라도 앞뒤가 공백이거나 `=?` 를 품으면 RFC 2047 로 인코딩한다(디코드가 바이트 그대로 되게). 인코딩한 제목은 조각마다 접은 줄 하나에 둔다(헤더 줄 76자 이하).
+- 실행기가 에이전트에 돌려주는 오류 코드: `from_not_allowed`, `invalid_args`, `invalid_payload`, `no_target`, `ambiguous_sender`, `unknown_sender`, `recipient_suppressed`, `secret_like`(게이트웨이에서 `tool_error`).
+- 하루 상한은 원장 행의 `at`(마지막 전이 시각)으로 센다. 최소 간격 자리는 동기적으로 예약해 동시 전송이 겹치지 않고, 재검증에서 걸린 전송은 자리를 쓰지 않는다.
+- SMTP 클라이언트는 연결 전에 `config` 단계로 거부하는 경우가 더 있다: TLS 없는 AUTH, 잘못된 envelope 주소, 맨 LF·CR 이나 비 ASCII 바이트가 든 메시지.
+- EHLO 이름은 `message_id_domain`, 없으면 첫 보내는 사람의 도메인이다(설정 키를 더하지 않았다).
+- 게이트웨이 선언에는 전화처럼 `target` 이 없어 호출별 정책 판정의 `resource` 는 null 이다. 대상 범위는 명세 target(승인 해시에 포함)과 원장 입구의 `out_of_scope` 검사가 막는다. 정책 규칙을 target 모양으로 쓰려면 이 점을 알아야 한다.
+- 시험용 TLS 인증서는 이미 있던 `test/support/test-cert.ts`(메모리에서 자체 서명)로 만들어 STARTTLS 왕복 시험을 건너뛰지 않는다.
+- `lease_ms` 를 60초보다 짧게 설정하면 전송 시간 상한(60초)이 lease 보다 길어질 수 있다. 그때 lease 를 잃은 전송은 기존 규칙대로 `unknown` 이 된다(중복 전송은 없다).

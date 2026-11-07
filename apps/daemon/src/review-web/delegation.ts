@@ -3,11 +3,14 @@
 // 쓰기: 취소(`cancel`)와 위임 멈추기·다시 켜기(`delegation pause|resume`)는 다른 결정과 똑같이 화면 버튼 → 소켓 → 엔진이다(decide.ts). 이 파일은 버튼이 보낼 요청을 데이터로 만들어 둘 뿐이다.
 // 첫 화면에는 id·해시·상태 코드·ISO 시각·엔진 영어 문장을 내지 않는다.
 import { messagePreviewOf } from '@aot/domain';
+import {
+  shadowAgreement, shadowPromotionSuggested, SHADOW_MAX_DANGEROUS, SHADOW_WINDOW_DAYS, type ShadowAgreement, type ShadowAiVerdict, type ShadowHumanDecision,
+} from '@aot/policy';
 
 import { buttonForm, type Actions, type Button } from './actions.ts';
 import type { ReviewContext } from './context.ts';
 import { ago, clip, maskAddress } from './format.ts';
-import { h, link, type Raw } from './html.ts';
+import { details, h, link, type Raw } from './html.ts';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -235,9 +238,10 @@ export function homeDigest(ctx: ReviewContext): Raw {
   const line = digestLine(items, nowMs);
   const shown = [...items.filter((i) => i.cancellable), ...items.filter((i) => !i.cancellable && i.state !== 'back')].slice(0, HOME_ITEMS);
   const backCount = items.filter((i) => i.state === 'back').length;
+  const shadow = shadowSection(ctx, false);
   if (line === null && shown.length === 0 && !state.enabled) return h``;
-  if (line === null && shown.length === 0 && backCount === 0 && !(state.pausedAll || state.pausedIds.length > 0)) return h``;
-  return h`<h2>AI가 처리함</h2>${pausedNote(state)}${line === null ? '' : h`<p class="summary">${line}</p>`}${shown.map((i) => itemCard(ctx, i))}
+  if (line === null && shown.length === 0 && backCount === 0 && !(state.pausedAll || state.pausedIds.length > 0) && shadow.html === '') return h``;
+  return h`<h2>AI가 처리함</h2>${pausedNote(state)}${shadow}${line === null ? '' : h`<p class="summary">${line}</p>`}${shown.map((i) => itemCard(ctx, i))}
     <p>${link(['delegated'], items.length > shown.length ? `모두 보기 (${items.length}건)` : '자세히 보기')}</p>`;
 }
 
@@ -251,7 +255,7 @@ export function delegatedPage(ctx: ReviewContext): { title: string; body: Raw; s
     title: items.length === 0 ? 'AI가 처리한 일이 없습니다' : 'AI가 처리함', status: 200,
     body: h`<p><a href="/">← 결정할 일</a></p>${line === null ? '' : h`<p class="lead">${line}</p>`}
       ${state.enabled ? '' : h`<p class="empty">지금은 AI에게 맡긴 일이 없습니다. 모든 결정을 사람이 합니다.</p>`}
-      ${pausedNote(state)}${items.length === 0 && state.enabled ? h`<p class="empty">최근 ${DIGEST_DAYS}일 동안 AI가 처리한 일이 없습니다.</p>` : ''}
+      ${pausedNote(state)}${shadowSection(ctx, true)}${items.length === 0 && state.enabled ? h`<p class="empty">최근 ${DIGEST_DAYS}일 동안 AI가 처리한 일이 없습니다.</p>` : ''}
       ${controls.length === 0 ? '' : h`<div class="decide"><h2>위임 관리</h2>${ctx.write === null ? h`<p class="mute">이 화면은 보기 전용이라 여기서 멈추거나 켤 수 없습니다.</p>` : buttonsOf(ctx, CONTROL_KEY, controls)}</div>`}
       ${items.map((i) => itemCard(ctx, i))}<p class="mute">처리 요약은 ${DIGEST_DAYS}일 동안 보입니다.</p>`,
   };
@@ -259,10 +263,79 @@ export function delegatedPage(ctx: ReviewContext): { title: string; body: Raw; s
 
 /** 사람에게 온 카드에 보일 "AI가 넘긴 이유". 위임이 없거나 이 업무가 AI를 거치지 않았으면 null */
 export function handedBackReason(ctx: ReviewContext, taskId: string, delegatedNow: boolean): string | null {
-  const last = ctx.db.get<{ verdict: string; reason: string; outcome: string }>('SELECT verdict, reason, outcome FROM delegate_review WHERE task_id = ? ORDER BY id DESC LIMIT 1', [taskId]);
+  // 그림자 판정(outcome='shadow')은 사람이 결정하기 전에 절대 보이지 않는다: 보이면 사람이 따라가 일치율 측정이 무의미해진다 (D-R5). 결정론 적격 실패 사유는 보인다
+  const last = ctx.db.get<{ verdict: string; reason: string; outcome: string }>(
+    "SELECT verdict, reason, outcome FROM delegate_review WHERE task_id = ? AND outcome <> 'shadow' ORDER BY id DESC LIMIT 1", [taskId],
+  );
   if (last === undefined) return null;
   if (last.verdict === 'escalate') return clip(last.reason, 90);
   // 마지막 검토가 승인인데 지금은 위임 승인이 효력이 없으면 (정지·철회·정책 변경)
   if (last.verdict === 'approve' && !delegatedNow) return '위임이 멈추거나 바뀌어 사람이 다시 확인해야 합니다';
   return null;
+}
+
+// ----- 그림자 모드: AI 판정 일치 (docs/plans/delegate-reviewer.md §5.3). 보기 전용 — 모드를 바꾸는 버튼·쓰기 경로는 없다 -----
+const AI_LABEL: Readonly<Record<ShadowAiVerdict, string>> = { approve: '승인', request_changes: '다시 쓰기', escalate: '사람에게 넘김' };
+const HUMAN_LABEL: Readonly<Record<ShadowHumanDecision, string>> = { approved: '승인', rejected: '거절', changes_requested: '다시 쓰기 요청' };
+const REASON_CHARS = 60;
+
+export interface ShadowLines {
+  /** 결론 한 줄 */
+  headline: string;
+  /** 기준을 넘었을 때만: 실제 위임으로 바꾸는 방법 (제안 문구뿐이다) */
+  suggestion: string | null;
+  /** 위험한 불일치가 있을 때만 */
+  warning: string | null;
+}
+
+/** 순수: 통계 → 화면 문구. 첫 화면이라 id·해시·ISO 시각·영어 엔진 문장을 내지 않는다 */
+export function shadowLines(stats: ShadowAgreement): ShadowLines {
+  const weeks = stats.windowDays % 7 === 0 ? `${stats.windowDays / 7}주` : `${stats.windowDays}일`;
+  const failedNote = stats.failed > 0 ? ` · AI 검토 실패 ${stats.failed}건` : '';
+  if (stats.compared === 0) {
+    return { headline: `AI 판정 비교 0건 (${weeks}) — 사람 결정이 쌓이면 일치율을 보여 줍니다${failedNote}`, suggestion: null, warning: null };
+  }
+  const suggest = shadowPromotionSuggested(stats);
+  return {
+    headline: `AI 판정 일치 ${stats.agreed}/${stats.compared} (${weeks}) · AI가 승인했는데 사람이 막은 건 ${stats.dangerous}${failedNote}`,
+    suggestion: suggest ? '기준을 넘었습니다. 실제 위임으로 바꾸려면 정책에서 이 위임의 mode를 live로 바꿔 배포하세요(OTP 필요).' : null,
+    warning: stats.dangerous > SHADOW_MAX_DANGEROUS ? `AI가 승인했는데 사람이 막은 건 ${stats.dangerous} — 아직 실제 위임으로 바꾸지 마세요.` : null,
+  };
+}
+
+/** 정책에 있는 그림자 위임 id (멈추거나 끝난 것은 뺀다) */
+function shadowMandateIds(ctx: ReviewContext): string[] {
+  if (ctx.actor === null) return [];
+  const response = ctx.engine.handle({ cmd: 'delegation', actor: ctx.actor, op: 'status' });
+  if (!response.ok || response['enabled'] !== true) return [];
+  return (Array.isArray(response['mandates']) ? response['mandates'] : []).map(rec)
+    .filter((m) => m['mode'] === 'shadow' && (m['state'] === 'active' || m['state'] === 'paused')).map((m) => String(m['id']));
+}
+
+function recentTable(ctx: ReviewContext, stats: ShadowAgreement): Raw {
+  const nowMs = ctx.clock.nowMs();
+  // 지금 사람의 결정을 기다리는 업무(다시 쓰여 돌아온 새 버전 등)는 뺀다: 이전 버전에 대한 AI 의견이 새 결정 전에 보이면 안 된다 (D-R5)
+  const shown = stats.recent.filter((entry) => ctx.db.get<{ status: string }>('SELECT status FROM task WHERE id = ?', [entry.taskId])?.status !== 'needs_review');
+  if (shown.length === 0) return h`<p class="empty">아직 비교한 건이 없습니다.</p>`;
+  return h`<ul>${shown.map((entry) => {
+    const objective = ctx.db.get<{ objective: string }>('SELECT objective FROM task WHERE id = ?', [entry.taskId])?.objective ?? '';
+    // AI 사유는 신뢰하지 않는 글이다: h 가 이스케이프하고, 길이는 줄인다
+    return h`<li><b>${whatOf(ctx, entry.taskId, objective)}</b> · AI: ${AI_LABEL[entry.aiVerdict]} (${clip(entry.aiReason, REASON_CHARS)}) · 사람: ${HUMAN_LABEL[entry.human]}
+      ${entry.comparison === 'agree' ? '' : entry.comparison === 'dangerous' ? h`<span class="badge bad">AI는 승인, 사람은 막음</span>` : h`<span class="badge warn">AI는 막음, 사람은 승인</span>`}
+      <span class="mute">${ago(entry.at, nowMs)}</span></li>`;
+  })}</ul>`;
+}
+
+/** 그림자 위임마다 한 줄(과 제안·경고, 접힌 자세히). 그림자 위임이 없으면 아무것도 그리지 않는다 */
+export function shadowSection(ctx: ReviewContext, withDetails: boolean): Raw {
+  const ids = shadowMandateIds(ctx);
+  if (ids.length === 0) return h``;
+  const now = new Date(ctx.clock.nowMs()).toISOString();
+  return h`${ids.map((id, index) => {
+    const stats = shadowAgreement(ctx.db, id, now, SHADOW_WINDOW_DAYS);
+    const lines = shadowLines(stats);
+    return h`<div class="card"><p class="summary">${ids.length > 1 ? `시험 운영 중인 위임 ${index + 1}: ` : '시험 운영 중: '}AI는 판정만 남기고 아무것도 승인하지 않습니다.</p>
+      <p><b>${lines.headline}</b></p>${lines.warning === null ? '' : h`<p>${lines.warning}</p>`}${lines.suggestion === null ? '' : h`<p>${lines.suggestion}</p>`}
+      ${withDetails ? details(recentTable(ctx, stats), '최근 비교 보기') : ''}</div>`;
+  })}`;
 }

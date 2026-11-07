@@ -36,7 +36,7 @@ import {
   delegationAuthority, delegationEligibility, recipientRuleViolation, taskHumanOnly, DELEGATION_WINDOW_MS, mandatesOf, mandateStop, MAX_DELEGATE_REASON_CHARS, readDelegationControls, rewritesUsed,
   type Eligibility, type EligibilityCode,
 } from './delegation.ts';
-import { DELEGATION_MAX_DAYS, humanApprovalParams, mandateExpiresAt, riskyApprovalParams, type ApprovalParams, type Mandate, type ParsedPolicy, type PolicyDocument } from './document.ts';
+import { DELEGATION_MAX_DAYS, humanApprovalParams, mandateExpiresAt, riskyApprovalParams, type ApprovalParams, type Mandate, type MandateMode, type ParsedPolicy, type PolicyDocument } from './document.ts';
 import { evaluateRequest, requestsFromSpec, taskApprovalParams, type PolicyRequest, type PolicyVerdict } from './evaluate.ts';
 import { PolicyFormatError, type ActivePolicy, type PolicyStore } from './store.ts';
 import { TotpSecretError, verifyTotp, type TotpSecretStore } from './totp.ts';
@@ -137,10 +137,12 @@ export interface DelegateDecision {
   reason: string;
   /** 이 검토에 든 AI 비용 (위임의 하루 검토 비용 한도에 센다) */
   cost_usd?: number;
+  /** 검토자가 판정을 내지 못했다(예외·시간 초과·형식 오류). 그림자 위임에서는 판정이 아니라 `shadow_failed` 로 기록해 일치 통계에서 뺀다. 실제 위임에서는 평소처럼 사람 넘김 기록이다 */
+  review_failed?: boolean;
 }
 
 export type DelegateDecideResult =
-  | { ok: true; recorded: 'approved' | 'changes_requested' | 'escalated'; mandate_id: string; approval_id?: string; state?: ApprovalState; cooldown_ends_at?: string | null }
+  | { ok: true; recorded: 'approved' | 'changes_requested' | 'escalated' | 'shadow'; mandate_id: string; approval_id?: string; state?: ApprovalState; cooldown_ends_at?: string | null }
   | { ok: false; code: EligibilityCode | 'hash_mismatch' | 'rewrite_limit' | 'bad_request'; error: string };
 
 /** AI 에게 줄 자료: 위임 기준과 한도, 초안(가린 값은 이미 없다 — 적격 조건), 이 업무의 앞선 결정. 외부 데이터 영역으로 취급한다 */
@@ -149,6 +151,19 @@ export interface DelegationReviewMaterial {
   mandate: { id: string; guidance: string; limits: Mandate['limits'] };
   drafts: Array<{ id: string; tool: string; action: string; target: string; payload: unknown }>;
   history: Array<{ decision: string; by: string; comment: string | null }>;
+  /** 엔진이 이미 확인한 결정론 사실 (신뢰 구역). 검토자는 이 값을 바꿀 수 없다 (docs/plans/delegate-reviewer.md §2) */
+  facts: DelegationReviewFacts;
+}
+
+export interface DelegationReviewFacts {
+  draft_count: number;
+  /** 받는 사람 규칙 종류. 적격이므로 모든 주소가 이 규칙을 통과했다 */
+  recipient_rule: 'known_contacts' | 'domains';
+  /** 초안 payload 바이트 합 */
+  payload_bytes: number;
+  /** 이 업무에 이 위임이 이미 쓴 다시 쓰게 횟수 / 허용 횟수 */
+  rewrites_used: number;
+  rewrites_allowed: number;
 }
 
 export interface DelegationScanEntry {
@@ -264,11 +279,11 @@ export class ApprovalEngine {
   /** `delegated` 는 위임 승인·다시 쓰게일 때만 (mandate_id 와 via='delegate' 가 남는다). 그 밖에는 소켓 요청이 자기 신고한 via 가 남는다 */
   #insertApproval(
     tx: Db, kind: ApprovalSubject, id: string, decision: 'approved' | 'rejected' | 'changes_requested', hash: string | null, actor: string, comment: string | null,
-    delegated?: { mandateId: string },
+    delegated?: { mandateId: string }, seenHash: string | null = null,
   ): string {
     const approvalId = this.#o.newId?.() ?? `approval-${randomUUID()}`;
-    tx.run('INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at, mandate_id, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
-      approvalId, kind, id, decision, hash, actor, comment === null ? null : comment.slice(0, 500), this.#now(), delegated?.mandateId ?? null, delegated ? 'delegate' : this.#via,
+    tx.run('INSERT INTO approval (id, subject_kind, subject_id, decision, subject_hash, decided_by, comment, at, mandate_id, via, seen_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      approvalId, kind, id, decision, hash, actor, comment === null ? null : comment.slice(0, 500), this.#now(), delegated?.mandateId ?? null, delegated ? 'delegate' : this.#via, seenHash,
     ]);
     return approvalId;
   }
@@ -357,7 +372,7 @@ export class ApprovalEngine {
       const params = ctx.params;
       if (!params.self_approval && ctx.requester === actor) refuse(`the requester cannot approve their own task (${SELF_APPROVAL_RULE})`, 'self_approval');
 
-      const approvalId = this.#insertApproval(tx, 'task', id, 'approved', ctx.hash, actor, comment ?? null);
+      const approvalId = this.#insertApproval(tx, 'task', id, 'approved', ctx.hash, actor, comment ?? null, undefined, ctx.hash);
       const needsApproval = ctx.verdicts.some((v) => v.verdict.decision === 'require_approval');
       const snapshot = JSON.stringify(ctx.subject);
       if (!needsApproval) {
@@ -681,7 +696,14 @@ export class ApprovalEngine {
         if (expected !== undefined) this.#expect(expected, this.#taskContext(tx, id).hash, 'task');
         // 사람이 위임 승인을 취소하면 그 위임을 자동 정지한다 (ADR-0016 D-B5): 해제는 사람 + TOTP. 취소 행을 쓰기 전에 지금 유효한 위임 승인을 찾는다
         const delegatedMandate = this.#delegatedApprovalOf(tx, id);
-        const approvalId = this.#insertApproval(tx, 'task', id, 'rejected', task.approved_hash, actor, `cancelled${comment ? `: ${comment}` : ''}`);
+        // 취소 순간의 `show` 해시 (그림자 판정 짝짓기용). 지금 계산할 수 없는 업무(정책 변경 등)는 NULL 이다
+        let seenHash: string | null = null;
+        try {
+          seenHash = this.#taskContext(tx, id).hash;
+        } catch (error) {
+          if (!(error instanceof ApprovalRefusedError)) throw error;
+        }
+        const approvalId = this.#insertApproval(tx, 'task', id, 'rejected', task.approved_hash, actor, `cancelled${comment ? `: ${comment}` : ''}`, undefined, seenHash);
         if (delegatedMandate !== null) this.#insertControl(tx, 'pause', delegatedMandate, actor, '사람이 위임 결정을 취소함');
         if (task.status === 'queued') {
           assertAllowed('queued', 'needs_review', approvalId, 'policy');
@@ -713,7 +735,7 @@ export class ApprovalEngine {
       this.#expect(expected, rejectCtx.hash, 'task');
       // 사람이 위임 승인을 거절해도 취소와 같이 그 위임을 자동 정지한다 (ADR-0016 D-B5): AI 가 한 결정을 사람이 뒤집었다는 신호다
       const delegatedMandate = this.#delegatedApprovalOf(tx, id);
-      const approvalId = this.#insertApproval(tx, 'task', id, 'rejected', task.approved_hash, actor, comment ?? 'rejected');
+      const approvalId = this.#insertApproval(tx, 'task', id, 'rejected', task.approved_hash, actor, comment ?? 'rejected', undefined, rejectCtx.hash);
       if (delegatedMandate !== null) this.#insertControl(tx, 'pause', delegatedMandate, actor, '사람이 위임 결정을 거절함');
       assertAllowed('needs_review', 'failed', approvalId);
       tx.run("UPDATE task SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'needs_review'", [this.#now(), id]);
@@ -749,7 +771,7 @@ export class ApprovalEngine {
   /** 승인 행(`changes_requested`)을 남기고, 제안된 초안을 버리고, 승인 컬럼을 비운 뒤 `needs_review → queued`. 사람의 변경 요청과 위임 보유자의 다시 쓰게가 같이 쓴다 */
   #queueForRewrite(tx: Db, ctx: { task: TaskRow; hash: string }, actor: string, comment: string, delegated: { mandateId: string } | null): Record<string, unknown> {
     const id = ctx.task.id;
-    const approvalId = this.#insertApproval(tx, 'task', id, 'changes_requested', ctx.hash, actor, comment, delegated ?? undefined);
+    const approvalId = this.#insertApproval(tx, 'task', id, 'changes_requested', ctx.hash, actor, comment, delegated ?? undefined, ctx.hash);
     assertAllowed('needs_review', 'queued', approvalId, delegated === null ? 'human' : 'policy');
     const now = this.#now();
     const superseded = transitionDrafts(tx, { taskId: id, from: ['proposed'], to: 'superseded', by: delegated === null ? 'human' : 'scheduler', now }); // 위임 보유자의 다시 쓰게는 호스트(데몬 주기)가 기록한다
@@ -834,6 +856,13 @@ export class ApprovalEngine {
           mandate: { id: eligibility.mandate.id, guidance: eligibility.mandate.guidance, limits: eligibility.mandate.limits },
           drafts: ctx.drafts.map((draft) => ({ id: draft.id, tool: draft.tool, action: draft.action, target: draft.target, payload: mask(JSON.parse(draft.payload)) })),
           history: history.map((row) => ({ decision: row.decision, by: row.kind ?? 'unknown', comment: row.comment === null ? null : row.comment.slice(0, 200) })),
+          facts: {
+            draft_count: ctx.drafts.length,
+            recipient_rule: eligibility.mandate.match.recipients.kind,
+            payload_bytes: ctx.drafts.reduce((sum, draft) => sum + Buffer.byteLength(draft.payload, 'utf8'), 0),
+            rewrites_used: rewritesUsed(db, id, eligibility.mandate.id),
+            rewrites_allowed: eligibility.mandate.limits.max_rewrites_per_task,
+          },
         },
       });
     }
@@ -864,9 +893,11 @@ export class ApprovalEngine {
         throw error;
       }
       const now = this.#now();
+      // 기록하는 순간의 위임 모드를 행에 남긴다 (정책에 없는 위임 id 는 live: 아무것도 승인하지 않은 사람 넘김 기록이다)
+      const modeOf = (mandateId: string): MandateMode => mandatesOf(ctx.document).find((m) => m.id === mandateId)?.mode ?? 'live';
       const record = (mandateId: string, verdict: DelegateVerdict, why: string, outcome: string, hash: string = ctx.hash): void => {
-        tx.run('INSERT INTO delegate_review (task_id, subject_hash, mandate_id, verdict, reason, outcome, cost_usd, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
-          input.task_id, hash, mandateId, verdict, why.slice(0, MAX_DELEGATE_REASON_CHARS), outcome, cost, now,
+        tx.run('INSERT INTO delegate_review (task_id, subject_hash, mandate_id, verdict, reason, outcome, cost_usd, at, mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+          input.task_id, hash, mandateId, verdict, why.slice(0, MAX_DELEGATE_REASON_CHARS), outcome, cost, now, modeOf(mandateId),
         ]);
       };
       const eligibility = delegationEligibility(tx, this.#delegationCtx(ctx), now);
@@ -886,6 +917,13 @@ export class ApprovalEngine {
         const why = 'AI가 본 내용이 그 사이 바뀌었습니다';
         record(mandate.id, 'escalate', why, 'hash_mismatch', input.hash);
         return { ok: false, code: 'hash_mismatch', error: why };
+      }
+      // 그림자 위임: AI 판정만 남긴다. 승인 행·다시 쓰게·큐 이동 없이 업무는 needs_review 에 그대로 있고 사람이 평소처럼 결정한다 (모드 판단은 엔진의 몫)
+      if (mandate.mode === 'shadow') {
+        // 검토자가 판정을 못 낸 경우는 판정이 아니다: 일치 통계에서 빼도록 따로 표시한다 (판정은 escalate 로 고정)
+        if (input.review_failed === true) record(mandate.id, 'escalate', reason, 'shadow_failed');
+        else record(mandate.id, input.verdict, reason, 'shadow');
+        return { ok: true, recorded: 'shadow', mandate_id: mandate.id };
       }
       if (input.verdict === 'escalate') {
         record(mandate.id, 'escalate', reason, 'recorded');
@@ -943,8 +981,8 @@ export class ApprovalEngine {
           if (violation === null) continue;
           const last = tx.get<{ outcome: string; subject_hash: string }>('SELECT outcome, subject_hash FROM delegate_review WHERE task_id = ? ORDER BY id DESC LIMIT 1', [id]);
           if (last?.outcome !== 'recipient_rule' || last.subject_hash !== ctx.hash) {
-            tx.run('INSERT INTO delegate_review (task_id, subject_hash, mandate_id, verdict, reason, outcome, cost_usd, at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)', [
-              id, ctx.hash, mandate.id, 'escalate', `기다리는 사이 받는 사람이 바뀌었습니다: ${violation}`.slice(0, MAX_DELEGATE_REASON_CHARS), 'recipient_rule', now,
+            tx.run('INSERT INTO delegate_review (task_id, subject_hash, mandate_id, verdict, reason, outcome, cost_usd, at, mode) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)', [
+              id, ctx.hash, mandate.id, 'escalate', `기다리는 사이 받는 사람이 바뀌었습니다: ${violation}`.slice(0, MAX_DELEGATE_REASON_CHARS), 'recipient_rule', now, mandate.mode,
             ]);
           }
           return null;
@@ -1004,7 +1042,7 @@ export class ApprovalEngine {
         const stop = mandateStop(controls, mandate.id);
         const expired = (mandateExpiresAt(mandate.expires) ?? '') < now;
         return {
-          id: mandate.id, holder: mandate.holder, expires: mandate.expires, cooldown: mandate.cooldown, limits: mandate.limits,
+          id: mandate.id, holder: mandate.holder, mode: mandate.mode, expires: mandate.expires, cooldown: mandate.cooldown, limits: mandate.limits,
           state: stop ?? (expired ? 'expired' : 'active'),
           approved_24h: Number(db.get<{ n: number }>("SELECT count(*) AS n FROM approval WHERE mandate_id = ? AND decision = 'approved' AND at > ?", [mandate.id, since])?.n ?? 0),
           review_usd_24h: Number(db.get<{ total: number }>('SELECT coalesce(sum(cost_usd), 0) AS total FROM delegate_review WHERE mandate_id = ? AND at > ?', [mandate.id, since])?.total ?? 0),

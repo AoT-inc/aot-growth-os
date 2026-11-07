@@ -6,6 +6,7 @@ import { test, type TestContext } from 'node:test';
 
 import { startApprovalServer, type ApprovalEngine } from '@aot/policy';
 
+import { createDelegateCycle, type DelegateReviewer } from '../../apps/daemon/src/delegate-cycle.ts';
 import { createReviewContext } from '../../apps/daemon/src/review-web/context.ts';
 import { openReadOnlyDb } from '../../apps/daemon/src/review-web/read-only-db.ts';
 import { startReviewServer } from '../../apps/daemon/src/review-web/server.ts';
@@ -229,4 +230,92 @@ test('an item handed over because of an unknown recipient says so in words on it
   const home = textOf((await r.get('/')).text);
   assert.match(home, /AI가 넘긴 이유 처음 보는 받는 사람 1명/);
   assert.ok(!/contacts (add|import|suppress)|aot-approve/.test(home), 'no CLI command on the screen');
+});
+
+// ===== 그림자 모드 (docs/plans/delegate-reviewer.md §5.3) =====
+
+const shadowReviewer = (verdict: string, reason: string): DelegateReviewer => ({
+  id: 'shadow-fake', review: (request) => Promise.resolve({ output: { verdict, hash: request.hash, reason } }),
+});
+const humanReject = (env: PolicyEnv, taskId: string): void => {
+  assert.equal(env.send({ cmd: 'reject', actor: OWNER, kind: 'task', id: taskId, expected_hash: hashOf(env, taskId), comment: '보내면 안 됩니다' })['ok'], true);
+};
+
+test('shadow mandate: the AI verdict is never shown on the decision card before a person decides; the digest shows the agreement line, with no button to change the mode', async (t) => {
+  const r = await rig(t, (x) => delegationEnv(x, [{ mode: 'shadow' }], { file: true }));
+  const { taskId } = await draftedFor(r.env);
+  await createDelegateCycle({ engine: r.env.engine, reviewer: shadowReviewer('escalate', '가격 이야기가 들어 있어 사람이 봐야 합니다') }).advance();
+  assert.equal(r.env.db.get<{ n: number }>("SELECT count(*) AS n FROM delegate_review WHERE outcome = 'shadow'")!.n, 1);
+
+  // 사람 카드에는 AI의 그림자 판정(판정도 사유도)이 없다
+  const card = await r.get(taskPath(taskId));
+  const cardText = textOf(card.text);
+  assert.ok(!cardText.includes('가격 이야기가 들어 있어'), 'the shadow reason is hidden from the decision card');
+  const home = textOf((await r.get('/')).text);
+  assert.ok(!home.includes('가격 이야기가 들어 있어') && !/AI가 넘긴 이유/.test(home), 'nor on the home card');
+  assert.match(home, /AI 판정 비교 0건 \(2주\) — 사람 결정이 쌓이면 일치율을 보여 줍니다/);
+
+  humanReject(r.env, taskId);
+  const page = await r.get('/delegated');
+  const text = textOf(page.text);
+  assert.match(text, /AI 판정 일치 1\/1 \(2주\) · AI가 승인했는데 사람이 막은 건 0/, 'escalate vs reject agrees');
+  assert.ok(!/기준을 넘었습니다/.test(text), '1 comparison is far below the criteria');
+  assert.match(page.text, /<details>/);
+  assert.match(text, /AI: 사람에게 넘김 \(가격 이야기가 들어 있어 사람이 봐야 합니다\) · 사람: 거절/, 'the folded details list the comparison');
+  assert.deepEqual([...(await r.forms('/delegated')).keys()], ['pause'], 'the only button is the existing pause: the mode can only be changed by a policy deployment');
+  assert.ok(!/[0-9a-f]{40,}|20\d\d-\d\d-\d\dT/.test(textOf((await r.get('/delegated')).text)), 'no hash or ISO time');
+});
+
+test('shadow mandate: once the criteria are met the screen suggests going live in words only; a dangerous disagreement replaces it with a warning', async (t) => {
+  const r = await rig(t, (x) => delegationEnv(x, [{ mode: 'shadow' }], { file: true }));
+  const cycle = createDelegateCycle({ engine: r.env.engine, reviewer: shadowReviewer('escalate', '확신이 없어 사람이 봐 주세요'), maxReviewsPerAdvance: 100 });
+  const ids: string[] = [];
+  for (let index = 0; index < 20; index += 1) ids.push((await draftedFor(r.env, { dedupeKey: `s${index}` })).taskId);
+  await cycle.advance();
+  for (const id of ids) humanReject(r.env, id);
+  const text = textOf((await r.get('/delegated')).text);
+  assert.match(text, /AI 판정 일치 20\/20 \(2주\)/);
+  assert.match(text, /기준을 넘었습니다\. 실제 위임으로 바꾸려면 정책에서 이 위임의 mode를 live로 바꿔 배포하세요\(OTP 필요\)\./);
+  assert.deepEqual([...(await r.forms('/delegated')).keys()], ['pause'], 'text only: no promote button, only the existing pause');
+  assert.match(textOf((await r.get('/')).text), /기준을 넘었습니다/, 'the home summary shows it too');
+
+  // AI 는 승인했는데 사람이 막은 건 하나 더 → 경고, 제안 없음
+  const extra = (await draftedFor(r.env, { dedupeKey: 'extra' })).taskId;
+  await createDelegateCycle({ engine: r.env.engine, reviewer: shadowReviewer('approve', '정해 둔 기준 안의 안내 메일입니다') }).advance();
+  humanReject(r.env, extra);
+  const warned = textOf((await r.get('/delegated')).text);
+  assert.match(warned, /AI가 승인했는데 사람이 막은 건 1 — 아직 실제 위임으로 바꾸지 마세요\./);
+  assert.ok(!/기준을 넘었습니다/.test(warned));
+});
+
+test('shadow mandate: an "approve" shadow verdict and its reason appear nowhere on the decision card, the home page or the batch page while the person has not decided', async (t) => {
+  const r = await rig(t, (x) => delegationEnv(x, [{ mode: 'shadow' }], { file: true }));
+  const { taskId } = await draftedFor(r.env);
+  await draftedFor(r.env, { dedupeKey: 'second' });
+  const REASON = '독특한사유: 정해 둔 안내 문구라서 바로 보내도 좋다고 봅니다';
+  await createDelegateCycle({ engine: r.env.engine, reviewer: shadowReviewer('approve', REASON) }).advance();
+  assert.equal(r.env.db.get<{ n: number }>("SELECT count(*) AS n FROM delegate_review WHERE outcome = 'shadow' AND verdict = 'approve'")!.n, 2);
+
+  const homeHtml = (await r.get('/')).text;
+  const pages = [textOf((await r.get(taskPath(taskId))).text), textOf(homeHtml)];
+  const batch = /href="(\/batch\/[^"]*)"/.exec(homeHtml)?.[1];
+  if (batch !== undefined) pages.push(textOf((await r.get(batch)).text));
+  assert.ok(batch !== undefined, 'the home page links a batch page for the two waiting tasks');
+  for (const text of pages) {
+    assert.ok(!text.includes('독특한사유') && !text.includes('바로 보내도 좋다고'), 'the shadow reason is hidden');
+    assert.ok(!/AI: ?승인|AI가 승인|AI가 넘긴 이유|AI 의견|AI의 판정/.test(text), 'no AI verdict wording for the shadow row');
+  }
+});
+
+test('shadow mandate: the recent-comparison list does not show the earlier AI opinion for a task that is waiting for a person again', async (t) => {
+  const r = await rig(t, (x) => delegationEnv(x, [{ mode: 'shadow' }], { file: true }));
+  const { taskId } = await draftedFor(r.env);
+  await createDelegateCycle({ engine: r.env.engine, reviewer: shadowReviewer('escalate', '이전버전사유: 가격이 들어 있어 사람이 봐야 합니다') }).advance();
+  humanReject(r.env, taskId);
+  assert.match(textOf((await r.get('/delegated')).text), /이전버전사유/, 'decided task: the comparison is listed');
+  // 같은 업무가 다시 사람의 결정을 기다리면(다시 쓰여 돌아온 새 버전) 이전 의견은 가린다
+  r.env.db.writeTx((tx) => tx.run("UPDATE task SET status = 'needs_review' WHERE id = ?", [taskId]));
+  const text = textOf((await r.get('/delegated')).text);
+  assert.ok(!text.includes('이전버전사유'), 'hidden while the task awaits a human decision');
+  assert.match(text, /AI 판정 일치 1\/1/, 'the aggregate line is unchanged');
 });

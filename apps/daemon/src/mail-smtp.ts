@@ -18,6 +18,8 @@ export interface SmtpTimeouts { connectMs: number; commandMs: number; totalMs: n
 export const DEFAULT_SMTP_TIMEOUTS: SmtpTimeouts = { connectMs: 10_000, commandMs: 30_000, totalMs: 60_000 };
 /** 전체 전송 시간 상한. lease 기본 90초보다 짧아 전송 중 lease 를 잃지 않는다 */
 export const MAX_SMTP_TOTAL_MS = 60_000;
+/** 끝 점 뒤 최종 응답을 위해 따로 떼어 두는 시간 (commandMs 가 더 작으면 그만큼) */
+export const POST_DOT_RESERVE_MS = 30_000;
 
 export interface SmtpTransportOptions {
   host: string;
@@ -150,6 +152,8 @@ class Conn {
 }
 
 const codeOf = (reply: Reply): string => `smtp_${reply.code}${reply.enhanced === null ? '' : `_${reply.enhanced}`}`;
+/** 받는 사람 주소가 없거나 잘못됐다는 확장 상태: 5.1.1 사서함 없음, 5.1.2 도메인 없음, 5.1.3 주소 형식, 5.1.6 이사함, 5.1.10 받는 사람 주소 없음 */
+const RECIPIENT_BOUNCE_CODES: readonly string[] = ['5.1.1', '5.1.2', '5.1.3', '5.1.6', '5.1.10'];
 const ADDRESS_OK = /^[^\s<>\r\n]+@[^\s<>\r\n]+$/;
 // 본문은 ASCII + CRLF 만 허용한다 (bare LF/CR 은 SMTP smuggling 의 재료다)
 const isAscii = (text: string): boolean => { for (let i = 0; i < text.length; i += 1) if (text.charCodeAt(i) > 0x7f) return false; return true; };
@@ -177,6 +181,7 @@ export function createSmtpTransport(options: SmtpTransportOptions): MailTranspor
       let conn: Conn | null = null;
       const rejected = (s: MailRejectStage, code: string, bounced: string[] = []): MailSendResult => ({ status: 'rejected', stage: s, code, bouncedRecipients: bounced });
       let totalTimer: ReturnType<typeof setTimeout> | undefined;
+      let preTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         // 연결하기 전에 확인한다: 평문으로 자격 증명이 나갈 길, 잘못된 주소·메시지 모양은 아무것도 연결하지 않고 거절한다
         if (security === 'none' && credentials !== null) return rejected('config', 'auth_without_tls');
@@ -184,9 +189,15 @@ export function createSmtpTransport(options: SmtpTransportOptions): MailTranspor
         if (!wellFormed(mail.raw)) return rejected('config', 'bad_message');
 
         const total = Math.min(timeouts.totalMs, MAX_SMTP_TOTAL_MS);
-        totalTimer = setTimeout(() => conn?.fail(new NetFail('timeout')), total);
+        // 끝 점 뒤 응답을 기다릴 시간을 따로 떼어 둔다(reserve): 끝 점 전 단계는 total - reserve 안에 끝나야 하고(넘으면 끝 점을 쓰기 전이므로 rejected),
+        // 끝 점을 쓴 뒤의 응답 대기는 남은 시간이 얼마든 reserve 이상(commandMs 이하)을 보장받는다. 전체 상한(total ≤ 60초)은 그대로다.
+        const reserve = Math.min(POST_DOT_RESERVE_MS, timeouts.commandMs, total);
+        const preDotLimit = total - reserve;
         const startedAt = Date.now();
-        const cmdMs = (): number => Math.max(1, Math.min(timeouts.commandMs, total - (Date.now() - startedAt)));
+        preTimer = setTimeout(() => { if (!dotWritten) conn?.fail(new NetFail('timeout')); }, preDotLimit);
+        totalTimer = setTimeout(() => conn?.fail(new NetFail('timeout')), total);
+        const elapsed = (): number => Date.now() - startedAt;
+        const cmdMs = (): number => Math.max(1, Math.min(timeouts.commandMs, (dotWritten ? Math.max(reserve, total - elapsed()) : preDotLimit - elapsed())));
 
         // ===== 연결 =====
         stage = security === 'tls' ? 'tls' : 'connect';
@@ -238,7 +249,8 @@ export function createSmtpTransport(options: SmtpTransportOptions): MailTranspor
           const r = await command(`RCPT TO:<${recipient}>`);
           if (r.code === 250 || r.code === 251) continue;
           failed.push(r);
-          if (r.code >= 500 && r.enhanced !== null && r.enhanced.startsWith('5.1.')) bounced.push(recipient);
+          // 받는 사람 주소 자체가 없다는 확장 상태만 반송으로 센다. 5.1.7·5.1.8(보내는 사람 주소 거절)·5.1.0 은 받는 사람 탓이 아니다
+          if (r.code >= 500 && r.enhanced !== null && RECIPIENT_BOUNCE_CODES.includes(r.enhanced)) bounced.push(recipient);
         }
         if (failed.length > 0) {
           await bestEffortReset(conn);
@@ -256,6 +268,7 @@ export function createSmtpTransport(options: SmtpTransportOptions): MailTranspor
         await conn.write(body.endsWith('\r\n') ? body : `${body}\r\n`);
         // 끝 점을 쓰는 순간부터 메시지가 성립했을 수 있다: 이후의 실패는 `rejected` 가 아니라 던진다
         dotWritten = true;
+        if (preTimer !== undefined) clearTimeout(preTimer);
         await conn.write('.\r\n');
         const final = await conn.reply(cmdMs());
         if (final.code >= 200 && final.code < 300) {
@@ -276,6 +289,7 @@ export function createSmtpTransport(options: SmtpTransportOptions): MailTranspor
         return rejected(stage, `net_${code}`); // TLS 인증서 오류 등: 코드 이름뿐이다
       } finally {
         if (totalTimer !== undefined) clearTimeout(totalTimer);
+        if (preTimer !== undefined) clearTimeout(preTimer);
         conn?.socket.destroy();
       }
     },

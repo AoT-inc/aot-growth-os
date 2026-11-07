@@ -2,6 +2,7 @@
 // 화면에 그리는 글과 검사하는 글이 같은 조각이다: 조각 하나라도 (1) 너무 크거나 (2) 글이 아니거나 (3) 비밀 가리기가 바꾸면 "다 볼 수 없음"이고, 그 초안은 승인 버튼을 내지 않는다.
 // 자르지 않는다. 이 화면은 로컬이고 쿠키로 보호되므로 받는 사람 주소도 그대로 보여 준다.
 import { maskString } from '@aot/agent-runtime';
+import { hasInvisibleText } from '@aot/domain';
 
 /** 조각 하나(글 한 필드)의 상한, 전체 상한. 넘으면 자르지 않고 승인을 막는다 */
 export const CHUNK_MAX = 50_000;
@@ -47,6 +48,7 @@ export function unshowableOf(payload: unknown): string[] {
     total += chunk.text.length;
     if (chunk.text.length > CHUNK_MAX) out.push(`${chunk.key}: 너무 큼 (${chunk.text.length}자)`);
     else if (BINARY.test(chunk.text) || BINARY.test(chunk.key)) out.push(`${chunk.key}: 글이 아닌 값(바이너리)`);
+    else if (hasInvisibleText(chunk.text) || hasInvisibleText(chunk.key)) out.push(`${chunk.key}: 화면에 보이지 않는 문자가 있음`);
     else if (maskString(chunk.text) !== chunk.text) out.push(`${chunk.key}: 비밀값처럼 보여 가려짐`);
   }
   if (total > TOTAL_MAX) out.push(`(전체): 합계 ${total}자로 너무 큼`);

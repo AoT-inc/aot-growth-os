@@ -3,6 +3,7 @@
 export {
   contactStatuses, domainOfAddress, FREE_MAIL_DOMAINS, isStrictDomain, listContacts, normalizeAddress, recipientAddressesOf, type RecipientAddresses,
 } from './contacts.ts';
+export { hasInvisibleText } from './invisible-text.ts';
 export { canonicalJson, contentHash, sha256Hex } from './canonical.ts';
 export { FakeClock, systemClock, type Clock } from './clock.ts';
 export { createDb } from './db/create-db.ts';

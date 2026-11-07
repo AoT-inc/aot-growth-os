@@ -17,6 +17,14 @@ export interface FakeSmtpScript {
   dropAfterDot?: boolean;
   /** DATA 끝 점 뒤 응답 코드 (기본 250). 예: 554 */
   finalReply?: string;
+  /** 응답을 한 글자씩(작은 조각으로) 나눠 보낸다 */
+  splitReplies?: boolean;
+  /** 멀티라인 EHLO 응답을 줄마다 다른 조각으로 보낸다 */
+  splitLines?: boolean;
+  /** 처음부터 TLS (포트 465 방식). 키·인증서가 있어야 한다 */
+  implicitTls?: boolean;
+  /** 끝 점 뒤 250 과 221 을 한 조각으로 보낸다 (응답 둘이 한 조각에 올 수 있다) */
+  finalPlusBye?: boolean;
   /** 모든 응답 전에 기다리는 시간(ms) */
   delayMs?: number;
   /** 끝 점 뒤 응답만 늦춘다 */
@@ -55,7 +63,7 @@ export async function startFakeSmtpServer(script: FakeSmtpScript = {}, tlsOption
 
   const serve = (initial: Socket): void => {
     let socket: Socket = initial;
-    let secure = false;
+    let secure = script.implicitTls === true;
     let mailFrom = '';
     let recipients: string[] = [];
     let inData = false;
@@ -66,7 +74,20 @@ export async function startFakeSmtpServer(script: FakeSmtpScript = {}, tlsOption
     const reply = async (text: string, extraDelay = 0): Promise<void> => {
       const wait = (script.delayMs ?? 0) + extraDelay;
       if (wait > 0) await sleep(wait);
-      if (!socket.destroyed) socket.write(`${text}\r\n`);
+      if (socket.destroyed) return;
+      if (script.splitReplies === true) {
+        for (const ch of `${text}\r\n`) {
+          socket.write(ch);
+          await sleep(1);
+        }
+      } else if (script.splitLines === true) {
+        for (const line of text.split('\r\n')) {
+          socket.write(`${line}\r\n`);
+          await sleep(5);
+        }
+      } else {
+        socket.write(`${text}\r\n`);
+      }
     };
 
     const handleLine = async (line: string): Promise<void> => {
@@ -79,6 +100,7 @@ export async function startFakeSmtpServer(script: FakeSmtpScript = {}, tlsOption
             socket.destroy();
             return;
           }
+          if (script.finalPlusBye === true) return void (await reply('250 2.0.0 queued\r\n221 2.0.0 bye', script.finalDelayMs ?? 0));
           await reply(`${script.finalReply ?? '250'} ${script.finalReply === undefined || script.finalReply.startsWith('2') ? '2.0.0 queued' : '5.0.0 refused'}`, script.finalDelayMs ?? 0);
           return;
         }
@@ -170,10 +192,13 @@ export async function startFakeSmtpServer(script: FakeSmtpScript = {}, tlsOption
     chain = chain.then(() => reply(script.greeting421 === true ? '421 4.3.2 busy' : '220 fake.example.test ESMTP'));
   };
 
-  const server: Server = net.createServer((socket) => {
+  const onConnection = (socket: Socket): void => {
     connections += 1;
     serve(socket);
-  });
+  };
+  const server: Server = script.implicitTls === true && tlsOptions !== undefined
+    ? tls.createServer({ key: tlsOptions.key, cert: tlsOptions.cert }, onConnection)
+    : net.createServer(onConnection);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('fake smtp: no port');

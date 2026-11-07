@@ -202,3 +202,58 @@ test('the transport declares no idempotency (SMTP has no key)', () => {
   assert.deepEqual(transport.idempotency, { supported: false });
   assert.equal(transport.name, 'smtp');
 });
+
+test("direct TLS (security 'tls') round trip with AUTH over a verified certificate; a hostname mismatch is rejected at tls before anything is sent", async (t) => {
+  const server = await withServer(t, { implicitTls: true, auth: { username: USER, password: PASSWORD } }, true);
+  const direct = (extra: Partial<Parameters<typeof createSmtpTransport>[0]> = {}) =>
+    createSmtpTransport({ host: server.host, port: server.port, security: 'tls', ca: cert.certPem, servername: 'localhost', ...extra });
+  const mail = mailOf();
+  assert.equal((await direct({ username: USER, password: PASSWORD }).send(mail)).status, 'accepted');
+  assert.deepEqual(server.commands.filter((c) => c !== 'QUIT'), ['EHLO', 'AUTH', 'MAIL', 'RCPT', 'DATA']);
+  assert.equal(server.messages[0]!.data, mail.raw);
+  const mismatch = rejected(await direct({ servername: 'elsewhere.example.com', username: USER, password: PASSWORD }).send(mailOf()));
+  assert.equal(mismatch.stage, 'tls');
+  assert.equal(server.messages.length, 1);
+  assert.equal(server.commands.filter((c) => c === 'AUTH').length, 1, 'no AUTH on the mismatched connection');
+  const untrusted = rejected(await direct({ ca: makeTestCertificate({ dnsNames: ['localhost'] }).certPem }).send(mailOf()));
+  assert.equal(untrusted.stage, 'tls');
+});
+
+test('only recipient-address rejections count as bounces: 5.1.1/2/3/6/10 yes; 5.1.0, 5.1.7, 5.1.8 and 4xx with 5.1.x no', async (t) => {
+  const replies: Record<string, string> = {
+    'a1@example.com': '550 5.1.1 no user', 'a2@example.com': '550 5.1.2 bad domain', 'a3@example.com': '553 5.1.3 bad syntax',
+    'a6@example.com': '551 5.1.6 moved', 'a10@example.com': '550 5.1.10 recipient not found',
+    'n0@example.com': '550 5.1.0 other', 'n7@example.com': '550 5.1.7 bad sender', 'n8@example.com': '553 5.1.8 Sender address rejected', 'n4@example.com': '450 5.1.1 later',
+  };
+  const server = await withServer(t, { rcptReplies: replies });
+  for (const [address] of Object.entries(replies)) {
+    const result = rejected(await plain(server).send(mailOf({ recipients: [address] })));
+    const counts = /^a/.test(address);
+    assert.deepEqual(result.bouncedRecipients, counts ? [address] : [], address);
+  }
+  assert.equal(server.messages.length, 0);
+});
+
+test('replies split into single characters, multi-line replies split across chunks, and two replies in one chunk are all read correctly', async (t) => {
+  for (const script of [{ splitReplies: true }, { splitLines: true }, { finalPlusBye: true }] as FakeSmtpScript[]) {
+    const server = await withServer(t, script);
+    const mail = mailOf({ recipients: ['customer@example.com', 'b@example.com'] });
+    assert.equal((await plain(server).send(mail)).status, 'accepted', JSON.stringify(script));
+    assert.equal(server.messages[0]!.data, mail.raw);
+  }
+});
+
+test('post-dot budget: a pre-dot stage that outlasts total - reserve is rejected before the dot (never unknown); a final reply within the reserved budget is accepted', async (t) => {
+  // total 1000, command 300 -> 예약 300, 끝 점 전 단계는 700ms 안에 끝나야 한다
+  const slow = await withServer(t, { delayMs: 170 });
+  const tooSlow = rejected(await plain(slow, { timeouts: { totalMs: 1000, commandMs: 300 } }).send(mailOf()));
+  assert.equal(tooSlow.code, 'net_timeout');
+  assert.equal(slow.messages.length, 0, 'the dot was never written');
+
+  const ok = await withServer(t, { delayMs: 100, finalDelayMs: 150 });
+  assert.equal((await plain(ok, { timeouts: { totalMs: 1000, commandMs: 300 } }).send(mailOf())).status, 'accepted');
+
+  // 끝 점 뒤 응답이 예약을 넘으면 던진다
+  const lost = await withServer(t, { delayMs: 10, finalDelayMs: 600 });
+  await assert.rejects(() => plain(lost, { timeouts: { totalMs: 1000, commandMs: 300 } }).send(mailOf()), /outcome unknown/);
+});

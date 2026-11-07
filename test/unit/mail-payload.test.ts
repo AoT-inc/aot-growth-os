@@ -2,9 +2,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MAIL_LIMITS, validateMailPayload, type MailPayload } from '@aot/domain';
+import { hasInvisibleText, MAIL_LIMITS, validateMailPayload, type MailPayload } from '@aot/domain';
 
-import { CHUNK_MAX } from '../../apps/daemon/src/review-web/payload-view.ts';
+import { CHUNK_MAX, unshowableOf } from '../../apps/daemon/src/review-web/payload-view.ts';
 
 const base = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   from: 'support@sender.example.com', to: ['customer@example.com'], subject: 'Hello', text: 'First line\nSecond line', ...over,
@@ -105,4 +105,24 @@ test('text: 1 to 50,000 chars; \\n and tab allowed; \\r, other control character
 
 test('non-objects are rejected', () => {
   for (const value of [null, 'x', 3, [], undefined]) assert.deepEqual(codes(value), [':type']);
+});
+
+test('invisible characters are refused in subject and text; legitimate Korean, emoji with ZWJ and variation selectors are not', () => {
+  const tag = (word: string): string => [...word].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join('');
+  const hidden = ['\u{E0041}', tag('secret'), '\u200b', '\u2060', '\u2064', '\ufeff', '\u200e', '\u202e', '\u2066', '\u00ad', '\u{E0100}', '\ue000', '\u0378'];
+  for (const ch of hidden) {
+    assert.deepEqual(codes(base({ text: `visible ${ch}text` })), ['text:invisible_char'], `text U+${ch.codePointAt(0)!.toString(16)}`);
+    assert.deepEqual(codes(base({ subject: `visible${ch}` })), ['subject:invisible_char'], `subject U+${ch.codePointAt(0)!.toString(16)}`);
+  }
+  for (const ok of ['안녕하세요 고객님', '👨\u200d👩\u200d👧 family', '❤\ufe0f heart', '👍🏽 ok', '\u{1F1F0}\u{1F1F7} flag', 'نص\u200cعربي', 'tab\there\nnewline']) {
+    assert.deepEqual(codes(base({ text: ok })), [], ok);
+  }
+  assert.equal(hasInvisibleText('plain'), false);
+  assert.equal(hasInvisibleText(tag('x')), true);
+});
+
+test('the review screen also refuses to show a draft with invisible text (tag-encoded secret), but still shows Korean and emoji', () => {
+  const hiddenSecret = [...'password=hunter2'].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join('');
+  assert.deepEqual(unshowableOf({ to: ['a@example.com'], subject: 'Hi', text: `hello${hiddenSecret}` }), ['text: 화면에 보이지 않는 문자가 있음']);
+  assert.deepEqual(unshowableOf({ to: ['a@example.com'], subject: '안녕 👨\u200d👩\u200d👧 ❤\ufe0f', text: '본문' }), []);
 });

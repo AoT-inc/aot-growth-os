@@ -60,21 +60,26 @@ export function createMailEffectTool(options: MailEffectToolOptions): MailEffect
       const key = senderKeyOfTarget(call.target);
       const sender = key === null ? undefined : Object.hasOwn(senders, key) ? senders[key] : undefined;
       if (sender === undefined || sender.address !== payload.from) return FAILED;
-      // 3. 수신 거부 (승인 뒤에 들어왔을 수 있다)
       const recipients = mailRecipients(payload);
-      if ([...contactStatuses(db, recipients).values()].includes('suppressed')) return FAILED;
-      // 4. 하루 상한: 최근 24시간 안에 마지막으로 바뀐 dispatched|confirmed|unknown 행 (자기 자신 제외)
-      const since = new Date(clock.nowMs() - DAY_MS).toISOString();
-      const sentToday = db.get<{ n: number }>(
-        `SELECT count(*) AS n FROM external_effect WHERE tool = ? AND state IN ('dispatched','confirmed','unknown') AND at >= ? AND effect_key <> ?`,
-        [MAIL_SEND_TOOL, since, call.effectKey],
-      )?.n ?? 0;
-      if (sentToday >= options.maxPerDay) return FAILED;
-      // 5. 최소 간격
+      // 5. 최소 간격: 먼저 기다린다(자리는 동기적으로 예약). 기다리는 동안 수신 거부가 들어올 수 있으므로 3·4 는 기다린 뒤 전송 직전에 한다
       const now = clock.nowMs();
       const slot = Math.max(now, nextSlotMs);
       nextSlotMs = slot + options.minIntervalMs;
       if (slot > now) await sleep(slot - now);
+      // 3. 수신 거부 (승인 뒤에 들어왔을 수 있다)  4. 하루 상한: 최근 24시간 안에 마지막으로 바뀐 dispatched|confirmed|unknown 행 (자기 자신 제외)
+      // 이 확인이 던지면 아직 아무것도 보내지 않았다: unknown 이 아니라 failed 다
+      try {
+        if ([...contactStatuses(db, recipients).values()].includes('suppressed')) return FAILED;
+        const since = new Date(clock.nowMs() - DAY_MS).toISOString();
+        const sentToday = db.get<{ n: number }>(
+          `SELECT count(*) AS n FROM external_effect WHERE tool = ? AND state IN ('dispatched','confirmed','unknown') AND at >= ? AND effect_key <> ?`,
+          [MAIL_SEND_TOOL, since, call.effectKey],
+        )?.n ?? 0;
+        if (sentToday >= options.maxPerDay) return FAILED;
+      } catch (error) {
+        console.error('mail_send: pre-send check failed; nothing was sent:', error instanceof Error ? error.name : 'error');
+        return FAILED;
+      }
       // 6. 렌더링 → 전송
       const messageId = messageIdOf(call.effectKey, options.messageIdDomain ?? domainOfAddress(payload.from));
       const raw = renderMailMessage({ payload, messageId, date: clock.nowIso(), listUnsubscribe: options.unsubscribeMailto });
@@ -82,9 +87,14 @@ export function createMailEffectTool(options: MailEffectToolOptions): MailEffect
         idempotencyKey: call.effectKey, envelopeFrom: options.bounceAddress ?? payload.from, recipients, messageId, raw, payload,
       });
       if (result.status === 'accepted') return { status: 'confirmed', responseRef: result.providerMessageId ?? messageId };
-      // transport 가 확실히 거절했다: 받는 사람 주소가 없다는 거절(5.1.x)은 호스트가 결정론적으로 수신 거부로 좁힌다. 입력은 transport 결과뿐이다
+      // transport 가 확실히 거절했다: 받는 사람 주소가 없다는 거절(5.1.1·5.1.2·5.1.3·5.1.6·5.1.10)은 호스트가 결정론적으로 수신 거부로 좁힌다. 입력은 transport 결과뿐이다
+      // 반영이 실패해도 결과는 바뀌지 않는다(메일은 나가지 않았음이 확실하다): unknown 으로 새지 않게 삼킨다
       for (const address of result.bouncedRecipients) {
-        if (recipients.includes(address)) applyMailFeedback(db, clock, { kind: 'hard_bounce', address, detail: `${result.stage}:${result.code}` });
+        try {
+          if (recipients.includes(address)) applyMailFeedback(db, clock, { kind: 'hard_bounce', address, detail: `${result.stage}:${result.code}` });
+        } catch (error) {
+          console.error('mail_send: recording a bounce failed:', error instanceof Error ? error.name : 'error');
+        }
       }
       return FAILED;
     },

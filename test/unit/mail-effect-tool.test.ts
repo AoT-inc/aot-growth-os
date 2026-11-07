@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { createFakeMailTransport, createMailEffectTool, type FakeMailTransport } from '@aot/agent-runtime';
-import { messageIdOf } from '@aot/domain';
+import { messageIdOf, type Db } from '@aot/domain';
 
 import { decodeMail } from '../support/mail-decode.ts';
 import { addContact, contactRow, eventsOf, ledgerFixture, mailPayload, SENDER_ADDRESS, SENDERS, UNSUBSCRIBE } from '../support/mail.ts';
@@ -200,4 +200,42 @@ test('the transport type is structural: a fake with sent records is a MailTransp
   const transport: FakeMailTransport = createFakeMailTransport();
   assert.equal(transport.name, 'fake-mail');
   void t;
+});
+
+test('the suppression check runs after the minimum-interval wait: a suppression that arrives while waiting is honoured and the transport is not called', async (t) => {
+  const env = seededDb(t);
+  const transport = createFakeMailTransport();
+  const tool = createMailEffectTool({
+    db: env.db, clock: env.clock, transport, senders: SENDERS, unsubscribeMailto: UNSUBSCRIBE, maxPerDay: 200, minIntervalMs: 1000,
+    sleep: () => { addContact(env.db, env.clock, 'customer@example.com', 'suppressed'); return Promise.resolve(); },
+  });
+  await tool.send(call(mailPayload({ to: ['first@example.com'] }), { effectKey: 'f'.repeat(64) })); // 첫 전송은 기다리지 않는다
+  assert.equal(transport.sent.length, 1);
+  assert.deepEqual(await tool.send(call()), FAILED); // 둘째는 기다리는 동안 수신 거부가 들어온다
+  assert.equal(transport.sent.length, 1);
+});
+
+/** 지정한 메서드가 던지는 Db */
+const failingDb = (db: Db, method: 'get' | 'writeTx'): Db => new Proxy(db, {
+  get: (target, prop, receiver) => (prop === method ? () => { throw new Error('boom'); } : Reflect.get(target, prop, receiver) as unknown),
+});
+
+test('an exception in the pre-send checks is failed (nothing was sent), not unknown', async (t) => {
+  const env = seededDb(t);
+  const transport = createFakeMailTransport();
+  const tool = createMailEffectTool({ db: failingDb(env.db, 'get'), clock: env.clock, transport, senders: SENDERS, unsubscribeMailto: UNSUBSCRIBE, maxPerDay: 200, minIntervalMs: 0 });
+  assert.deepEqual(await tool.send(call()), FAILED);
+  assert.equal(transport.sent.length, 0);
+});
+
+test('a failure while recording a bounce does not turn the rejected result into unknown; only transport.send exceptions propagate', async (t) => {
+  const env = seededDb(t);
+  addContact(env.db, env.clock, 'customer@example.com');
+  const transport = createFakeMailTransport();
+  transport.script({ status: 'rejected', stage: 'envelope', code: 'smtp_550_5.1.1', bouncedRecipients: ['customer@example.com'] });
+  const tool = createMailEffectTool({ db: failingDb(env.db, 'writeTx'), clock: env.clock, transport, senders: SENDERS, unsubscribeMailto: UNSUBSCRIBE, maxPerDay: 200, minIntervalMs: 0 });
+  assert.deepEqual(await tool.send(call()), FAILED);
+  assert.equal(contactRow(env.db, 'customer@example.com')!.status, 'active', 'the bounce could not be recorded, the result is still failed');
+  transport.script({ throws: new Error('lost') });
+  await assert.rejects(() => tool.send(call(mailPayload(), { effectKey: 'b'.repeat(64) })), /lost/);
 });

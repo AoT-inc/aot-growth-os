@@ -1,5 +1,6 @@
 // 메일 payload 형식과 검증 (ADR-0017, docs/plans/mail-tool.md §4). 사람(또는 위임 AI)이 승인하는 바이트의 모양이다.
 // 키는 `from`·`to`·`cc`·`subject`·`text` 다섯 개뿐이고 그 밖의 키는 모두 거부한다. 순수 함수만 둔다(DB·시계 없음).
+import { hasInvisibleText } from '../invisible-text.ts';
 import { domainOfAddress, FREE_MAIL_DOMAINS, normalizeAddress } from '../contacts.ts';
 
 export interface MailPayload {
@@ -40,6 +41,7 @@ function badChars(text: string, allowed: ReadonlySet<number>): string | null {
   }
   if (LONE_SURROGATE.test(text)) return 'an unpaired surrogate';
   if (text.includes(REPLACEMENT)) return 'the replacement character U+FFFD';
+  if (hasInvisibleText(text)) return 'an invisible character (tag, zero-width, bidi control, private use or unassigned)';
   return null;
 }
 
@@ -100,7 +102,7 @@ export function validateMailPayload(payload: unknown, options: { requireFrom: bo
   else if (subject.trim() === '') add('subject', 'blank', 'subject must not be only whitespace');
   else {
     const bad = badChars(subject, NONE);
-    if (bad !== null) add('subject', 'chars', `subject contains ${bad}`);
+    if (bad !== null) add('subject', bad.startsWith('an invisible') ? 'invisible_char' : 'chars', `subject contains ${bad}`);
   }
 
   // text
@@ -109,7 +111,7 @@ export function validateMailPayload(payload: unknown, options: { requireFrom: bo
   else if (text.length < 1 || text.length > MAIL_LIMITS.textChars) add('text', 'length', `text must be 1 to ${MAIL_LIMITS.textChars} characters`);
   else {
     const bad = badChars(text, TEXT_ALLOWED);
-    if (bad !== null) add('text', 'chars', `text contains ${bad}`);
+    if (bad !== null) add('text', bad.startsWith('an invisible') ? 'invisible_char' : 'chars', `text contains ${bad}`);
   }
 
   if (errors.length > 0) return { ok: false, errors };

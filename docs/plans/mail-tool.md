@@ -105,7 +105,7 @@ Auto-Submitted: auto-generated
 |---|---|---|
 | 1~4 중 하나라도 걸림 (아무것도 연결하지 않음) | `failed` | `failed` (보내지 않았음이 확실) |
 | 연결 실패·TLS 실패·STARTTLS 미제공·인증 실패·인사/MAIL 단계 거절 | transport `rejected` | `failed` |
-| RCPT 하나라도 거절 (RSET 후 끊음, **일부만 보내지 않는다**) | `rejected` + 5.1.x 주소 목록 | `failed` (+ §7 수신 거부) |
+| RCPT 하나라도 거절 (RSET 후 끊음, **일부만 보내지 않는다**) | `rejected` + 반송 주소 목록(5.1.1·5.1.2·5.1.3·5.1.6·5.1.10) | `failed` (+ §7 수신 거부) |
 | DATA 끝(`.`)을 보내기 전 어디서든 끊김·시간 초과 | `rejected` | `failed` (RFC 5321: 끝 점 전에는 메시지가 성립하지 않는다) |
 | 끝 점 뒤 `250` | `accepted` | `confirmed`, `response_ref` = Message-ID (업체 id 가 있으면 그것) |
 | 끝 점 뒤 `4xx`/`5xx` | `rejected` | `failed` |
@@ -119,7 +119,7 @@ Auto-Submitted: auto-generated
 
 - **수신 거부 목록 = `contact` 표의 `suppressed`.** 초안 단계(실행기)와 전송 직전(부작용 도구) 두 번 확인한다. 사람이 승인한 초안이라도 보내지 않는다(M2). 연락처 표에 없는 주소는 "모르는 주소"일 뿐 거부 대상은 아니다(사람은 보낼 수 있고, 위임은 받는 사람 규칙이 막는다).
 - **수신 거부 요청 경로:** 모든 메일에 `List-Unsubscribe: <mailto:…>` 헤더를 단다(설정 `unsubscribe_mailto` 필수). 그 주소로 온 요청은 사람이 처리한다(`contacts suppress`, 화면의 기존 경로). 원클릭 https(RFC 8058)는 공개 리스너가 필요해 v1 에 없다(M6).
-- **즉시 반송(결정론):** RCPT 단계에서 `5.1.x`(받는 사람 주소 없음·도메인 없음 등) 확장 상태로 거절된 주소는 부작용 도구가 `applyMailFeedback(db, clock, {kind:'hard_bounce', address, detail})` 로 반영한다: 연락처 표에 있으면 `suppressed`(`suppressed_by` NULL = 호스트), 없으면 기록만. 둘 다 `event`(`source='mail'`, `type='mail.feedback.hard_bounce'`)로 감사 기록을 남긴다. 좁히기만 한다(`active` 로 되돌리지 않는다). 그 밖의 거절(`5.7.x` 정책, `4xx`)은 수신 거부로 바꾸지 않는다.
+- **즉시 반송(결정론):** RCPT 단계에서 `5.1.1`·`5.1.2`·`5.1.3`·`5.1.6`·`5.1.10`(5xx) 확장 상태(받는 사람 주소·도메인 없음 등)로 거절된 주소는 부작용 도구가 `applyMailFeedback(db, clock, {kind:'hard_bounce', address, detail})` 로 반영한다: 연락처 표에 있으면 `suppressed`(`suppressed_by` NULL = 호스트), 없으면 기록만. 둘 다 `event`(`source='mail'`, `type='mail.feedback.hard_bounce'`)로 감사 기록을 남긴다. 좁히기만 한다(`active` 로 되돌리지 않는다). 그 밖의 거절(`5.1.0`, 보내는 사람 쪽 `5.1.7`·`5.1.8`, `5.7.x` 정책, `4xx`)은 수신 거부로 바꾸지 않는다.
 - **비동기 반송·불만:** SMTP 에는 없다(반송 메일이 envelope-from 으로 돌아온다). 업체 HTTP 어댑터가 webhook 을 줄 때 같은 `applyMailFeedback`(`complaint`·`hard_bounce`)으로 넣는다. 그 전까지는 반송 메일함을 사람이 보고 `contacts suppress` 한다(운영 문서).
 - 에이전트는 이 경로 어디에도 닿지 않는다. 에이전트 출력은 `applyMailFeedback` 의 입력이 될 수 없다(입력은 transport 결과뿐).
 
@@ -171,3 +171,10 @@ Auto-Submitted: auto-generated
 - 게이트웨이 선언에는 전화처럼 `target` 이 없어 호출별 정책 판정의 `resource` 는 null 이다. 대상 범위는 명세 target(승인 해시에 포함)과 원장 입구의 `out_of_scope` 검사가 막는다. 정책 규칙을 target 모양으로 쓰려면 이 점을 알아야 한다.
 - 시험용 TLS 인증서는 이미 있던 `test/support/test-cert.ts`(메모리에서 자체 서명)로 만들어 STARTTLS 왕복 시험을 건너뛰지 않는다.
 - `lease_ms` 를 60초보다 짧게 설정하면 전송 시간 상한(60초)이 lease 보다 길어질 수 있다. 그때 lease 를 잃은 전송은 기존 규칙대로 `unknown` 이 된다(중복 전송은 없다).
+- 검토 반영 (2026-11-07):
+  - 보이지 않는 문자(태그 U+E0000–E007F, 폭 없는 문자, 방향 제어, 변형 선택자 보충, 사용자 지정·미할당)는 `hasInvisibleText`(domain)로 막는다. 제목·본문 검증(`invisible_char`)과 검토 화면(`unshowableOf`) 모두 쓴다. ZWNJ·ZWJ·U+FE0F 는 허용한다.
+  - 반송으로 세는 RCPT 확장 상태를 5.1.1·5.1.2·5.1.3·5.1.6·5.1.10 으로 좁혔다(5.1.0, 보내는 사람 쪽 5.1.7·5.1.8 은 수신 거부로 바꾸지 않는다).
+  - To/Cc 헤더는 쉼표 뒤에서 접어 한 줄이 998자를 넘지 않는다.
+  - 최소 간격 대기를 먼저 하고, 수신 거부·하루 상한 확인은 대기 뒤 전송 직전에 한다.
+  - 전송 전 확인(연락처·상한 조회)이 던지면 `failed`(보내지 않았음)로 돌려준다. transport 가 `rejected` 한 뒤 반송 반영이 실패해도 결과는 `failed` 다(`unknown` 으로 새지 않는다). transport.send 자신의 예외만 `unknown` 이다.
+  - SMTP 전체 시간 중 끝 점 뒤 응답용으로 `min(30초, command_ms)` 를 따로 떼어 둔다: 끝 점 전 단계는 `total − 예약` 안에 끝나야 하고(넘으면 끝 점 전이라 `rejected`), 끝 점 뒤 응답 대기는 예약 이상을 보장받는다.

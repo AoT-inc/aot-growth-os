@@ -75,7 +75,8 @@ export function renderMailMessage(input: RenderMailInput): string {
   const headers = [
     `From: ${from}`,
     `To: ${to[0]!}`,
-    ...(cc === undefined ? [] : [`Cc: ${cc.join(', ')}`]),
+    // 주소 4개가 각각 254자면 한 줄이 998자를 넘는다: 쉼표 뒤에서 접는다(받는 쪽이 펼치면 ", " 로 이어진 같은 목록)
+    ...(cc === undefined ? [] : [`Cc: ${cc.join(',\r\n ')}`]),
     ...subjectLines,
     `Date: ${formatMailDate(input.date)}`,
     `Message-ID: ${input.messageId}`,

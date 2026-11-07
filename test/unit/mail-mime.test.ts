@@ -22,7 +22,8 @@ test('headers are exactly the design list, in order, with CRLF and a trailing CR
   assert.deepEqual(headerLines, [
     'From: support@sender.example.com',
     'To: customer@example.com',
-    'Cc: a@example.com, b@example.com',
+    'Cc: a@example.com,',
+    ' b@example.com',
     'Subject: Hello',
     'Date: Sat, 07 Nov 2026 01:02:03 +0000',
     `Message-ID: ${ID}`,
@@ -103,4 +104,14 @@ test('messageIdOf: first 32 characters of the effect key at the domain; date for
   const key = 'f'.repeat(64);
   assert.equal(messageIdOf(key, 'sender.example.com'), `<${'f'.repeat(32)}@sender.example.com>`);
   assert.equal(formatMailDate(new Date(Date.UTC(2026, 0, 5, 9, 8, 7))), 'Mon, 05 Jan 2026 09:08:07 +0000');
+});
+
+test('To/Cc are folded after commas: four 254-character addresses stay within 998 characters per line and decode to the same list', () => {
+  const addr = (i: number): string => `${String(i).repeat(60)}@${'d'.repeat(63)}.${'e'.repeat(63)}.${'f'.repeat(50)}.example.com`;
+  const addresses = [1, 2, 3, 4].map(addr);
+  assert.ok(addresses.every((a) => a.length > 240 && a.length <= 254), String(addresses[0]!.length));
+  const raw = renderMailMessage({ payload: payload({ to: [addresses[0]!], cc: addresses.slice(1) }), messageId: ID, date: new Date(), listUnsubscribe: 'unsubscribe@sender.example.com' });
+  for (const line of raw.split('\r\n')) assert.ok(line.length <= 998, String(line.length));
+  const decoded = decodeMail(raw);
+  assert.deepEqual(decoded.headers.get('Cc')!.split(/,\s*/), addresses.slice(1));
 });

@@ -21,3 +21,4 @@
 | [0014](0014-phone-capability.md) | 외부 대화 계층과 첫 채널: 전화 (Phone Capability) | proposed |
 | [0015](0015-draft-before-approval.md) | 외부 부작용은 정확한 초안을 승인하고 호스트가 그대로 보낸다 | proposed |
 | [0016](0016-decision-delegation.md) | 화면에서 결정하고, 사람이 정한 위임 안에서는 AI가 결정한다 | accepted |
+| [0017](0017-mail-tool.md) | 첫 실제 메일 도구: 승인된 초안을 SMTP 로 바이트 그대로 보낸다 | proposed |

@@ -45,4 +45,7 @@
 
 정규화: 위임은 id 순, `match`의 목록은 정렬, 기간은 초. `mandates`가 비어 있는 섹션은 키를 지워 정규화하므로 **섹션이 없거나 비어 있는 문서의 내용 해시(정책 버전)는 이 섹션이 생기기 전과 같다.** 기본 템플릿(`policies/default.yaml`)과 시드 정책은 위임을 선언하지 않는다 — 위임은 꺼져 있다.
 
-변경 등급: 섹션 신설, 위임 추가, `holder` 변경, `match` 확대, 한도 상향(`max_rewrites_per_task` 포함), `cooldown` 단축, `expires` 연장, `guidance` 변경은 **위험 변경**(현재 정책의 `risky_change` 절차: 승인자 수·cooldown·TOTP). 위임 삭제, 한도 하향, 섹션 삭제, `cooldown` 연장, `expires` 단축은 일반 변경. 위임 범위를 넓히는 일은 언제나 사람이 TOTP로 배포한다.
+변경 등급: 섹션 신설, 위임 추가, `holder` 변경, `match` 확대, 한도 상향(`max_rewrites_per_task` 포함), `cooldown` 단축, `expires` 연장, `guidance` 변경, `mode` `shadow → live` 는 **위험 변경**(현재 정책의 `risky_change` 절차: 승인자 수·cooldown·TOTP). 위임 삭제, 한도 하향, 섹션 삭제, `cooldown` 연장, `expires` 단축은 일반 변경. 위임 범위를 넓히는 일은 언제나 사람이 TOTP로 배포한다.
+
+## Amendment (2026-11-07): 위임 `mode` ([plans/delegate-reviewer](../plans/delegate-reviewer.md))
+위임 항목에 선택 키 `mode: shadow | live` 를 둔다. **생략하면 `shadow`**(정규화도 `shadow` 로 채우므로 생략과 `mode: shadow` 의 해시는 같다). `shadow` 위임에서는 AI 판정이 `delegate_review` 에만 남고 승인 행·다시 쓰게·전송이 일어나지 않는다. `shadow → live` 는 위험 변경(TOTP), `live → shadow` 는 일반 변경. `max_rewrites_per_task` 상한은 1 이다(업무당 한 번, D-B4).

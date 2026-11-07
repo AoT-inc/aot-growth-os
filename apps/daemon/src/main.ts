@@ -27,7 +27,8 @@ import { DEFAULT_LEASE_PARAMS, DEFAULT_POLL_MS, DEFAULT_RETRY_DELAY_MS, runPolli
 
 import { assembleDaemon, defaultInstancePaths } from './assemble.ts';
 import { readClaudeCodeConsent } from './consent.ts';
-import { delegateReviewerFromConfig, parseDelegateReviewerConfig } from './delegate-cycle.ts';
+import { delegateReviewerFromConfig } from './delegate-cycle.ts';
+import { buildClaudeDelegateReviewer, parseDelegateReviewerSetting } from './delegate-reviewer-config.ts';
 import { daemonForbiddenRoots } from './forbidden-roots.ts';
 import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { advanceOrganization } from './org-cycle.ts';
@@ -35,14 +36,18 @@ import { createRepeatFilter } from './log-throttle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
 import { startPhoneWebhookServer } from './phone-webhook-server.ts';
-import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts';
+import { buildAgentRuntime, buildClaudeGate, parseClaudeCodeCliConfig, type AgentRuntimeConfig } from './runtime-config.ts';
 
 /** 에이전트 쪽 키(container_agent·research_agent·instance_id·run_log_dir·default_time_limit)는 AgentRuntimeConfig 에 있다 */
 /** 팩 키(pack_dir·pack_values)는 PackConfig 에, 주간 사이클 키(experiment_cycle)는 CycleConfig 에 있다 */
 interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
-  /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 뿐인데 시험 전용이라 데몬은 읽지 않고 시작을 거부한다 (delegate-cycle.ts) */
+  /**
+   * 결정 위임 검토자 (ADR-0016). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다.
+   * `{"kind":"claude_code_cli","model"?:"sonnet","timeout_ms"?:…,"assumed_cost_usd"?:…}`: 구독 CLI 를 도구 없이 불러 판정을 받는다. `claude_code_cli` 설정이 있어야 하고 동의·게이트는 실행 어댑터·검증기와 같다 (delegate-reviewer-config.ts).
+   * `{"kind":"stub"}` 는 시험 전용이라 데몬은 읽지 않고 시작을 거부한다 (delegate-cycle.ts).
+   */
   delegate_reviewer?: unknown;
   db_path: string;
   busy_timeout_ms?: number;
@@ -84,14 +89,22 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
+  // 실행 어댑터·검증기·위임 검토자가 같은 동의 읽기와 같은 게이트를 쓴다 (구독 풀이 하나다)
+  const claudeConfig = parseClaudeCodeCliConfig(config.claude_code_cli);
+  const claudeConsent = (): ReturnType<typeof readClaudeCodeConsent> => readClaudeCodeConsent(db);
+  const claudeGate = claudeConfig === undefined ? undefined : buildClaudeGate(claudeConfig, systemClock);
   const { agent, evaluation, productChannel } = buildAgentRuntime(config, instanceDir, {
-    claudeCodeConsent: () => readClaudeCodeConsent(db), db,
+    claudeCodeConsent: claudeConsent, db, ...(claudeGate === undefined ? {} : { claudeGate }),
     forbiddenRoots: daemonForbiddenRoots(config, instanceDir),
   });
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);
-  const delegateReviewer = delegateReviewerFromConfig(parseDelegateReviewerConfig(config.delegate_reviewer));
+  const delegateSetting = parseDelegateReviewerSetting(config.delegate_reviewer, { claude: claudeConfig });
+  const delegateReviewer = delegateSetting === undefined ? undefined
+    : delegateSetting.kind === 'claude_code_cli'
+      ? buildClaudeDelegateReviewer(delegateSetting, { claude: claudeConfig!, clock: systemClock, gate: claudeGate!, consent: claudeConsent })
+      : delegateReviewerFromConfig(delegateSetting);
   const daemon = assembleDaemon({
     db,
     clock: systemClock,

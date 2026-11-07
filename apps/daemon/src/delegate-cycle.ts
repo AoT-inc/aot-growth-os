@@ -15,6 +15,17 @@ export class DelegateReviewerUnavailableError extends Error {
   }
 }
 
+/** 검토자가 판정을 못 냈다 (시간 초과·프로세스 실패 등). 검토 프로세스가 이미 돌았다면 든 비용(`costUsd`)을 달고 온다 — 실패한 호출도 하루 검토 비용 한도에 센다 */
+export class DelegateReviewFailedError extends Error {
+  readonly costUsd: number;
+
+  constructor(message: string, costUsd: number = 0) {
+    super(message);
+    this.name = 'DelegateReviewFailedError';
+    this.costUsd = costUsd;
+  }
+}
+
 export interface DelegateReviewRequest {
   taskId: string;
   /** 지금 대상 해시 (초안 포함). 검토자는 이 값을 출력에 되돌려 줘야 한다 */
@@ -40,7 +51,7 @@ export function createStubDelegateReviewer(options: { verdict?: DelegateVerdict;
   return {
     id: 'stub-delegate-reviewer',
     review: (request) => Promise.resolve({
-      output: { verdict: options.verdict ?? 'escalate', hash: request.hash, reason: options.reason ?? 'stub reviewer' },
+      output: { verdict: options.verdict ?? 'escalate', hash: request.hash, reason: options.reason ?? '시험용 가짜 검토자의 판정입니다' },
       ...(options.costUsd === undefined ? {} : { costUsd: options.costUsd }),
     }),
   };
@@ -53,22 +64,34 @@ const VERDICTS: readonly string[] = ['approve', 'request_changes', 'escalate'];
 /** 위임이 멈췄거나 없는 동안의 적격 실패: 기록하지 않고 풀릴 때 다시 본다 */
 const TRANSIENT: readonly string[] = ['mandate_inactive', 'holder_unavailable', 'no_mandate'];
 
-/** 검토자 출력 검사: 형식, 해시 = 지금 해시, 판정이 셋 중 하나, 사유 문자열. 아니면 실패 */
+/** 검토자 사유의 최대 길이 (잘라 쓰지 않는다 — 넘으면 형식 오류) */
+const MAX_REASON_CHARS = 200;
+const FORMAT_ERROR = 'AI 응답 형식 오류';
+
+/**
+ * 검토자 출력 엄격 검사 (docs/plans/delegate-reviewer.md §3). 하나라도 어긋나면 실패(사람에게 넘김).
+ *  - 객체(또는 객체의 JSON 문자열)이고 키는 정확히 verdict·hash·reason
+ *  - verdict 는 셋 중 하나, reason 은 앞뒤 공백을 뺀 뒤 비어 있지 않고 200자 이내이며 한글이 한 글자 이상(잘라 쓰지 않는다)
+ *  - hash 는 지금 해시와 같다
+ */
 export function parseReviewOutput(output: unknown, hash: string): ParsedReview {
   let value = output;
   if (typeof value === 'string') {
     try {
       value = JSON.parse(value) as unknown;
     } catch {
-      return { ok: false, reason: 'AI 응답 형식 오류' };
+      return { ok: false, reason: FORMAT_ERROR };
     }
   }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return { ok: false, reason: 'AI 응답 형식 오류' };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return { ok: false, reason: FORMAT_ERROR };
   const record = value as Record<string, unknown>;
-  if (typeof record['verdict'] !== 'string' || !VERDICTS.includes(record['verdict'])) return { ok: false, reason: 'AI 응답 형식 오류' };
-  if (typeof record['reason'] !== 'string' || record['reason'].trim() === '') return { ok: false, reason: 'AI 응답 형식 오류' };
-  if (record['hash'] !== hash) return { ok: false, reason: 'AI 응답 형식 오류 (해시가 다릅니다)' };
-  return { ok: true, verdict: record['verdict'] as DelegateVerdict, reason: record['reason'].trim() };
+  const keys = Object.keys(record).sort();
+  if (keys.length !== 3 || keys[0] !== 'hash' || keys[1] !== 'reason' || keys[2] !== 'verdict') return { ok: false, reason: FORMAT_ERROR };
+  if (typeof record['verdict'] !== 'string' || !VERDICTS.includes(record['verdict'])) return { ok: false, reason: FORMAT_ERROR };
+  const reason = record['reason'];
+  if (typeof reason !== 'string' || reason.trim() === '' || reason.trim().length > MAX_REASON_CHARS || !/[가-힣]/.test(reason)) return { ok: false, reason: FORMAT_ERROR };
+  if (record['hash'] !== hash) return { ok: false, reason: `${FORMAT_ERROR} (해시가 다릅니다)` };
+  return { ok: true, verdict: record['verdict'] as DelegateVerdict, reason: reason.trim() };
 }
 
 export interface DelegateCycleReport {
@@ -110,7 +133,7 @@ export function createDelegateCycle(options: DelegateCycleOptions): DelegateCycl
           // 위임이 멈췄거나 보유자가 없는 동안은 아무것도 남기지 않는다(풀리면 다시 본다). 그 밖의 이유는 사람에게 온 이유로 남긴다 (AI 호출 없음)
           if (TRANSIENT.includes(entry.eligibility.code)) continue;
           const result = engine.delegateDecide({ task_id: entry.taskId, hash: entry.hash, verdict: 'escalate', reason: entry.eligibility.reason });
-          report.decided.push({ taskId: entry.taskId, verdict: 'escalate', outcome: result.ok ? 'recorded' : result.code });
+          report.decided.push({ taskId: entry.taskId, verdict: 'escalate', outcome: result.ok ? (result.recorded === 'shadow' ? 'shadow' : 'recorded') : result.code });
           continue;
         }
         if (reviews >= limit) break;
@@ -124,15 +147,24 @@ export function createDelegateCycle(options: DelegateCycleOptions): DelegateCycl
             break; // 같은 사유로 다음 업무도 막힌다: 이번 tick 의 검토를 멈춘다
           }
           const why = `AI 검토 실패: ${error instanceof Error ? error.message : String(error)}`.slice(0, 200);
-          const failed = engine.delegateDecide({ task_id: entry.taskId, hash: entry.hash, verdict: 'escalate', reason: why });
-          report.decided.push({ taskId: entry.taskId, verdict: 'escalate', outcome: failed.ok ? 'recorded' : failed.code });
+          const failedCost = error instanceof DelegateReviewFailedError ? error.costUsd : 0;
+          const failed = engine.delegateDecide({ task_id: entry.taskId, hash: entry.hash, verdict: 'escalate', reason: why, cost_usd: failedCost, review_failed: true });
+          report.decided.push({ taskId: entry.taskId, verdict: 'escalate', outcome: failed.ok ? (failed.recorded === 'shadow' ? 'shadow' : 'recorded') : failed.code });
           continue;
         }
         const cost = typeof result.costUsd === 'number' && result.costUsd > 0 ? result.costUsd : 0;
         const parsed = parseReviewOutput(result.output, entry.hash);
-        const verdict: DelegateVerdict = parsed.ok ? parsed.verdict : 'escalate';
-        const decision = engine.delegateDecide({ task_id: entry.taskId, hash: entry.hash, verdict, reason: parsed.reason, cost_usd: cost });
-        report.decided.push({ taskId: entry.taskId, verdict, outcome: decision.ok ? 'recorded' : decision.code });
+        let verdict: DelegateVerdict = parsed.ok ? parsed.verdict : 'escalate';
+        let reason = parsed.reason;
+        // 다시 쓰게는 업무당 한 번 (D-B4): 이미 썼으면 모델이 request_changes 를 내도 사람에게 넘긴다. 엔진의 rewrite_limit 는 두 번째 방어선이다
+        const facts = entry.review!.facts;
+        if (verdict === 'request_changes' && facts.rewrites_used >= Math.min(1, facts.rewrites_allowed)) {
+          verdict = 'escalate';
+          reason = 'AI가 다시 쓰게 할 수 있는 횟수를 이미 썼습니다';
+        }
+        // 형식 오류는 판정이 아니다: 그림자 모드에서 일치 통계에 섞이지 않게 실패로 표시한다
+        const decision = engine.delegateDecide({ task_id: entry.taskId, hash: entry.hash, verdict, reason, cost_usd: cost, ...(parsed.ok ? {} : { review_failed: true }) });
+        report.decided.push({ taskId: entry.taskId, verdict, outcome: decision.ok ? (decision.recorded === 'shadow' ? 'shadow' : 'recorded') : decision.code });
       }
       return report;
     },

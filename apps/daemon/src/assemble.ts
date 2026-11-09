@@ -33,6 +33,7 @@ import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, ty
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { createDelegateCycle, type DelegateCycle, type DelegateReviewer } from './delegate-cycle.ts';
+import { createMcpRuntime, type McpOptions, type McpRuntime } from './mcp.ts';
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createConsentHandler, isConsentCommand } from './consent.ts';
@@ -125,6 +126,11 @@ export interface AssembleOptions {
    */
   phone?: PhoneOptions;
   /**
+   * 오너 MCP 서버 커넥터 (ADR-0018). 주면 오너가 선언한 MCP 도구(`mcp_<site>_<as>`)가 게이트웨이에 열릴 수 있고, 쓰기 도구는 워커의 `tools` 에 부작용 도구로 합쳐진다.
+   * 도구가 열려도 명세의 `allowed_tools`, 호출별 정책 판정(`mcp_<site>_<as>.call`), 부작용 원장·초안 승인이 모두 통과해야 한다. 커넥터 프로세스는 `Daemon.mcp.start()` 가 띄운다.
+   */
+  mcp?: McpOptions;
+  /**
    * 결정 위임 (ADR-0016, 제안). 위임(`delegation.mandates`)은 정책이 선언해야 켜진다 — 이 옵션은 위임 *검토자*(AI)를 연결할 뿐이다. 없으면 `Daemon.delegation.advance()` 는 이미 기록된 위임 승인을
    * cooldown 뒤에 풀어 주기만 하고 새 검토를 하지 않는다(적격한 업무는 사람에게 남는다). 위임이 없는 정책에서는 어느 쪽이든 아무것도 쓰지 않는다.
    */
@@ -161,6 +167,20 @@ function withPhone(agent: NonNullable<AssembleOptions['agent']>, phone: PhoneRun
   };
 }
 
+/** MCP 도구 선언과 run 별 실행기를 에이전트 옵션에 더한다. 같은 이름의 도구가 이미 있으면 거부한다 (전화의 withPhone 과 같은 모양) */
+function withMcp(agent: NonNullable<AssembleOptions['agent']>, mcp: McpRuntime): NonNullable<AssembleOptions['agent']> {
+  const existing = agent.tools ?? [];
+  for (const spec of mcp.toolSpecs) {
+    if (existing.some((tool) => tool.tool === spec.tool)) throw new Error(`tool '${spec.tool}' is already configured; the mcp connector provides it`);
+  }
+  const previous = agent.runExecutors;
+  return {
+    ...agent,
+    tools: [...existing, ...mcp.toolSpecs],
+    runExecutors: (context) => new Map([...(previous?.(context) ?? []), ...mcp.executorsFor(context)]),
+  };
+}
+
 export interface AgentRuntimeReadiness {
   dockerVersion: string;
   orphans: OrphanCleanupResult;
@@ -183,6 +203,8 @@ export interface Daemon {
   cycle: ExperimentCycle | null;
   /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
   phone: PhoneRuntime | null;
+  /** MCP 커넥터 런타임 (`start()` 로 커넥터 프로세스를 띄우고 `close()` 로 끝낸다). `mcp` 옵션이 없으면 null */
+  mcp: McpRuntime | null;
   /** 위임 주기 (ADR-0016, 제안): 위임 승인 풀어 주기 + 적격 업무 검토. main 루프가 tick 뒤마다 `advance()` 를 부른다. 소켓에 닿지 않는다 */
   delegation: DelegateCycle;
   /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `contacts` 는 고객 연락처 채널(D-B11), `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
@@ -208,8 +230,10 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   });
   const toolCallPolicy = createToolCallPolicy({ db: options.db, store });
   const phone = options.phone === undefined ? null : createPhoneRuntime({ db: options.db, clock: options.clock, store, options: options.phone });
-  const agentOptions = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
-  const tools = phone === null ? options.tools : { ...(options.tools ?? {}), ...phone.effectTools };
+  const mcp = options.mcp === undefined ? null : createMcpRuntime({ clock: options.clock, options: options.mcp });
+  const withPhoneAgent = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
+  const agentOptions = withPhoneAgent === undefined || mcp === null ? withPhoneAgent : withMcp(withPhoneAgent, mcp);
+  const tools = phone === null && mcp === null ? options.tools : { ...(options.tools ?? {}), ...(phone?.effectTools ?? {}), ...(mcp?.effectTools ?? {}) };
   const executor = options.executor ?? (agentOptions === undefined
     ? undefined
     : createAgentExecutor({ db: options.db, clock: options.clock, agent: agentOptions, toolCallPolicy }));
@@ -299,6 +323,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     measurementSignals,
     cycle,
     phone,
+    mcp,
     delegation,
     handleChannelRequest,
     async prepareAgentRuntime() {

@@ -33,13 +33,15 @@ import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { advanceOrganization } from './org-cycle.ts';
 import { createRepeatFilter } from './log-throttle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
+import { mcpToolDescriptions } from '@aot/agent-runtime';
+import { mcpOptionsFromConfig, type McpConfig } from './mcp-config.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
 import { startPhoneWebhookServer } from './phone-webhook-server.ts';
 import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts';
 
 /** 에이전트 쪽 키(container_agent·research_agent·instance_id·run_log_dir·default_time_limit)는 AgentRuntimeConfig 에 있다 */
 /** 팩 키(pack_dir·pack_values)는 PackConfig 에, 주간 사이클 키(experiment_cycle)는 CycleConfig 에 있다 */
-interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
+interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig, McpConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
   /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 뿐인데 시험 전용이라 데몬은 읽지 않고 시작을 거부한다 (delegate-cycle.ts) */
@@ -84,7 +86,9 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
+  const mcp = mcpOptionsFromConfig(config); // 환경 변수가 비어 있으면 여기서 던진다(시작하지 않는다)
   const { agent, evaluation, productChannel } = buildAgentRuntime(config, instanceDir, {
+    ...(mcp === undefined ? {} : { toolDescriptions: mcpToolDescriptions(mcp.sites.map((site) => site.manifest)) }), // 에이전트에는 오너가 쓴 설명만 보인다
     claudeCodeConsent: () => readClaudeCodeConsent(db), db,
     forbiddenRoots: daemonForbiddenRoots(config, instanceDir),
   });
@@ -110,6 +114,7 @@ async function main(): Promise<void> {
     ...(pack === undefined ? {} : { pack }),
     ...(cycle === undefined ? {} : { cycle }),
     ...(phone === undefined ? {} : { phone: phone.options }),
+    ...(mcp === undefined ? {} : { mcp }),
     ...(delegateReviewer === undefined ? {} : { delegate: { reviewer: delegateReviewer } }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
@@ -126,6 +131,7 @@ async function main(): Promise<void> {
     console.log(`container agent: docker ${readiness.dockerVersion}, orphan containers removed: ${readiness.orphans.removed}/${readiness.orphans.found.length}`);
     for (const failure of readiness.orphans.failures) console.error(`orphan cleanup: ${failure}`);
   }
+  await daemon.mcp?.start(); // 사이트마다 커넥터 프로세스를 띄우고 첫 고정 확인을 한다(서버가 안 보여도 도구가 닫힌 채 시작하고 다시 시도한다)
   const channel = await daemon.startApprovalChannel((name) => console.error(`approval channel: ${String(name)}`));
   const { worker } = daemon;
   const experimentCycle = daemon.cycle;
@@ -206,6 +212,7 @@ async function main(): Promise<void> {
     onError: (error) => console.error('tick failed:', error),
   });
   await webhookServer?.close();
+  await daemon.mcp?.close();
   await channel.close();
   db.close();
   console.log(`aot-daemon ${config.worker_id}: stopped`);

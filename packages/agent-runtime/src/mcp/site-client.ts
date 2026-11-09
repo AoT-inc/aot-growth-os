@@ -1,0 +1,306 @@
+// 사이트 연결 (ADR-0018 §1, 설계 §5.3·§5.5·§5.6). 데몬 쪽에서 사이트마다 커넥터 프로세스 하나를 관리한다.
+//  - 도구별 열림/닫힘(고정 확인): 시작, 목록 변경 알림, 주기, 쓰기 전송 직전에 `list` 로 다시 정한다. 상태가 바뀔 때마다 운영 이벤트를 남긴다.
+//  - 요청 id·호스트 타이머·취소: 커넥터가 답하지 않아도 호스트는 기다리지 않는다. 비정상 종료하면 진행 중 요청을 모두 끝내고 지수 대기(1초→60초)로 다시 띄운다.
+//  - 사이트별 분당 상한(주입된 Clock). 읽기는 즉시 거부, 전송은 상한 안에서 기다린다.
+import type { Clock } from '@aot/domain';
+
+import { realGatewayTimers, type GatewayTimers } from '../gateway.ts';
+
+import type { ConnectorLink, ConnectorSpawner } from './connector-process.ts';
+import {
+  CLIENT_VERSION, DEFAULT_MAX_RESULT_BYTES,
+  type ConnectorCallResult, type ConnectorConfig, type ConnectorError, type ConnectorResponse, type ConnectorServerInfo, type ConnectorToolInfo,
+} from './connector/wire.ts';
+import type { McpSiteManifest, McpToolDecl } from './manifest.ts';
+import { createSiteRateLimiter, type SiteRateLimiter } from './rate-limit.ts';
+import { evaluateTool, type ClosedReason, type ToolState } from './schema-pin.ts';
+
+export type McpSiteEvent =
+  | { type: 'connector_started'; site: string }
+  | { type: 'connector_exit'; site: string; restartInMs: number | null }
+  | { type: 'connector_stderr'; site: string; text: string }
+  | { type: 'list_failed'; site: string; error: string }
+  | { type: 'tool_state'; site: string; tool: string; state: string; previous: string }
+  | { type: 'undeclared_tools'; site: string; names: string[] }
+  | { type: 'server_request_refused'; site: string; method: string };
+
+/** 커넥터와의 통신 자체가 실패했다. `definite`: 요청이 서버에 닿지 않았음이 확실한가 */
+export class McpTransportError extends Error {
+  readonly code: 'timeout' | 'connector_exit' | 'connector_unavailable' | 'aborted' | 'protocol';
+  readonly definite: boolean;
+  constructor(code: McpTransportError['code'], message: string, definite: boolean) {
+    super(message);
+    this.name = 'McpTransportError';
+    this.code = code;
+    this.definite = definite;
+  }
+}
+
+export type McpCallOutcome = { ok: true; result: ConnectorCallResult } | { ok: false; error: ConnectorError };
+
+export interface McpSiteClientOptions {
+  manifest: McpSiteManifest;
+  clock: Clock;
+  spawn: ConnectorSpawner;
+  timers?: GatewayTimers;
+  onEvent?: (event: McpSiteEvent) => void;
+  /** 주기 확인 간격 (기본 10분) */
+  recheckIntervalMs?: number;
+  /** 확인 명령 전용: 선언 밖 도구의 스키마도 받는다(호출은 모두 거부) */
+  inspect?: boolean;
+  /** `list` 요청의 호스트 시간 제한 (기본 45초) */
+  listTimeoutMs?: number;
+}
+
+export interface McpSiteClient {
+  readonly site: string;
+  /** 커넥터를 띄우고 첫 확인까지 마친다. 확인이 실패해도 던지지 않는다(모든 도구가 닫힌 채 다시 시도한다) */
+  start(): Promise<void>;
+  /** 서버 목록을 다시 읽어 도구 상태를 정한다 (직렬: 앞 확인이 끝난 뒤에 새로 읽는다) */
+  refresh(): Promise<void>;
+  /** 에이전트용 도구 이름(`mcp_<site>_<as>`)의 상태 */
+  stateOf(gatewayName: string): ToolState;
+  /** 열린 도구의 고정 스키마(서버가 알린 것이 고정 해시와 같은 경우만) */
+  schemaOf(gatewayName: string): unknown;
+  /** 선언 밖에서 서버가 더한 도구 이름 */
+  undeclared(): readonly string[];
+  /** 확인 명령용: 마지막 `list` 응답 전체 */
+  lastListing(): { tools: readonly ConnectorToolInfo[]; undeclared: readonly string[]; server: ConnectorServerInfo } | null;
+  /** 읽기용: 분당 상한에 걸리면 false */
+  tryAcquire(): boolean;
+  /** 전송용: 상한 안에서 기다린다. 기다려도 안 되면 false */
+  acquireForSend(maxWaitMs: number): Promise<boolean>;
+  call(serverTool: string, args: Record<string, unknown>, options: { timeoutMs: number; signal?: AbortSignal; retrySafe?: boolean }): Promise<McpCallOutcome>;
+  close(): Promise<void>;
+}
+
+const MIN_RESTART_MS = 1000;
+const MAX_RESTART_MS = 60_000;
+
+export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClient {
+  const { manifest, clock } = options;
+  const timers = options.timers ?? realGatewayTimers;
+  const emit = (event: McpSiteEvent): void => {
+    try { options.onEvent?.(event); } catch { /* 운영 이벤트 처리기의 오류가 연결을 깨뜨리지 않게 한다 */ }
+  };
+  const limiter: SiteRateLimiter = createSiteRateLimiter(clock, manifest.rateLimitPerMinute);
+  const recheckMs = options.recheckIntervalMs ?? 600_000;
+  const listTimeoutMs = options.listTimeoutMs ?? 45_000;
+
+  let link: ConnectorLink | null = null;
+  let closing = false;
+  let nextId = 1;
+  let restartDelay = MIN_RESTART_MS;
+  let timerHandle: unknown = null;
+  let queue: Promise<void> = Promise.resolve();
+  let listing: ReturnType<McpSiteClient['lastListing']> = null;
+  let undeclaredKey = '';
+  const pending = new Map<number, { resolve(response: ConnectorResponse): void; reject(error: unknown): void }>();
+  const states = new Map<string, { state: ToolState; schema: unknown }>();
+  for (const tool of manifest.tools) states.set(tool.gatewayName, { state: { status: 'closed', reason: 'unavailable' }, schema: undefined });
+
+  const label = (state: ToolState): string => (state.status === 'open' ? 'open' : `closed:${state.reason}`);
+  const setState = (tool: McpToolDecl, state: ToolState, schema: unknown): void => {
+    const previous = states.get(tool.gatewayName)!;
+    states.set(tool.gatewayName, { state, schema: state.status === 'open' ? schema : undefined });
+    if (label(previous.state) !== label(state)) emit({ type: 'tool_state', site: manifest.site, tool: tool.gatewayName, state: label(state), previous: label(previous.state) });
+  };
+  const closeAll = (reason: ClosedReason): void => {
+    for (const tool of manifest.tools) setState(tool, { status: 'closed', reason }, undefined);
+  };
+
+  const configLine = (): ConnectorConfig => ({
+    type: 'config', site: manifest.site,
+    transport: manifest.transport.kind === 'http' ? { kind: 'http', url: manifest.transport.url } : { kind: 'stdio', command: manifest.transport.command, args: [...manifest.transport.args] },
+    auth: manifest.auth.kind === 'none' ? { kind: 'none' }
+      : manifest.auth.kind === 'bearer' ? { kind: 'bearer', token_env: manifest.auth.tokenEnv }
+        : { kind: 'header', header: manifest.auth.header, value_env: manifest.auth.valueEnv },
+    env_from: { ...manifest.envFrom },
+    tools: manifest.tools.map((tool) => tool.name),
+    max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
+    client_version: CLIENT_VERSION,
+    ...(options.inspect === true ? { inspect: true } : {}),
+  });
+
+  const clearTimer = (): void => {
+    if (timerHandle !== null) timers.clearTimeout(timerHandle);
+    timerHandle = null;
+  };
+  const schedule = (ms: number, run: () => void): void => {
+    clearTimer();
+    if (closing) return;
+    timerHandle = timers.setTimeout(run, ms);
+    (timerHandle as { unref?: () => void } | null)?.unref?.();
+  };
+
+  const onLine = (line: string): void => {
+    let message: unknown;
+    try { message = JSON.parse(line); } catch { return; }
+    if (typeof message !== 'object' || message === null) return;
+    const record = message as { id?: unknown; type?: unknown; method?: unknown };
+    if (record.type === 'list_changed') { void refresh(); return; }
+    if (record.type === 'server_request_refused') {
+      emit({ type: 'server_request_refused', site: manifest.site, method: String(record.method ?? '').slice(0, 200) });
+      return;
+    }
+    if (typeof record.id === 'number') {
+      const entry = pending.get(record.id);
+      if (entry) { pending.delete(record.id); entry.resolve(message as ConnectorResponse); }
+    }
+  };
+
+  const onExit = (exited: ConnectorLink): void => {
+    if (link !== exited) return;
+    link = null;
+    const error = new McpTransportError('connector_exit', 'the connector process exited', false);
+    for (const entry of pending.values()) entry.reject(error);
+    pending.clear();
+    closeAll('unavailable');
+    listing = null;
+    if (closing) return;
+    const delay = restartDelay;
+    restartDelay = Math.min(restartDelay * 2, MAX_RESTART_MS);
+    emit({ type: 'connector_exit', site: manifest.site, restartInMs: delay });
+    schedule(delay, () => { void launch(); });
+  };
+
+  const launch = async (): Promise<void> => {
+    if (closing || link !== null) return;
+    try {
+      const fresh = options.spawn();
+      link = fresh;
+      fresh.onLine(onLine);
+      fresh.onExit(() => onExit(fresh));
+      fresh.onStderr((text) => emit({ type: 'connector_stderr', site: manifest.site, text }));
+      fresh.send(configLine());
+      emit({ type: 'connector_started', site: manifest.site });
+    } catch (error) {
+      link = null;
+      emit({ type: 'list_failed', site: manifest.site, error: error instanceof Error ? error.message : 'could not start the connector' });
+      const delay = restartDelay;
+      restartDelay = Math.min(restartDelay * 2, MAX_RESTART_MS);
+      schedule(delay, () => { void launch(); });
+      return;
+    }
+    await refresh();
+  };
+
+  /** 요청 하나를 보내고 응답을 기다린다. 호스트 타이머가 먼저 끝나면 시간 초과, 신호가 abort 되면 취소 */
+  const request = (body: { op: 'list' } | { op: 'call'; tool: string; arguments: Record<string, unknown>; retry_safe?: boolean }, timeoutMs: number, signal?: AbortSignal): Promise<ConnectorResponse> => {
+    const active = link;
+    if (active === null) return Promise.reject(new McpTransportError('connector_unavailable', 'the connector process is not running', true));
+    if (signal?.aborted === true) return Promise.reject(new McpTransportError('aborted', 'cancelled before it was sent', true));
+    const id = nextId++;
+    return new Promise<ConnectorResponse>((resolve, reject) => {
+      const finish = (): void => {
+        timers.clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        pending.delete(id);
+      };
+      const cancelAtConnector = (): void => {
+        try { active.send({ id: nextId++, op: 'cancel', target_id: id }); } catch { /* 이미 끝난 연결 */ }
+      };
+      const onAbort = (): void => {
+        finish();
+        cancelAtConnector();
+        reject(new McpTransportError('aborted', 'the call was cancelled', false));
+      };
+      const timer = timers.setTimeout(() => {
+        finish();
+        cancelAtConnector();
+        reject(new McpTransportError('timeout', `no answer within ${timeoutMs} ms`, false));
+      }, timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pending.set(id, {
+        resolve: (response) => { finish(); resolve(response); },
+        reject: (error) => { finish(); reject(error); },
+      });
+      try {
+        active.send({ id, ...body });
+      } catch {
+        finish();
+        reject(new McpTransportError('connector_unavailable', 'the connector process is not running', true));
+      }
+    });
+  };
+
+  const doRefresh = async (): Promise<void> => {
+    limiter.count();
+    let response: ConnectorResponse;
+    try {
+      response = await request({ op: 'list' }, listTimeoutMs);
+    } catch (error) {
+      closeAll('unavailable');
+      emit({ type: 'list_failed', site: manifest.site, error: error instanceof Error ? error.message : 'list failed' });
+      if (link !== null) { schedule(restartDelay, () => { void refresh(); }); restartDelay = Math.min(restartDelay * 2, MAX_RESTART_MS); }
+      return;
+    }
+    if (!response.ok || !('tools' in response)) {
+      closeAll('unavailable');
+      emit({ type: 'list_failed', site: manifest.site, error: !response.ok ? `${response.error.code}: ${response.error.message}` : 'unexpected list response' });
+      if (link !== null) { schedule(restartDelay, () => { void refresh(); }); restartDelay = Math.min(restartDelay * 2, MAX_RESTART_MS); }
+      return;
+    }
+    listing = { tools: response.tools, undeclared: response.undeclared, server: response.server };
+    const byName = new Map(response.tools.map((tool) => [tool.name, tool]));
+    for (const decl of manifest.tools) {
+      const server = byName.get(decl.name);
+      const state = evaluateTool(decl, server === undefined ? undefined : { name: server.name, inputSchema: server.input_schema, annotations: server.annotations });
+      setState(decl, state, server?.input_schema);
+    }
+    const key = [...response.undeclared].sort().join('\n');
+    if (key !== undeclaredKey) {
+      undeclaredKey = key;
+      if (response.undeclared.length > 0) emit({ type: 'undeclared_tools', site: manifest.site, names: [...response.undeclared] });
+    }
+    restartDelay = MIN_RESTART_MS;
+    schedule(recheckMs, () => { void refresh(); });
+  };
+
+  const refresh = (): Promise<void> => {
+    const next = queue.then(doRefresh, doRefresh);
+    queue = next.catch(() => undefined);
+    return next.catch(() => undefined);
+  };
+
+  return {
+    site: manifest.site,
+    async start() {
+      await launch();
+    },
+    refresh,
+    stateOf: (name) => states.get(name)?.state ?? { status: 'closed', reason: 'missing' },
+    schemaOf: (name) => states.get(name)?.schema,
+    undeclared: () => listing?.undeclared ?? [],
+    lastListing: () => listing,
+    tryAcquire: () => limiter.tryAcquire(),
+    async acquireForSend(maxWaitMs) {
+      const deadline = clock.nowMs() + maxWaitMs;
+      for (;;) {
+        if (limiter.tryAcquire()) return true;
+        const wait = limiter.waitMs();
+        if (clock.nowMs() + wait > deadline) return false;
+        await new Promise<void>((resolve) => { timers.setTimeout(resolve, wait); });
+      }
+    },
+    async call(serverTool, args, callOptions) {
+      const response = await request(
+        { op: 'call', tool: serverTool, arguments: args, ...(callOptions.retrySafe === true ? { retry_safe: true } : {}) }, callOptions.timeoutMs, callOptions.signal,
+      );
+      if (!response.ok) return { ok: false, error: response.error };
+      if (!('result' in response)) throw new McpTransportError('protocol', 'the connector answered a call with something else', false);
+      return { ok: true, result: response.result };
+    },
+    close() {
+      closing = true;
+      clearTimer();
+      const active = link;
+      link = null;
+      const error = new McpTransportError('connector_exit', 'the site connection was closed', false);
+      for (const entry of pending.values()) entry.reject(error);
+      pending.clear();
+      active?.kill();
+      return Promise.resolve();
+    },
+  };
+}

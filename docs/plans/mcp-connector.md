@@ -1,6 +1,6 @@
 # 설계: 오너 MCP 서버 커넥터 (ADR-0018)
 
-상태: 설계(2026-11-09). 결정은 [ADR-0018](../adr/0018-mcp-connector.md), 운영 절차는 [operations/mcp-sites](../operations/mcp-sites.md).
+상태: 설계(2026-11-09), 구현됨(아래 "구현 기록"). 결정은 [ADR-0018](../adr/0018-mcp-connector.md), 운영 절차는 [operations/mcp-sites](../operations/mcp-sites.md).
 
 ## 0. 문제와 목표
 오너 사이트(웹·프로젝트·강좌·인증)의 MCP 도구를 에이전트가 쓰게 하되, 지금의 안전 규칙(역할별 도구 선언, 호출별 정책 판정, 부작용 원장, 초안 승인, 비밀 비노출, 외부 입력 표시)을 하나도 건너뛰지 않는다. 에이전트는 MCP 서버를 직접 보지 못하고 게이트웨이 도구만 본다.
@@ -161,3 +161,15 @@ W1 선언·해시·인자 검사 → W2 커넥터(MCP 클라이언트·전송) +
 | C10 | 커넥터 격리 수준 | 별도 프로세스, 같은 OS 사용자 | 컨테이너(에이전트와 같은 Docker 규칙) |
 | C11 | 사설 주소의 http 서버(NAS 등) | https만, http는 루프백만 | 사설망 http 허용 표시 추가 |
 | C12 | 주기 확인 간격 | 10분 | 사이트마다 |
+
+## 구현 기록 (2026-11-09)
+W1~W8 을 설계대로 구현했다. 설계와 달라진 곳(가장 가까운 안전한 선택):
+- **원장 선언의 `effect_key_carrier`**: 설계는 멱등 선언이 있으면 `'property'` 였으나, `lookup` 이 없는 도구가 carrier 를 선언하면 `validateEffectToolDeclaration` 이 거부한다(`carrier_without_lookup`). 그래서 carrier 는 선언하지 않는다. 멱등 키는 인자(`key_argument`)로 싣고 `idempotency: {supported:true, retention_ms}` 만 선언한다.
+- **서버 도구 이름**: 설계는 이름도 `^[a-z][a-z0-9_]{0,39}$` 였으나 서버 이름은 대시·점이 흔해 `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` 까지 받고, 에이전트용 이름(`as`, 없으면 `name`)만 `^[a-z][a-z0-9_]{0,39}$` 로 강제한다. 대시가 든 이름은 `as` 가 필요하다.
+- **`list` 의 `inspect` 모드**: 확인 명령(`mcp-pin`)은 선언 밖 도구의 스키마도 봐야 하므로 config 줄에 `inspect:true` 를 더했다. 이 모드의 커넥터는 모든 `call` 을 `undeclared_tool` 로 거부한다. 운영 데몬은 이 모드를 쓰지 않는다.
+- **`call` 의 `retry_safe`**: HTTP 세션 만료(404)에서 한 번 다시 초기화해 재시도하는 것은 호스트가 `retry_safe:true` 로 보낸 호출(읽기)만이다. 쓰기는 다시 보내지 않고 `session_expired`(definite 아님) 오류를 낸다(→ `unknown`).
+- **HTTP 전송의 서버→클라이언트 GET 스트림은 열지 않는다.** 목록 변경 알림은 POST 응답 SSE 로 온 것만 받는다. 놓친 변경은 주기 확인(10분)과 쓰기 전송 직전 확인이 잡는다.
+- **definite 판정**: 연결 거부·DNS 실패·인증서 오류, 초기화 실패, 리다이렉트(3xx), 401/403, 선언 밖 도구, 설정 오류는 definite. 그 밖의 HTTP 상태(5xx 등)·시간 초과·서버/커넥터 종료·JSON-RPC 오류 응답은 definite 가 아니다(쓰기는 `unknown`).
+- **오너 설명 전달**: `mcpToolDescriptions()` 를 데몬이 `AgentRuntimeOverrides.toolDescriptions` 로 넘겨 Claude Code 브리지의 도구 설명이 오너 문장이 된다(`main.ts`).
+- 가짜 서버 각본에 `paged`, `big`, `session_expires`, `is_error`, `drifts_silently`(알림 없는 변경) 를 더했다.
+- `list` 요청도 분당 상한을 센다(막지 않음). 읽기 실행기는 호스트 타이머를 `timeout_ms + 1초` 로 둬 게이트웨이 타임아웃이 먼저 끝나게 한다.

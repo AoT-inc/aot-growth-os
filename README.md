@@ -20,7 +20,7 @@
 | [docs/plans/phase-a.md](docs/plans/phase-a.md) | Phase A 구현 계획 (패키지 순서, 필수 테스트 매핑, 부트스트랩, 스파이크) |
 | [docs/plans/a0-decisions.md](docs/plans/a0-decisions.md) | A0 착수 전 사람 결정 (런타임, 시드 조직, 라이선스, 확장 단위는 2026-10-19 결정. 측정 신호, 승인자, 승인 채널은 대기) |
 | [docs/security/public-repository.md](docs/security/public-repository.md) | 공개 저장소에 두는 것과 두지 않는 것 |
-| [docs/operations/](docs/operations/recovery.md) | 복구·중복 방지([recovery](docs/operations/recovery.md)), 평가 운영([evaluation](docs/operations/evaluation.md)), 읽기 전용 검토 화면([review-web](docs/operations/review-web.md)) |
+| [docs/operations/](docs/operations/recovery.md) | 복구·중복 방지([recovery](docs/operations/recovery.md)), 평가 운영([evaluation](docs/operations/evaluation.md)), 읽기 전용 검토 화면([review-web](docs/operations/review-web.md)), 오너 사이트의 MCP 서버 붙이기([mcp-sites](docs/operations/mcp-sites.md)) |
 | [docs/security/trust-boundaries.md](docs/security/trust-boundaries.md) | 신뢰 경계와 위협 시나리오 |
 | [docs/open-questions.md](docs/open-questions.md) | 미결정 사항과 결정 기한 |
 
@@ -50,6 +50,7 @@ npm run check:schema     # sqlite3 :memory: < docs/schema/schema.sql
 npm run scan:secrets     # gitleaks (--redact); 이력은 npm run scan:history
 npm run hooks:install    # 커밋 전 스캔 훅 (git config core.hooksPath .githooks)
 npm run review-web       # 읽기 전용 검토 화면 (승인 대기·시험 현황·증거), docs/operations/review-web.md
+npm run mcp-pin -- <설정> <site>   # 오너 MCP 서버의 도구 목록·스키마 해시 확인 (설정을 쓰지 않는다), docs/operations/mcp-sites.md
 ```
 
 설정은 `*.example`(`.env.example`, `config/daemon.config.example.json`)만 저장소에 두고 실제 값은 `instance/`와 환경 변수로 주입한다.

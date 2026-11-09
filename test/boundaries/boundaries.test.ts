@@ -15,6 +15,10 @@ const LEGAL: Record<string, string> = {
   'apps/daemon/src/uses-packages.ts': "import { agent_runtime } from '@aot/agent-runtime';\nexport const a = agent_runtime;\n",
   // V8: 팩이 코어의 공개 API(src/index.ts)를 상대 경로로 참조하는 것은 허용
   'packs/example-marketing/src/uses-public-api.ts': "import { task_engine } from '../../../packages/task-engine/src/index.ts';\nexport const a = task_engine;\n",
+  // 커넥터는 node: 내장 모듈과 같은 폴더의 파일은 import 할 수 있다
+  'packages/agent-runtime/src/mcp/connector/legal.ts': "import { createHash } from 'node:crypto';\nimport { helper } from './helper.ts';\nexport const a = [createHash, helper];\n",
+  'packages/agent-runtime/src/mcp/connector/helper.ts': 'export const helper = 1;\n',
+  'packages/agent-runtime/src/mcp/tools.ts': 'export const impl = 1;\n',
   'packages/domain/src/a.ts': "import { b } from './b.ts';\nexport const a = b;\n",
   'packages/domain/src/b.ts': 'export const b = 1;\n',
   // 연결 열기 파일은 node:sqlite 를 import 할 수 있다
@@ -39,6 +43,11 @@ const VIOLATIONS: ViolationCase[] = [
     content: "import { impl } from '../../task-engine/src/internal/impl.ts';\nexport const v = impl;\n", rules: ['only-public-api-across-packages'] },
   { name: 'V3b apps -> package internal', file: 'apps/daemon/src/v3b.ts',
     content: "import { impl } from '../../../packages/domain/src/internal/impl.ts';\nexport const v = impl;\n", rules: ['only-public-api-across-packages'] },
+  // ADR-0018: MCP 커넥터 프로세스는 node: 내장 모듈과 같은 폴더의 파일만 import 한다
+  { name: 'V9 mcp connector -> @aot package', file: 'packages/agent-runtime/src/mcp/connector/v9.ts',
+    content: "import { domain } from '@aot/domain';\nexport const v = domain;\n", rules: ['mcp-connector-isolated'] },
+  { name: 'V9b mcp connector -> host-side mcp module', file: 'packages/agent-runtime/src/mcp/connector/v9b.ts',
+    content: "import { impl } from '../tools.ts';\nexport const v = impl;\n", rules: ['mcp-connector-isolated'] },
   { name: 'V4 pack -> task-engine internal', file: 'packs/example-marketing/src/v4.ts',
     content: "import { impl } from '../../../packages/task-engine/src/internal/impl.ts';\nexport const v = impl;\n",
     rules: ['only-public-api-across-packages', 'packs-not-to-core-internals'] },

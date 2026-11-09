@@ -3,7 +3,7 @@
 //  - 읽기 실행기: 열림 확인 → 인자 1단계 검사 → 분당 상한(즉시 거부) → 커넥터 호출. 호출이 취소·시간 초과되면 서버에 취소를 보낸다.
 //  - 쓰기 실행기: `bindToEffectLedger` 로 만든다. 열림 확인·인자 검사 뒤 원장 입구(`perform`)로만 보낸다. 서버 응답 본문은 에이전트에 돌려주지 않는다(상태만).
 //  - 부작용 도구(`createMcpEffectTools`): 원장이 전송 단계에서 부른다. 보내기 직전에 목록을 다시 읽어 닫혔으면 보내지 않고 `failed`, 멱등 키 인자는 이때 호스트가 넣는다.
-import { canonicalJson, sha256Hex } from '@aot/domain';
+import { canonicalJson, sha256Hex, type Clock } from '@aot/domain';
 
 import type { JsonObject } from '../contract.ts';
 import { bindToEffectLedger, type EffectLedgerRunner } from '../effect-ledger.ts';
@@ -15,12 +15,15 @@ import { McpTransportError, type McpSiteClient } from './site-client.ts';
 
 /** 읽기·쓰기 도구의 operation 이름. 정책 행위는 `mcp_<site>_<as>.call` */
 export const MCP_OPERATION = 'call';
+/** 쓰기 도구의 게이트웨이 타임아웃에 더하는 여유 */
+export const WRITE_TIMEOUT_MARGIN_MS = 5000;
 
 /** 에이전트에 내줄 수 있는 MCP 도구 선언. 명세의 `allowed_tools` 와 도구·operation 이 맞는 것만 그 run 에 열린다 */
 export function mcpToolSpecs(manifest: McpSiteManifest): GatewayToolSpec[] {
   return manifest.tools.map((tool) => ({
     tool: tool.gatewayName, operation: MCP_OPERATION, target: tool.target, scope: tool.scope, impact: tool.impact, sideEffect: tool.sideEffect,
-    resultOrigin: 'external_untrusted', timeoutMs: manifest.timeoutMs,
+    // 쓰기는 전송 전체(목록 확인 + 속도 제한 대기 + 호출)가 timeout_ms 안에 끝난다: 게이트웨이 타임아웃이 먼저 끝나 결과를 모르게 되지 않도록 여유를 둔다
+    resultOrigin: 'external_untrusted', timeoutMs: tool.sideEffect ? manifest.timeoutMs + WRITE_TIMEOUT_MARGIN_MS : manifest.timeoutMs,
     ...(tool.unitCostUsd === null ? {} : { unitCost: { usd: tool.unitCostUsd } }),
   }));
 }
@@ -41,7 +44,7 @@ const reasonOf = (site: McpSiteClient, tool: McpToolDecl): string | null => {
 function preflight(site: McpSiteClient, tool: McpToolDecl, args: unknown): string | null {
   const closed = reasonOf(site, tool);
   if (closed !== null) return `mcp tool ${tool.gatewayName} is ${closed}`;
-  const problem = checkArguments(site.schemaOf(tool.gatewayName), args);
+  const problem = checkArguments(site.schemaOf(tool.gatewayName), args, tool.idempotency === null ? {} : { hostSetKey: tool.idempotency.keyArgument });
   if (problem !== null) return `mcp tool ${tool.gatewayName}: ${problem}`;
   if (tool.idempotency !== null && args !== null && typeof args === 'object' && Object.hasOwn(args, tool.idempotency.keyArgument)) {
     return `mcp tool ${tool.gatewayName}: '${tool.idempotency.keyArgument}' is set by the host and must not be supplied`;
@@ -83,7 +86,8 @@ function writeExecutor(site: McpSiteClient, tool: McpToolDecl, ledger: McpEffect
       if (problem !== null) throw new Error(problem);
       const args = request.args as JsonObject;
       const outcome = await perform(tool.gatewayName, {
-        stepId: `mcp-${sha256Hex(canonicalJson(args)).slice(0, 16)}`, action: MCP_OPERATION, target: tool.target, request: { arguments: args },
+        // 도구 이름이 단계 id 에 들어간다: 인자가 같은 서로 다른 쓰기 도구(또는 사이트)가 한 원장 항목·초안을 공유하지 않는다
+        stepId: `mcp:${tool.gatewayName}:${sha256Hex(canonicalJson(args)).slice(0, 16)}`, action: MCP_OPERATION, target: tool.target, request: { arguments: args },
       });
       return { result: outcome.state === 'drafted' ? { status: 'drafted', draft_id: outcome.draftId ?? null } : { status: outcome.state, effect_id: outcome.effectId ?? null } };
     },
@@ -105,7 +109,7 @@ export interface McpEffectTool {
 }
 
 /** 부작용 도구: 쓰기 선언마다 하나. 원장이 전송 단계에서 부르고, 서버 호출은 여기서만 일어난다 */
-export function createMcpEffectTools(manifest: McpSiteManifest, site: McpSiteClient): Record<string, McpEffectTool> {
+export function createMcpEffectTools(manifest: McpSiteManifest, site: McpSiteClient, clock: Clock): Record<string, McpEffectTool> {
   const out: Record<string, McpEffectTool> = {};
   for (const tool of manifest.tools) {
     if (!tool.sideEffect || tool.approval === null) continue;
@@ -118,20 +122,25 @@ export function createMcpEffectTools(manifest: McpSiteManifest, site: McpSiteCli
         const request = call.request as { arguments?: unknown } | null;
         const approved = request?.arguments;
         if (approved === null || typeof approved !== 'object' || Array.isArray(approved)) return failed;
+        // 전송 전체(목록 확인 + 속도 제한 대기 + 호출)에 하나의 기한을 둔다: 원장의 정책·펜싱 확인 뒤 오래 지난 요청이 나가지 않게 한다.
+        // 기한 안에 서버를 부를 수 없으면 보내지 않고 definite 실패다.
+        const deadline = clock.nowMs() + manifest.timeoutMs;
+        const remaining = (): number => deadline - clock.nowMs();
+        const usable = (): boolean => reasonOf(site, tool) === null && checkArguments(site.schemaOf(tool.gatewayName), approved, tool.idempotency === null ? {} : { hostSetKey: tool.idempotency.keyArgument }) === null;
         // 보내기 직전 확인: 다시 읽어 닫혔으면 서버에 닿지 않고 실패로 끝난다
-        await site.refresh();
-        if (reasonOf(site, tool) !== null) return failed;
-        if (checkArguments(site.schemaOf(tool.gatewayName), approved) !== null) return failed;
+        if (!(await site.refresh({ timeoutMs: remaining() })) || !usable()) return failed;
         // 사람이 승인한 인자 + 호스트가 넣는 멱등 키 하나. 승인된 인자가 키 이름을 이미 갖고 있으면 변조로 보고 보내지 않는다
         const args: Record<string, unknown> = { ...(approved as Record<string, unknown>) };
         if (tool.idempotency !== null) {
           if (Object.hasOwn(args, tool.idempotency.keyArgument)) return failed;
           args[tool.idempotency.keyArgument] = call.effectKey;
         }
-        if (!(await site.acquireForSend(manifest.timeoutMs))) return failed;
+        if (remaining() <= 0 || !(await site.acquireForSend(remaining()))) return failed;
+        // 속도 제한을 기다리는 동안 상태가 바뀌었을 수 있다: 부르기 직전에 상태와 기한을 다시 확인한다
+        if (!usable() || remaining() <= 0) return failed;
         let outcome;
         try {
-          outcome = await site.call(tool.name, args, { timeoutMs: manifest.timeoutMs });
+          outcome = await site.call(tool.name, args, { timeoutMs: remaining() });
         } catch (error) {
           if (error instanceof McpTransportError && error.definite) return failed; // 커넥터에 닿지 못했다
           throw error; // 시간 초과·커넥터 종료: 서버에 닿았는지 알 수 없다 → 원장이 unknown 으로 기록한다 (자동 재전송 없음)

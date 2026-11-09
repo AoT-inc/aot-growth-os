@@ -4,8 +4,6 @@ import type { Clock } from '@aot/domain';
 export interface SiteRateLimiter {
   /** 토큰이 있으면 하나 쓰고 true. 없으면 false (읽기는 즉시 거부) */
   tryAcquire(): boolean;
-  /** 확인용 호출: 막지 않고 토큰이 있으면 센다 */
-  count(): void;
   /** 다음 토큰까지 남은 시간(ms). 지금 있으면 0 */
   waitMs(): number;
 }
@@ -25,10 +23,6 @@ export function createSiteRateLimiter(clock: Clock, perMinute: number): SiteRate
       if (tokens < 1) return false;
       tokens -= 1;
       return true;
-    },
-    count() {
-      refill();
-      tokens = Math.max(0, tokens - 1);
     },
     waitMs() {
       refill();

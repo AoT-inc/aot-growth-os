@@ -13,7 +13,7 @@ export const schemaHash = (schema: unknown): string => `sha256:${sha256Hex(canon
 
 export type ToolState =
   | { readonly status: 'open' }
-  | { readonly status: 'closed'; readonly reason: 'drift' | 'missing' | 'hint_conflict' | 'unavailable' | 'invalid_declaration' };
+  | { readonly status: 'closed'; readonly reason: 'drift' | 'missing' | 'hint_conflict' | 'unavailable' | 'invalid_declaration' | 'duplicate' };
 
 export type ClosedReason = Extract<ToolState, { status: 'closed' }>['reason'];
 
@@ -36,10 +36,19 @@ export function evaluateTool(decl: McpToolDecl, server: ServerToolView | undefin
   if (decl.impact === 'read' && !decl.ackServerHintConflict && hintConflict(server.annotations)) return { status: 'closed', reason: 'hint_conflict' };
   if (decl.idempotency !== null) {
     const properties = propertiesOf(server.inputSchema);
-    if (properties === null || !Object.hasOwn(properties, decl.idempotency.keyArgument)) return { status: 'closed', reason: 'invalid_declaration' };
+    // 호스트가 문자열(effect key)을 넣는 자리다: 스키마에 있어야 하고, 그 형식이 문자열을 받아야 한다
+    if (properties === null || !Object.hasOwn(properties, decl.idempotency.keyArgument) || !acceptsString(properties[decl.idempotency.keyArgument])) return { status: 'closed', reason: 'invalid_declaration' };
   }
   return { status: 'open' };
 }
+
+/** 속성 스키마가 문자열을 받는가 (형식 선언이 없으면 무엇이든 받는다) */
+const acceptsString = (property: unknown): boolean => {
+  if (typeof property !== 'object' || property === null) return true;
+  const type = (property as { type?: unknown }).type;
+  if (type === undefined) return true;
+  return type === 'string' || (Array.isArray(type) && type.includes('string'));
+};
 
 const propertiesOf = (schema: unknown): Record<string, unknown> | null => {
   if (typeof schema !== 'object' || schema === null) return null;
@@ -64,7 +73,7 @@ const typeMatches = (type: string, value: unknown): boolean => {
  * 인자 1단계 검사: 고정 스키마의 `properties` 밖 키, `required` 누락, 최상위 값의 원시 형식 불일치는 거부한다. 깊은 검증은 서버 몫이다.
  * 문제가 없으면 null, 있으면 사유 문자열.
  */
-export function checkArguments(schema: unknown, args: unknown): string | null {
+export function checkArguments(schema: unknown, args: unknown, options: { hostSetKey?: string } = {}): string | null {
   if (typeof args !== 'object' || args === null || Array.isArray(args)) return 'arguments must be an object';
   if (Buffer.byteLength(JSON.stringify(args), 'utf8') > MAX_ARGUMENT_BYTES) return `arguments exceed ${MAX_ARGUMENT_BYTES} bytes`;
   const properties = propertiesOf(schema) ?? {};
@@ -78,7 +87,8 @@ export function checkArguments(schema: unknown, args: unknown): string | null {
   }
   const required = typeof schema === 'object' && schema !== null ? (schema as { required?: unknown }).required : undefined;
   if (Array.isArray(required)) {
-    for (const key of required) if (typeof key === 'string' && !Object.hasOwn(record, key)) return `argument '${key}' is required`;
+    // 멱등 키 인자는 호스트가 전송 때 채우므로 필수 검사에서 뺀다 (에이전트도 초안도 갖지 않는다)
+    for (const key of required) if (typeof key === 'string' && key !== options.hostSetKey && !Object.hasOwn(record, key)) return `argument '${key}' is required`;
   }
   return null;
 }

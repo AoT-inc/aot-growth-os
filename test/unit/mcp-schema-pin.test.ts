@@ -87,12 +87,3 @@ test('rate limiter: capacity, refill over time with an injected clock, clock goi
   clock.set('2020-01-01T00:00:00.000Z');
   assert.equal(limiter.tryAcquire(), false, 'a clock that goes backwards gives no tokens');
 });
-
-test('count() consumes a token when there is one but never blocks (list checks)', () => {
-  const clock = new FakeClock();
-  const limiter = createSiteRateLimiter(clock, 2);
-  limiter.count();
-  limiter.count();
-  limiter.count();
-  assert.equal(limiter.tryAcquire(), false);
-});

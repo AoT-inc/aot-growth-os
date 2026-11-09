@@ -10,12 +10,13 @@ export function canonicalJson(value: unknown): string {
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
+    // `out[key] = …` 는 `__proto__` 키를 자기 키로 만들지 않고 프로토타입을 바꾼다. fromEntries 는 항상 자기 키로 정의한다
+    const entries: [string, unknown][] = [];
     for (const key of Object.keys(value).sort()) {
       const item = (value as Record<string, unknown>)[key];
-      if (item !== undefined) out[key] = sortKeys(item);
+      if (item !== undefined) entries.push([key, sortKeys(item)]);
     }
-    return out;
+    return Object.fromEntries(entries);
   }
   return value;
 }

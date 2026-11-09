@@ -21,9 +21,8 @@ export function createRedactor(secrets: readonly string[]): Redactor {
       if (typeof item === 'string') return text(item);
       if (Array.isArray(item)) return item.map(walk);
       if (item !== null && typeof item === 'object') {
-        const out: Record<string, unknown> = {};
-        for (const [key, child] of Object.entries(item)) out[text(key)] = walk(child);
-        return out;
+        // `__proto__` 키도 자기 키로 남겨 가린다(대입이면 프로토타입이 바뀌어 값이 가려지지 않은 채 사라진다)
+        return Object.fromEntries(Object.entries(item).map(([key, child]) => [text(key), walk(child)]));
       }
       return item;
     };
@@ -31,3 +30,8 @@ export function createRedactor(secrets: readonly string[]): Redactor {
   };
   return { text, deep };
 }
+
+/** 서버가 정한 문자열(이름 등)을 사람이 읽는 출력·로그에 싣기 전에 제어 문자를 `?` 로 바꾸고 길이를 자른다 */
+// eslint-disable-next-line no-control-regex -- 제어 문자를 찾는 것이 목적이다
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+export const safeText = (value: string, max = 200): string => value.replace(CONTROL_CHARS, '?').slice(0, max);

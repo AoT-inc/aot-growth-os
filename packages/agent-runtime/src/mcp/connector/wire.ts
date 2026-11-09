@@ -65,7 +65,9 @@ export type ConnectorResponse =
 
 export type ConnectorNotice =
   | { type: 'list_changed' }
-  | { type: 'server_request_refused'; method: string };
+  | { type: 'server_request_refused'; method: string }
+  /** 서버 요청이 분당 상한을 넘어 조용히 버려진 건수 (한 번에 합쳐 알린다) */
+  | { type: 'server_requests_suppressed'; count: number };
 
 /** 커넥터 안에서 쓰는 오류: `definite` 는 서버에 요청이 닿지 않았음이 확실한가 */
 export class ConnectorFailure extends Error {

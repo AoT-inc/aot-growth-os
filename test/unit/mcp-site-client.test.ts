@@ -196,7 +196,8 @@ test('call: connector-reported errors come back as values; a call while the conn
 
 test('rate limit: reads are refused at once over the limit; a send waits (bounded) and gives up when the wait would exceed the bound', async () => {
   const r = rig(stdioSiteRaw('normal', undefined, { rate_limit_per_minute: 2 }));
-  await r.client.start(); // 첫 list 가 토큰 하나를 센다
+  await r.client.start(); // 목록 확인(list)은 토큰을 쓰지 않는다
+  assert.equal(r.client.tryAcquire(), true);
   assert.equal(r.client.tryAcquire(), true);
   assert.equal(r.client.tryAcquire(), false);
   assert.equal(await r.client.acquireForSend(1000), false, 'the next token is 30s away: bounded wait gives up without waiting');

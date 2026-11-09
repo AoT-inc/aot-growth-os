@@ -14,7 +14,7 @@ export interface PinRow {
   name: string;
   hash: string;
   annotations: Record<string, unknown> | null;
-  status: 'open' | 'drift' | 'missing' | 'hint_conflict' | 'undeclared' | 'invalid_declaration';
+  status: 'open' | 'drift' | 'missing' | 'hint_conflict' | 'undeclared' | 'invalid_declaration' | 'duplicate';
 }
 
 export interface PinReport {
@@ -28,9 +28,13 @@ export function comparePins(manifest: McpSiteManifest, listing: { tools: readonl
   const rows: PinRow[] = [];
   const declared = new Map(manifest.tools.map((tool) => [tool.name, tool]));
   const seen = new Set<string>();
+  const counts = new Map<string, number>();
+  for (const tool of listing.tools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
   for (const tool of listing.tools) {
     seen.add(tool.name);
     const decl = declared.get(tool.name);
+    // 같은 이름이 둘 이상이면 어느 쪽이 진짜인지 알 수 없다 (호스트도 그 도구를 닫는다)
+    if ((counts.get(tool.name) ?? 0) > 1) { rows.push({ name: tool.name, hash: tool.input_schema_sha256, annotations: tool.annotations, status: 'duplicate' }); continue; }
     if (decl === undefined) { rows.push({ name: tool.name, hash: tool.input_schema_sha256, annotations: tool.annotations, status: 'undeclared' }); continue; }
     const state = evaluateTool(decl, { name: tool.name, inputSchema: tool.input_schema, annotations: tool.annotations });
     rows.push({ name: tool.name, hash: tool.input_schema_sha256, annotations: tool.annotations, status: state.status === 'open' ? 'open' : state.reason === 'unavailable' ? 'missing' : state.reason });
@@ -40,9 +44,10 @@ export function comparePins(manifest: McpSiteManifest, listing: { tools: readonl
 }
 
 export function formatPinReport(report: PinReport): string {
-  const lines = [`site ${report.site}: server ${report.server.name} ${report.server.version} (MCP ${report.server.protocol_version})`];
+  // 서버가 정한 문자열은 JSON 으로 따옴표를 쳐서 출력한다(제어 문자·줄바꿈이 터미널을 속이지 못한다)
+  const lines = [`site ${report.site}: server ${JSON.stringify(report.server.name)} ${JSON.stringify(report.server.version)} (MCP ${JSON.stringify(report.server.protocol_version)})`];
   for (const row of report.rows) {
-    lines.push(`${row.status.padEnd(18)} ${row.name}`);
+    lines.push(`${row.status.padEnd(18)} ${JSON.stringify(row.name)}`);
     lines.push(`${' '.repeat(19)}input_schema_sha256: ${row.hash}`);
     lines.push(`${' '.repeat(19)}annotations: ${row.annotations === null ? '(none)' : JSON.stringify(row.annotations)}`);
   }

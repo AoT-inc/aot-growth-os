@@ -24,7 +24,8 @@ export const CONNECTOR_ENTRY = fileURLToPath(new URL('./connector/main.ts', impo
 export function spawnConnectorProcess(secretEnv: Readonly<Record<string, string>>, entry: string = CONNECTOR_ENTRY): ConnectorLink {
   const env: Record<string, string> = { ...secretEnv };
   if (process.env['PATH'] !== undefined) env['PATH'] = process.env['PATH'];
-  const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env });
+  // detached: 커넥터가 새 프로세스 그룹의 리더가 된다. 커넥터가 띄운 stdio MCP 서버도 같은 그룹이라 그룹 전체를 죽이면 고아가 남지 않는다
+  const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true });
   let lineHandler: (line: string) => void = () => undefined;
   let exitHandler: () => void = () => undefined;
   let stderrHandler: (text: string) => void = () => undefined;
@@ -33,14 +34,23 @@ export function spawnConnectorProcess(secretEnv: Readonly<Record<string, string>
   child.stdout.on('data', (chunk: Buffer) => {
     for (const event of reader.push(chunk)) {
       if (event.kind === 'line') lineHandler(event.line);
-      else child.kill('SIGKILL'); // 줄 하나가 상한을 넘었다: 죽이고 호스트가 다시 띄운다
+      else killGroup(); // 줄 하나가 상한을 넘었다: 죽이고 호스트가 다시 띄운다
     }
   });
   child.stderr.on('data', (chunk: Buffer) => stderrHandler(chunk.toString('utf8').slice(0, 1000)));
   child.stdin.on('error', () => undefined);
+  /** 커넥터와 그 자식(stdio MCP 서버)이 든 프로세스 그룹 전체를 죽인다. 그룹이 이미 없으면 커넥터만 죽인다 */
+  const killGroup = (): void => {
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      child.kill('SIGKILL');
+    }
+  };
   const done = (): void => {
     if (exited) return;
     exited = true;
+    killGroup(); // 커넥터가 죽었어도 그 그룹에 남은 서버 프로세스를 거둔다
     exitHandler();
   };
   child.on('exit', done);
@@ -54,8 +64,8 @@ export function spawnConnectorProcess(secretEnv: Readonly<Record<string, string>
     onExit: (handler) => { exitHandler = handler; },
     onStderr: (handler) => { stderrHandler = handler; },
     kill() {
-      if (exited) return;
-      child.kill('SIGKILL');
+      // 커넥터가 먼저 죽어도 서버가 남지 않도록, 커넥터가 이미 끝났어도 그룹에 신호를 보낸다
+      killGroup();
     },
   };
 }

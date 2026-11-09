@@ -127,7 +127,7 @@ test('5. schema drift: after the first list the server changes unit_update; the 
   assert.equal((await gateway.call(SEARCH_TOOL, { query: 'x' })).ok, true, 'the other tool keeps working');
 });
 
-test('6. secrets: the server echoes the token it received; the agent-visible result, the call record, and the connector config line contain none of it', async (t) => {
+test('6. secrets: the server echoes the token it received; the agent-visible result, call records, run log and site events contain none of it (the config line is checked in mcp-connector.test.ts)', async (t) => {
   const site = await startStdioSite(t, 'echoes_secret');
   const { gateway } = gatewayOn(site);
   const response = await gateway.call(SEARCH_TOOL, { query: 'abc' });
@@ -176,8 +176,8 @@ test('per-site rate limit through the gateway: reads over the limit are refused 
   const { gateway } = gatewayOn(site);
   const outcomes: boolean[] = [];
   for (let i = 0; i < 4; i += 1) outcomes.push((await gateway.call(SEARCH_TOOL, { query: `q${i}` })).ok);
-  assert.deepEqual(outcomes, [true, true, false, false], 'the first list took one token of three');
-  assert.equal(callsTo(site.recordPath).length, 2);
+  assert.deepEqual(outcomes, [true, true, true, false], 'the list check does not take a token');
+  assert.equal(callsTo(site.recordPath).length, 3);
   clock.advance(60_000);
   assert.equal((await gateway.call(SEARCH_TOOL, { query: 'later' })).ok, true);
   await flush();

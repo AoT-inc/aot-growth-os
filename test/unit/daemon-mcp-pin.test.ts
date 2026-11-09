@@ -26,9 +26,9 @@ test('runMcpPin starts the real connector against the fake server, prints hashes
   const before = readFileSync(configPath, 'utf8');
   const result = await runMcpPin([configPath, 'course'], SECRET_ENV);
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, new RegExp(`open +units_search\\n +input_schema_sha256: ${SEARCH_HASH}`));
-  assert.match(result.output, new RegExp(`undeclared +unit_update\\n +input_schema_sha256: ${UPDATE_HASH}`));
-  assert.match(result.output, /undeclared +admin_delete/);
+  assert.match(result.output, new RegExp(`open +"units_search"\\n +input_schema_sha256: ${SEARCH_HASH}`));
+  assert.match(result.output, new RegExp(`undeclared +"unit_update"\\n +input_schema_sha256: ${UPDATE_HASH}`));
+  assert.match(result.output, /undeclared +"admin_delete"/);
   assert.match(result.output, /annotations: \{"readOnlyHint":true\}/);
   assert.ok(!result.output.includes('SERVER DESCRIPTION'), 'server descriptions are not printed');
   assert.equal(readFileSync(configPath, 'utf8'), before);

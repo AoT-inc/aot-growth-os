@@ -52,7 +52,7 @@ npm run mcp-pin -- instance/daemon.config.json course
 | `scope` | `internal`(내부만) · `customer`(학생·고객에게 보임) · `public`(공개) |
 | `target` | 정책이 보는 대상. 예: `site:course/units` |
 | `approval` | 쓰기에서 **필수**. 바깥으로 나가는 모든 쓰기(게시, 학생·고객에게 가는 글, 인증서 발급)는 `draft`: 에이전트가 정확한 인자를 초안으로 남기고 사람이 그 초안을 승인한 뒤 호스트가 그 바이트 그대로 보낸다. `scope` 는 내용을 미리 확정할 수 없는 동작에만 쓴다 |
-| `idempotency` | 서버가 중복 요청 방지용 인자를 받는 쓰기에만: `{"key_argument":"request_id","retention_ms":86400000}`. 이 인자는 스키마에 있어야 하며 전송 때 호스트가 채운다(에이전트가 넣으면 거부). 없으면 응답을 잃은 쓰기는 자동 재전송되지 않는다 |
+| `idempotency` | 서버가 중복 요청 방지용 인자를 받는 쓰기에만: `{"key_argument":"request_id","retention_ms":86400000}`. 이 인자는 고정 스키마에 있어야 하고 **형식이 문자열을 받아야 한다**(`string`, 또는 형식 선언 없음. `integer` 등이면 `closed:invalid_declaration`). 전송 때 호스트가 effect key 문자열을 채우며, 에이전트가 넣으면 거부한다. 스키마가 이 인자를 `required` 로 요구해도 괜찮다(필수 검사에서 빠진다). 없으면 응답을 잃은 쓰기는 자동 재전송되지 않는다 |
 | `unit_cost_usd` | 선택. 호출당 비용 |
 | `ack_server_hint_conflict` | 읽기 선언에만. 6절 참고 |
 
@@ -95,7 +95,8 @@ npm run mcp-pin -- instance/daemon.config.json course
 | `closed:drift` | 서버의 입력 스키마가 고정값과 다르다 | 서버 변경을 읽고 괜찮으면 `mcp-pin` 으로 새 해시를 확인해 선언을 고치고 재시작. 자동 승인은 없다. 읽기 호출은 `tool_error`, 쓰기 전송은 서버에 보내기 전에 `failed` |
 | `closed:missing` | 선언한 도구가 서버에 없다 | 서버 쪽 사정 확인. 도구 이름이 바뀌었으면 선언을 고친다 |
 | `closed:hint_conflict` | 읽기로 선언했는데 서버가 읽기 전용이 아니라고(`readOnlyHint:false`) 또는 파괴적이라고(`destructiveHint:true`) 알린다 | 서버 코드를 확인한다. 정말 읽기 전용이면 선언에 `"ack_server_hint_conflict": true` 로 확인 표시를 달고, 아니면 쓰기(`external_effect` + `approval`)로 바꾼다 |
-| `closed:invalid_declaration` | `idempotency.key_argument` 가 고정 스키마에 없다 | 선언 또는 스키마 확인 |
+| `closed:invalid_declaration` | `idempotency.key_argument` 가 고정 스키마에 없거나 문자열을 받지 않는다 | 선언 또는 스키마 확인 |
+| `closed:duplicate` | 서버 목록에 같은 이름의 도구가 둘 이상이다 | 서버 코드 점검. `mcp-pin` 에 `duplicate` 로 나온다 |
 | `closed:unavailable` | 서버나 커넥터에 닿지 못했다 | 토큰·주소·서버 상태 확인. 커넥터는 1초→60초 대기로 자동 재시작하고, 목록을 읽으면 열린다 |
 | `undeclared` (이벤트 `undeclared_tools`) | 서버가 선언에 없는 도구를 더했다 | 기록만 한다. 쓰고 싶으면 3~6절을 처음부터 밟는다 |
 
@@ -108,4 +109,4 @@ npm run mcp-pin -- instance/daemon.config.json course
 - 서버의 응답(읽기 결과)은 모두 외부 입력(`external_untrusted`)이다. 읽은 뒤의 쓰기 호출은 승인이 필요하고, 초안에는 `influenced_by_external_input` 표시가 남는다.
 - 서버에는 텍스트 결과만 전달된다(이미지·리소스는 버리고 개수만 센다). 결과는 256 KiB 로 잘린다.
 - 서버가 토큰을 응답에 되돌려도 `[redacted]` 로 바뀐 뒤에 데몬에 전달된다.
-- 분당 상한을 넘은 읽기는 즉시 거부되고, 쓰기 전송은 상한 안에서 `timeout_ms` 까지 기다린다.
+- 분당 상한을 넘은 읽기는 즉시 거부되고, 쓰기 전송은 상한 안에서 기다린다. 전송 전체(보내기 직전 확인 + 대기 + 호출)가 `timeout_ms` 안에 끝나지 못하면 서버에 보내지 않고 실패로 끝난다. 고정 확인(`list`)은 상한을 쓰지 않는다.

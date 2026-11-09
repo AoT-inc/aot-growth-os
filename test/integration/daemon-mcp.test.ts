@@ -9,8 +9,8 @@ import { createFakeAgentAdapter, type AgentAdapter, type FakeToolCall, type Tool
 import { canonicalJson, HOST_DISPATCH_ADAPTER, type EffectDraftRow } from '@aot/domain';
 
 import { assembleDaemon } from '../../apps/daemon/src/assemble.ts';
-import { parseMcpSite } from '@aot/agent-runtime';
-import type { Scenario } from '../fixtures/mcp/fake-server.ts';
+import { parseMcpSite, schemaHash } from '@aot/agent-runtime';
+import { KEY_REQUIRED_SCHEMA, type Scenario } from '../fixtures/mcp/fake-server.ts';
 import { draftsOf } from '../support/drafts.ts';
 import { manualTimers, taskStatus } from '../support/engine.ts';
 import { evaluationsOf, EXAMPLE_URL, FakeFetcher, validationSpec } from '../support/evaluation.ts';
@@ -28,16 +28,17 @@ interface Rig {
   records: ToolCallRecord[];
   recordPath: string;
   siteTimers: ManualGatewayTimers;
+  manifest: ReturnType<typeof parseMcpSite>;
 }
 
-async function rig(t: TestContext, options: { scenario?: Scenario; calls?: FakeToolCall[]; idempotent?: boolean; timeoutMs?: number } = {}): Promise<Rig> {
+async function rig(t: TestContext, options: { scenario?: Scenario; calls?: FakeToolCall[]; idempotent?: boolean; timeoutMs?: number; tools?: Record<string, unknown>[] } = {}): Promise<Rig> {
   const env = policyEnv(t);
   const recordPath = join(makeTempDir(t, 'aot-mcp-'), 'requests.jsonl');
   const scenario = options.scenario ?? 'normal';
   const calls = options.calls ?? [{ tool: UPDATE_TOOL, args: { ...ARGS } }];
   const manifest = parseMcpSite(stdioSiteRaw(scenario, recordPath, {
     ...(options.timeoutMs === undefined ? {} : { timeout_ms: options.timeoutMs }),
-    tools: [searchDecl(), updateDecl(options.idempotent === true ? { idempotency: { key_argument: 'request_id', retention_ms: 86_400_000 } } : {})],
+    tools: options.tools ?? [searchDecl(), updateDecl(options.idempotent === true ? { idempotency: { key_argument: 'request_id', retention_ms: 86_400_000 } } : {})],
   }));
   const adapterRuns = { count: 0 };
   const records: ToolCallRecord[] = [];
@@ -59,15 +60,15 @@ async function rig(t: TestContext, options: { scenario?: Scenario; calls?: FakeT
   assert.ok(daemon.mcp !== null);
   await daemon.mcp.start();
   t.after(() => daemon.mcp?.close());
-  return { env, daemon, adapterRuns, records, recordPath, siteTimers };
+  return { env, daemon, adapterRuns, records, recordPath, siteTimers, manifest };
 }
 
+/** 선언한 도구를 모두 요청하는 업무 (읽기는 internal, 쓰기는 customer) */
 const mcpTask = (r: Rig) => createWithGate(r.env, effectDraft({
   ...validationSpec(['url_reachable', 'no_secret_in_outputs', 'budget']),
-  allowed_tools: [
-    { tool: SEARCH_TOOL, operations: ['call'], scope: 'internal', impact: 'read', target: 'site:course/units' },
-    { tool: UPDATE_TOOL, operations: ['call'], scope: 'customer', impact: 'external_effect', target: 'site:course/units' },
-  ],
+  allowed_tools: r.manifest.tools.map((tool) => ({
+    tool: tool.gatewayName, operations: ['call'], scope: tool.scope, impact: tool.impact, target: tool.target,
+  })),
 }));
 
 async function draftUntilReview(r: Rig, taskId: string): Promise<void> {
@@ -224,4 +225,43 @@ test('only declared tools exist: the worker tools contain the owner-declared wri
   await r.daemon.worker.tick();
   assert.deepEqual(r.records.map((rec) => rec.outcome), ['tool_not_allowed']);
   assert.equal(draftsOf(r.env.db, taskId).length, 0);
+});
+
+// ===== 독립 검토 반영 =====
+
+const PUBLISH_TOOL = 'mcp_course_publish_unit';
+const publishDecl = (over: Record<string, unknown> = {}) => updateDecl({ name: 'unit_publish', as: 'publish_unit', description: '단원을 게시한다.', ...over });
+
+test('H1: two different write tools with identical arguments get two ledger entries: two drafts in the draft run', async (t) => {
+  const r = await rig(t, {
+    scenario: 'two_writes', tools: [updateDecl(), publishDecl()],
+    calls: [{ tool: UPDATE_TOOL, args: { ...ARGS } }, { tool: PUBLISH_TOOL, args: { ...ARGS } }],
+  });
+  const taskId = mcpTask(r);
+  await draftUntilReview(r, taskId);
+  const drafts = draftsOf(r.env.db, taskId);
+  assert.equal(drafts.length, 2);
+  assert.deepEqual(drafts.map((d) => d.tool).sort(), [PUBLISH_TOOL, UPDATE_TOOL].sort());
+  assert.notEqual(drafts[0]!.step_id, drafts[1]!.step_id);
+  assert.ok(drafts.every((d) => d.step_id.startsWith(`mcp:${d.tool}:`)));
+  approveAndRelease(r, taskId);
+  await r.daemon.worker.tick();
+  assert.equal(callsTo(r.recordPath, 'unit_update').length, 1);
+  assert.equal(callsTo(r.recordPath, 'unit_publish').length, 1);
+});
+
+test('M3: a required idempotency key argument does not block drafting; the host injects it at send', async (t) => {
+  const r = await rig(t, {
+    scenario: 'key_required',
+    tools: [searchDecl(), updateDecl({ idempotency: { key_argument: 'request_id', retention_ms: 86_400_000 }, input_schema_sha256: schemaHash(KEY_REQUIRED_SCHEMA) })],
+  });
+  const taskId = mcpTask(r);
+  await draftUntilReview(r, taskId);
+  const [draft] = draftsOf(r.env.db, taskId) as [EffectDraftRow];
+  assert.ok(!draft.payload.includes('request_id'));
+  approveAndRelease(r, taskId);
+  await r.daemon.worker.tick();
+  const [received] = callsTo(r.recordPath, 'unit_update');
+  assert.equal((received!.params as { arguments: Record<string, unknown> }).arguments['request_id'], draft.effect_key);
+  assert.equal(effectOf(r, taskId).state, 'confirmed');
 });

@@ -8,7 +8,7 @@ import process from 'node:process';
 import { schemaHashOf } from './canonical.ts';
 import { createMcpClient, type McpClient } from './client.ts';
 import { createHttpTransport } from './http-transport.ts';
-import { createRedactor, type Redactor } from './redact.ts';
+import { createRedactor, safeText, type Redactor } from './redact.ts';
 import { createStdioTransport } from './stdio-transport.ts';
 import type { Transport } from './transport.ts';
 import {
@@ -79,6 +79,9 @@ async function main(): Promise<void> {
   let runtime: Runtime | null = null;
   let configError: ConnectorError | null = null;
   const inflight = new Map<number, { abort: AbortController; rpcId: number }>();
+  // 목록 읽기는 하나만 돈다: 동시에 온 `list` 는 진행 중인 읽기를 함께 기다린다. 기다리는 요청이 모두 취소되면 읽기도 멈춘다
+  interface ListRun { abort: AbortController; waiters: Set<number>; promise: Promise<{ server: Awaited<ReturnType<McpClient['ready']>>; all: Awaited<ReturnType<McpClient['listTools']>> }> }
+  let listRun: ListRun | null = null;
 
   const handle = async (request: ConnectorRequest): Promise<void> => {
     if (runtime === null) {
@@ -88,15 +91,27 @@ async function main(): Promise<void> {
     const { client, config, declared, redactor } = runtime;
     try {
       if (request.op === 'list') {
-        const server = await client.ready();
-        const all = await client.listTools();
+        if (listRun === null) {
+          const abort = new AbortController();
+          const run: ListRun = {
+            abort, waiters: new Set<number>(),
+            promise: (async () => ({ server: await client.ready(), all: await client.listTools(abort.signal) }))(),
+          };
+          const clear = (): void => { if (listRun === run) listRun = null; };
+          run.promise.then(clear, clear);
+          listRun = run;
+        }
+        const mine = listRun;
+        mine.waiters.add(request.id);
+        const { server, all } = await mine.promise;
+        if (!mine.waiters.delete(request.id)) return; // 기다리는 동안 취소되어 이미 답했다
         const tools: ConnectorToolInfo[] = [];
         const undeclared: string[] = [];
         for (const tool of all) {
           if (declared.has(tool.name) || config.inspect === true) {
             tools.push(redactor.deep({ name: tool.name, input_schema_sha256: schemaHashOf(tool.inputSchema), input_schema: tool.inputSchema, annotations: tool.annotations }));
           } else {
-            undeclared.push(redactor.text(tool.name).slice(0, 100)); // 선언 밖 도구는 이름만 센다(스키마·설명은 넘기지 않는다)
+            undeclared.push(safeText(redactor.text(tool.name), 100)); // 선언 밖 도구는 이름만 센다(스키마·설명은 넘기지 않는다)
           }
         }
         write({ id: request.id, ok: true, tools, undeclared, server });
@@ -121,6 +136,11 @@ async function main(): Promise<void> {
           inflight.delete(request.id);
         }
       } else {
+        const waitingList = listRun;
+        if (waitingList !== null && waitingList.waiters.delete(request.target_id)) {
+          write({ id: request.target_id, ok: false, error: { code: 'aborted', message: 'the list was cancelled by the host', definite: false } });
+          if (waitingList.waiters.size === 0) { waitingList.abort.abort(new Error('cancelled by the host')); listRun = null; }
+        }
         const entry = inflight.get(request.target_id);
         if (entry !== undefined) {
           if (entry.rpcId > 0) await client.cancel(entry.rpcId, 'cancelled by the host');

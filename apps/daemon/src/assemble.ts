@@ -181,6 +181,18 @@ function withMcp(agent: NonNullable<AssembleOptions['agent']>, mcp: McpRuntime):
   };
 }
 
+/** 부작용 도구를 합친다. 같은 이름이 둘이면 뒤의 것이 앞의 것을 조용히 덮어쓰지 못하게 거부한다 */
+function mergeEffectTools<T>(...groups: Readonly<Record<string, T>>[]): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const group of groups) {
+    for (const [name, tool] of Object.entries(group)) {
+      if (Object.hasOwn(out, name)) throw new Error(`effect tool '${name}' is provided more than once (options.tools, the phone capability, or the mcp connector)`);
+      out[name] = tool;
+    }
+  }
+  return out;
+}
+
 export interface AgentRuntimeReadiness {
   dockerVersion: string;
   orphans: OrphanCleanupResult;
@@ -233,7 +245,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   const mcp = options.mcp === undefined ? null : createMcpRuntime({ clock: options.clock, options: options.mcp });
   const withPhoneAgent = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
   const agentOptions = withPhoneAgent === undefined || mcp === null ? withPhoneAgent : withMcp(withPhoneAgent, mcp);
-  const tools = phone === null && mcp === null ? options.tools : { ...(options.tools ?? {}), ...(phone?.effectTools ?? {}), ...(mcp?.effectTools ?? {}) };
+  const tools = phone === null && mcp === null ? options.tools : mergeEffectTools(options.tools ?? {}, phone?.effectTools ?? {}, mcp?.effectTools ?? {});
   const executor = options.executor ?? (agentOptions === undefined
     ? undefined
     : createAgentExecutor({ db: options.db, clock: options.clock, agent: agentOptions, toolCallPolicy }));

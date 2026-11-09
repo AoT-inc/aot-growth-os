@@ -159,6 +159,8 @@ export class FakeConnectorLink implements ConnectorLink {
     { name: 'unit_update', input_schema: UPDATE_SCHEMA, annotations: null },
   ];
   undeclared: string[] = [];
+  /** true 면 list 요청에 답하지 않는다 */
+  listSilent = false;
   /** list 에 오류로 답한다 */
   listError: { code: string; message: string; definite: boolean } | null = null;
   /** call 에 대한 응답을 직접 정한다. undefined 를 돌려주면 답하지 않는다(시간 초과 시험) */
@@ -174,6 +176,7 @@ export class FakeConnectorLink implements ConnectorLink {
     if (message['type'] === 'config') return;
     queueMicrotask(() => {
       if (message['op'] === 'list') {
+        if (this.listSilent) return;
         this.emit(this.listError === null
           ? { id: message['id'], ok: true, tools: this.tools.map((t) => ({ ...t, input_schema_sha256: schemaHash(t.input_schema) })), undeclared: this.undeclared, server: { name: 'fake', version: '1', protocol_version: '2025-06-18' } }
           : { id: message['id'], ok: false, error: this.listError });
@@ -196,3 +199,13 @@ export class FakeConnectorLink implements ConnectorLink {
 
 /** 마이크로태스크가 비워지길 기다린다 */
 export const flush = async (): Promise<void> => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r)); };
+
+/** 프로세스가 살아 있는가 (시험: 고아 서버 확인) */
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -60,7 +60,7 @@ export function createMcpRuntime(deps: { clock: Clock; options: McpOptions }): M
     sites.set(manifest.site, client);
     byManifest.push({ manifest, client });
     specs.push(...mcpToolSpecs(manifest));
-    Object.assign(effectTools, createMcpEffectTools(manifest, client));
+    Object.assign(effectTools, createMcpEffectTools(manifest, client, clock));
   }
   return {
     sites, toolSpecs: specs, effectTools,

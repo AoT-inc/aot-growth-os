@@ -22,7 +22,8 @@ export type McpSiteEvent =
   | { type: 'list_failed'; site: string; error: string }
   | { type: 'tool_state'; site: string; tool: string; state: string; previous: string }
   | { type: 'undeclared_tools'; site: string; names: string[] }
-  | { type: 'server_request_refused'; site: string; method: string };
+  | { type: 'server_request_refused'; site: string; method: string }
+  | { type: 'server_requests_suppressed'; site: string; count: number };
 
 /** 커넥터와의 통신 자체가 실패했다. `definite`: 요청이 서버에 닿지 않았음이 확실한가 */
 export class McpTransportError extends Error {
@@ -56,8 +57,12 @@ export interface McpSiteClient {
   readonly site: string;
   /** 커넥터를 띄우고 첫 확인까지 마친다. 확인이 실패해도 던지지 않는다(모든 도구가 닫힌 채 다시 시도한다) */
   start(): Promise<void>;
-  /** 서버 목록을 다시 읽어 도구 상태를 정한다 (직렬: 앞 확인이 끝난 뒤에 새로 읽는다) */
-  refresh(): Promise<void>;
+  /**
+   * 서버 목록을 다시 읽어 도구 상태를 정한다. 동시에 최대 하나가 돌고 하나가 대기한다(대기 중인 요청은 모두 같은 다음 읽기를 공유한다):
+   * 알림이 쏟아져도 대기열이 늘지 않고, 부른 쪽은 부른 *뒤에* 시작한 읽기를 기다린다.
+   * `timeoutMs` 안에 끝나지 않으면 기다리기를 그만두고 false (상태는 그대로이며 읽기는 계속될 수 있다).
+   */
+  refresh(options?: { timeoutMs?: number }): Promise<boolean>;
   /** 에이전트용 도구 이름(`mcp_<site>_<as>`)의 상태 */
   stateOf(gatewayName: string): ToolState;
   /** 열린 도구의 고정 스키마(서버가 알린 것이 고정 해시와 같은 경우만) */
@@ -66,7 +71,7 @@ export interface McpSiteClient {
   undeclared(): readonly string[];
   /** 확인 명령용: 마지막 `list` 응답 전체 */
   lastListing(): { tools: readonly ConnectorToolInfo[]; undeclared: readonly string[]; server: ConnectorServerInfo } | null;
-  /** 읽기용: 분당 상한에 걸리면 false */
+  /** 읽기용: 분당 상한에 걸리면 false (목록 확인은 토큰을 쓰지 않는다 — 합치기와 주기 타이머가 횟수를 묶는다) */
   tryAcquire(): boolean;
   /** 전송용: 상한 안에서 기다린다. 기다려도 안 되면 false */
   acquireForSend(maxWaitMs: number): Promise<boolean>;
@@ -76,6 +81,7 @@ export interface McpSiteClient {
 
 const MIN_RESTART_MS = 1000;
 const MAX_RESTART_MS = 60_000;
+const MAX_REFUSAL_EVENTS_PER_MINUTE = 5;
 
 export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClient {
   const { manifest, clock } = options;
@@ -92,9 +98,11 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
   let nextId = 1;
   let restartDelay = MIN_RESTART_MS;
   let timerHandle: unknown = null;
-  let queue: Promise<void> = Promise.resolve();
   let listing: ReturnType<McpSiteClient['lastListing']> = null;
   let undeclaredKey = '';
+  let refusedWindowStart = Number.NEGATIVE_INFINITY;
+  let refusedInWindow = 0;
+  let refusedSuppressed = 0;
   const pending = new Map<number, { resolve(response: ConnectorResponse): void; reject(error: unknown): void }>();
   const states = new Map<string, { state: ToolState; schema: unknown }>();
   for (const tool of manifest.tools) states.set(tool.gatewayName, { state: { status: 'closed', reason: 'unavailable' }, schema: undefined });
@@ -138,9 +146,24 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
     try { message = JSON.parse(line); } catch { return; }
     if (typeof message !== 'object' || message === null) return;
     const record = message as { id?: unknown; type?: unknown; method?: unknown };
-    if (record.type === 'list_changed') { void refresh(); return; }
+    if (record.type === 'list_changed') { void refresh(); return; } // 합쳐진다: 알림이 몇 개든 대기열은 늘지 않는다
     if (record.type === 'server_request_refused') {
-      emit({ type: 'server_request_refused', site: manifest.site, method: String(record.method ?? '').slice(0, 200) });
+      // 서버가 요청을 쏟아내도 운영 이벤트는 분당 몇 건뿐이다(나머지는 건수로 합쳐 한 번 알린다)
+      const now = clock.nowMs();
+      if (now - refusedWindowStart >= 60_000) {
+        if (refusedSuppressed > 0) emit({ type: 'server_requests_suppressed', site: manifest.site, count: refusedSuppressed });
+        refusedWindowStart = now;
+        refusedInWindow = 0;
+        refusedSuppressed = 0;
+      }
+      if (refusedInWindow < MAX_REFUSAL_EVENTS_PER_MINUTE) {
+        refusedInWindow += 1;
+        emit({ type: 'server_request_refused', site: manifest.site, method: String(record.method ?? '').slice(0, 200) });
+      } else refusedSuppressed += 1;
+      return;
+    }
+    if (record.type === 'server_requests_suppressed') {
+      emit({ type: 'server_requests_suppressed', site: manifest.site, count: Number((record as { count?: unknown }).count) || 0 });
       return;
     }
     if (typeof record.id === 'number') {
@@ -225,7 +248,6 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
   };
 
   const doRefresh = async (): Promise<void> => {
-    limiter.count();
     let response: ConnectorResponse;
     try {
       response = await request({ op: 'list' }, listTimeoutMs);
@@ -243,8 +265,12 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
     }
     listing = { tools: response.tools, undeclared: response.undeclared, server: response.server };
     const byName = new Map(response.tools.map((tool) => [tool.name, tool]));
+    const counts = new Map<string, number>();
+    for (const tool of response.tools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
     for (const decl of manifest.tools) {
       const server = byName.get(decl.name);
+      // 같은 이름이 둘 이상이면 어느 쪽이 진짜인지 알 수 없다: 닫는다 (마지막 것이 이기게 두지 않는다)
+      if ((counts.get(decl.name) ?? 0) > 1) { setState(decl, { status: 'closed', reason: 'duplicate' }, undefined); continue; }
       const state = evaluateTool(decl, server === undefined ? undefined : { name: server.name, inputSchema: server.input_schema, annotations: server.annotations });
       setState(decl, state, server?.input_schema);
     }
@@ -257,10 +283,33 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
     schedule(recheckMs, () => { void refresh(); });
   };
 
-  const refresh = (): Promise<void> => {
-    const next = queue.then(doRefresh, doRefresh);
-    queue = next.catch(() => undefined);
-    return next.catch(() => undefined);
+  // 동시에 하나만 돌고 하나만 대기한다. 대기 중에 온 요청은 모두 같은 "다음 읽기"를 기다린다 (그 읽기는 요청 *뒤에* 시작한다)
+  let running: Promise<void> | null = null;
+  let waiting: Promise<void> | null = null;
+  const startRun = (): Promise<void> => {
+    const run = doRefresh().catch(() => undefined).finally(() => { if (running === run) running = null; });
+    running = run;
+    return run;
+  };
+  const refreshCoalesced = (): Promise<void> => {
+    if (running === null) return startRun();
+    if (waiting === null) {
+      const prior = running;
+      const next = prior.then(() => { waiting = null; return startRun(); });
+      waiting = next;
+    }
+    return waiting;
+  };
+  const refresh = async (options?: { timeoutMs?: number }): Promise<boolean> => {
+    const done = refreshCoalesced().then(() => true);
+    if (options?.timeoutMs === undefined) return done;
+    let handle: unknown;
+    const timedOut = new Promise<boolean>((resolve) => { handle = timers.setTimeout(() => resolve(false), Math.max(0, options.timeoutMs!)); });
+    try {
+      return await Promise.race([done, timedOut]);
+    } finally {
+      timers.clearTimeout(handle);
+    }
   };
 
   return {

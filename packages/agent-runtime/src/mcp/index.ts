@@ -8,6 +8,6 @@ export { createSiteRateLimiter, type SiteRateLimiter } from './rate-limit.ts';
 export { CONNECTOR_ENTRY, spawnConnectorProcess, type ConnectorLink, type ConnectorSpawner } from './connector-process.ts';
 export { createMcpSiteClient, McpTransportError, type McpCallOutcome, type McpSiteClient, type McpSiteClientOptions, type McpSiteEvent } from './site-client.ts';
 export {
-  createMcpEffectTools, createMcpToolExecutors, MCP_OPERATION, mcpToolDescriptions, mcpToolSpecs,
+  createMcpEffectTools, createMcpToolExecutors, MCP_OPERATION, mcpToolDescriptions, mcpToolSpecs, WRITE_TIMEOUT_MARGIN_MS,
   type McpEffectRunner, type McpEffectTool, type McpLedgerOutcome, type McpLedgerStep,
 } from './tools.ts';

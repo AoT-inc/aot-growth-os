@@ -97,7 +97,7 @@
 `list` 응답으로 도구마다 상태를 정한다: `open` | `closed:drift`(해시 다름) | `closed:missing`(서버에 없음) | `closed:hint_conflict`(읽기 선언인데 서버 주석이 `readOnlyHint:false` 또는 `destructiveHint:true`, `ack_server_hint_conflict`가 없음). `readOnlyHint:true`처럼 더 안전하다는 주장은 무시한다. 쓰기 선언은 주석을 보지 않는다. 시작 때 `list`가 실패하면 모든 도구가 `closed:unavailable`이고 다음 확인 때 다시 연다. 확인 시점: 시작, `list_changed` 알림, 주기(기본 10분), 쓰기 전송 직전. 상태가 바뀔 때마다 운영 이벤트를 남긴다(오너가 다시 고정해야 함을 알림).
 
 ### 5.4 쓰기 (원장)
-- 게이트웨이 실행기는 `bindToEffectLedger`로 만든다. 본문: 열림·인자 검사 → `perform(tool, {stepId, action:'call', target, request:{arguments}})`. `stepId`는 인자의 정규 JSON 해시로 정한다(같은 run에서 같은 인자 = 같은 단계).
+- 게이트웨이 실행기는 `bindToEffectLedger`로 만든다. 본문: 열림·인자 검사 → `perform(tool, {stepId, action:'call', target, request:{arguments}})`. `stepId`는 `mcp:<도구 이름>:<인자 정규 JSON 해시 앞 16자>` 이다(같은 도구·같은 인자 = 같은 단계, 도구나 사이트가 다르면 인자가 같아도 다른 단계).
 - 초안 단계(`approval:'draft'`): 원장이 초안으로 남기고 에이전트는 `{status:'drafted'}`. 범위 승인(`approval:'scope'`) 실행 단계: 원장이 전송하고 에이전트는 `{status, effect_id}`만 받는다(서버 응답 본문은 돌려주지 않는다).
 - 부작용 도구 `send`: 다시 `list`로 그 도구가 `open`인지 확인(아니면 `failed`, 보내지 않음) → 분당 상한 안에서 기다림(최대 `timeout_ms`) → 멱등 선언이 있으면 `arguments[key_argument] = effectKey`로 넣음 → 커넥터 `call`. 결과 `is_error:false` → `confirmed`(responseRef = `mcp:<site>:<결과 정규 JSON sha256 앞 16자>`), `is_error:true` → `failed`. `definite:true` 오류 → `failed`. 그 밖의 오류·시간 초과·커넥터 종료 → 던짐(원장이 `unknown`).
 - 원장 선언: `actions.call = {approval, idempotency: 선언 있으면 {supported:true, retention_ms} 아니면 {supported:false}, effect_key_carrier: 선언 있으면 'property' 아니면 'none'}`. `lookup`은 두지 않는다.
@@ -109,7 +109,7 @@
 - 커넥터 줄 하나 상한 8 MiB, 넘으면 커넥터를 죽이고 다시 띄운다.
 
 ### 5.6 속도 제한
-사이트마다 1분 창(토큰 버킷, 용량 = 분당 상한, 주입된 Clock). 읽기·전송·`list` 모두 센다(`list`는 확인용이라 한도를 넘어도 막지 않되 센다). 시험은 손으로 돌리는 Clock을 쓴다.
+사이트마다 1분 창(토큰 버킷, 용량 = 분당 상한, 주입된 Clock). 읽기와 전송만 센다. `list`(고정 확인)는 토큰을 쓰지 않는다 — 분당 상한이 1~2인 사이트에서 전송 직전 확인이 토큰을 먹어 모든 쓰기가 실패하는 것을 막고, 확인 횟수는 합치기(동시에 하나 + 대기 하나)와 주기 타이머가 묶는다. 시험은 손으로 돌리는 Clock을 쓴다.
 
 ## 6. 신뢰 경계 정리
 | 위협 | 막는 것 |
@@ -173,3 +173,12 @@ W1~W8 을 설계대로 구현했다. 설계와 달라진 곳(가장 가까운 �
 - **오너 설명 전달**: `mcpToolDescriptions()` 를 데몬이 `AgentRuntimeOverrides.toolDescriptions` 로 넘겨 Claude Code 브리지의 도구 설명이 오너 문장이 된다(`main.ts`).
 - 가짜 서버 각본에 `paged`, `big`, `session_expires`, `is_error`, `drifts_silently`(알림 없는 변경) 를 더했다.
 - `list` 요청도 분당 상한을 센다(막지 않음). 읽기 실행기는 호스트 타이머를 `timeout_ms + 1초` 로 둬 게이트웨이 타임아웃이 먼저 끝나게 한다.
+
+### 독립 검토 반영 (2026-11-09)
+- H1 단계 id 에 도구 이름 포함. H2 목록 확인을 "동시에 하나 + 대기 하나"로 합치고(대기 요청은 모두 같은 다음 읽기를 공유), 커넥터도 목록 변경 알림을 초당 한 번으로 줄여 전달.
+- M1 전송 전체(목록 확인 + 속도 제한 대기 + 호출)에 `timeout_ms` 기한 하나. 기한 안에 못 부르면 보내지 않고 `failed`, 속도 제한 대기 뒤 상태를 다시 확인. 쓰기 도구의 게이트웨이 타임아웃은 `timeout_ms + 5초`.
+- M2 서버 요청은 분당 20개에만 답하고 알림은 분당 5개, 나머지는 조용히 버리고 건수를 합쳐 한 번 알림(커넥터와 호스트 둘 다 상한).
+- M3 멱등 키 인자는 `required` 검사에서 빼고(에이전트 쪽·전송 쪽), 고정 스키마의 그 속성이 문자열을 받지 않으면 `closed:invalid_declaration`.
+- L1 정규 JSON·가리기에서 `__proto__` 키를 자기 키로 다룬다(`Object.fromEntries`; `@aot/domain` 의 `canonicalJson` 포함). L2 같은 이름이 목록에 둘 이상이면 그 도구는 `closed:duplicate`(mcp-pin 도 표시). L3 mcp-pin 은 서버가 정한 이름을 JSON 따옴표로 출력하고 커넥터는 제어 문자를 `?` 로 바꾼다.
+- L4 커넥터를 새 프로세스 그룹으로 띄우고 그룹 전체를 죽여 stdio 서버가 고아로 남지 않는다. L5 `list` 가 속도 제한 토큰을 쓰지 않는다(위 §5.6). L6 커넥터는 동시에 온 `list` 를 하나의 서버 요청으로 합치고 취소를 받으면 멈춘다. L7 부작용 도구 이름이 겹치면 조립이 거부한다.
+- 알려진 결과: 모든 MCP 결과(쓰기 응답 상태 포함)가 `external_untrusted` 라서, `send` 단계(`approval: scope`)의 한 run 에서는 첫 쓰기 뒤의 두 번째 쓰기가 외부 입력 하한으로 `approval_required` 가 된다. 초안(`draft`) 방식은 영향받지 않는다.

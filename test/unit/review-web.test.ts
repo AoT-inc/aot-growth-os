@@ -54,14 +54,14 @@ const deps = (files: Record<string, string>, env: Record<string, string> = {}): 
 test('review-web args: the daemon config supplies db, policy and evidence locations; flags win', () => {
   const config = JSON.stringify({ db_path: '/data/aot.db', instance_dir: '/data/inst', policy_store_dir: '/data/pol', registration_tools: { evidence_dir: '/data/ev' } });
   const fromConfig = parseReviewWebArgs(['--config', '/c.json'], deps({ '/c.json': config }));
-  assert.deepEqual(fromConfig, { dbPath: '/data/aot.db', port: 8787, host: '127.0.0.1', policyStoreDir: '/data/pol', evidenceDir: '/data/ev', evidenceRoots: [], actor: null, socketPath: '/data/inst/run/approval.sock' });
+  assert.deepEqual(fromConfig, { dbPath: '/data/aot.db', port: 8787, host: '127.0.0.1', policyStoreDir: '/data/pol', evidenceDir: '/data/ev', evidenceRoots: [], actor: null, socketPath: '/data/inst/run/approval.sock', mcpSites: null, runLogDir: '/data/inst/run-logs' });
   const env = parseReviewWebArgs([], deps({ '/env/daemon.config.json': JSON.stringify({ db_path: '/e.db' }) }, { AOT_INSTANCE_DIR: '/env' }));
   assert.equal(env.evidenceDir, '/env/evidence');
   assert.equal(env.policyStoreDir, '/env/policies');
   const viaEnvConfig = parseReviewWebArgs([], deps({ '/x.json': config }, { AOT_DAEMON_CONFIG: '/x.json' }));
   assert.equal(viaEnvConfig.dbPath, '/data/aot.db');
   const flags = parseReviewWebArgs(['--config', '/c.json', '--db', '/o.db', '--port', '0', '--evidence-dir', '/ed', '--policy-dir', '/pd', '--evidence-root', '/r1', '--evidence-root', '/r2'], deps({ '/c.json': config }));
-  assert.deepEqual(flags, { dbPath: '/o.db', port: 0, host: '127.0.0.1', policyStoreDir: '/pd', evidenceDir: '/ed', evidenceRoots: ['/r1', '/r2'], actor: null, socketPath: '/data/inst/run/approval.sock' });
+  assert.deepEqual(flags, { dbPath: '/o.db', port: 0, host: '127.0.0.1', policyStoreDir: '/pd', evidenceDir: '/ed', evidenceRoots: ['/r1', '/r2'], actor: null, socketPath: '/data/inst/run/approval.sock', mcpSites: null, runLogDir: '/data/inst/run-logs' });
 });
 
 test('review-web args: --db alone puts the instance folder next to the database; bad input is a usage error', () => {

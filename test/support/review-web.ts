@@ -47,7 +47,7 @@ export function rawRequest(port: number, path: string, options: { method?: strin
 }
 
 /** 데모 DB 를 만들고(선택: `before` 로 쓰기 연결에서 행을 더한 뒤) 서버를 띄운다 */
-export async function startRig(t: TestContext, options: { empty?: boolean; clockMs?: number; before?: (db: Db, demo: DemoResult) => void; extraRoots?: (demo: DemoResult) => string[] } = {}): Promise<ReviewRig> {
+export async function startRig(t: TestContext, options: { empty?: boolean; clockMs?: number; before?: (db: Db, demo: DemoResult) => void; extraRoots?: (demo: DemoResult) => string[]; mcpSites?: unknown; runLogDir?: (demo: DemoResult) => string } = {}): Promise<ReviewRig> {
   const dir = makeTempDir(t, 'aot-review-web-');
   const demo = seedDemo({ dir: `${dir}/demo`, nowMs: NOW_MS, ...(options.empty === true ? { empty: true } : {}) });
   if (options.before !== undefined) {
@@ -62,6 +62,7 @@ export async function startRig(t: TestContext, options: { empty?: boolean; clock
   t.after(() => db.close());
   const ctx = createReviewContext({
     db, clock: new FakeClock(options.clockMs ?? NOW_MS), policyStoreDir: `${dir}/demo/policies`, evidenceDir: demo.evidenceDir, evidenceRoots: options.extraRoots?.(demo) ?? [],
+    ...(options.mcpSites === undefined ? {} : { mcpSites: options.mcpSites }), ...(options.runLogDir === undefined ? {} : { runLogDir: options.runLogDir(demo) }),
   });
   const server = await startReviewServer(ctx, { port: 0 });
   t.after(() => server.close());

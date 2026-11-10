@@ -30,6 +30,10 @@ export interface ReviewContext {
   notice: string | null;
   /** 폼 nonce 발급·확인. 서버가 시작 토큰에서 유도한 키로 바꾼다 */
   forms: FormGuard;
+  /** 데몬 설정의 `mcp_sites` 원문(읽기만. 없으면 null) — /sites 가 선언 목록을 보이는 데 쓴다 */
+  mcpSites: unknown;
+  /** run 기록 폴더(읽기만). 모르면 null — /cost 가 마지막 사용률을 찾는 데 쓴다 */
+  runLogDir: string | null;
 }
 
 export interface ReviewContextOptions {
@@ -42,6 +46,8 @@ export interface ReviewContextOptions {
   writer?: { actor: string; client: DecisionClient };
   /** 보기 전용인 까닭 (예: 행위자가 사람이 아니었다) */
   notice?: string;
+  mcpSites?: unknown;
+  runLogDir?: string;
 }
 
 export function createReviewContext(options: ReviewContextOptions): ReviewContext {
@@ -57,5 +63,6 @@ export function createReviewContext(options: ReviewContextOptions): ReviewContex
   return {
     db, clock, engine, store, actor, evidenceDir: options.evidenceDir, roots: [options.evidenceDir, ...(options.evidenceRoots ?? [])],
     write, notice: write === null ? options.notice ?? null : null, forms: new FormGuard(randomBytes(32)),
+    mcpSites: options.mcpSites ?? null, runLogDir: options.runLogDir ?? null,
   };
 }

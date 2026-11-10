@@ -41,3 +41,15 @@ export function createRedactor(secrets: readonly string[]): Redactor {
 // eslint-disable-next-line no-control-regex -- 제어 문자를 찾는 것이 목적이다
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
 export const safeText = (value: string, max = 200): string => value.replace(CONTROL_CHARS, '?').slice(0, max);
+
+/** `token xxx`·`Bearer xxx`·`Basic xxx` 처럼 인증 방식 접두가 붙은 값은 알맹이(접두 뒤 전부, 마지막 조각)도 비밀로 가린다. 알맹이만 응답에 돌아와도 가려진다 */
+export function secretPieces(value: string): string[] {
+  const out = new Set<string>();
+  const trimmed = value.trim();
+  const cut = trimmed.search(/\s/);
+  if (cut > 0) out.add(trimmed.slice(cut).trim());
+  const last = trimmed.split(/\s+/).pop();
+  if (last !== undefined) out.add(last);
+  out.delete(value);
+  return [...out].filter((piece) => piece.length >= 4);
+}

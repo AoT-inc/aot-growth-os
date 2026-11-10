@@ -9,6 +9,7 @@ import type { JsonObject } from '../contract.ts';
 import { bindToEffectLedger, type EffectLedgerRunner } from '../effect-ledger.ts';
 import type { GatewayToolSpec, ToolExecutionRequest, ToolExecutionResult, ToolExecutor } from '../gateway.ts';
 
+import { checkApiArguments, EFFECT_KEY_ARG } from './connector/api-decl.ts';
 import type { McpSiteManifest, McpToolDecl } from './manifest.ts';
 import { checkArguments } from './schema-pin.ts';
 import { McpTransportError, type McpSiteClient } from './site-client.ts';
@@ -49,6 +50,12 @@ function preflight(site: McpSiteClient, tool: McpToolDecl, args: unknown): strin
   if (tool.idempotency !== null && args !== null && typeof args === 'object' && Object.hasOwn(args, tool.idempotency.keyArgument)) {
     return `mcp tool ${tool.gatewayName}: '${tool.idempotency.keyArgument}' is set by the host and must not be supplied`;
   }
+  if (tool.api !== null) {
+    // API 동작 (ADR-0020): 패턴·길이·범위·enum 까지 초안을 만들 때 미리 확인한다(전송 때 커넥터가 한 번 더 확인한다). 호스트가 정하는 효과 키는 받지 않는다
+    if (args !== null && typeof args === 'object' && Object.hasOwn(args, EFFECT_KEY_ARG)) return `mcp tool ${tool.gatewayName}: '${EFFECT_KEY_ARG}' is set by the host and must not be supplied`;
+    const problem = checkApiArguments(tool.api.op, args);
+    if (problem !== null) return `mcp tool ${tool.gatewayName}: ${problem}`;
+  }
   return null;
 }
 
@@ -87,7 +94,9 @@ function writeExecutor(site: McpSiteClient, tool: McpToolDecl, ledger: McpEffect
       const args = request.args as JsonObject;
       const outcome = await perform(tool.gatewayName, {
         // 도구 이름이 단계 id 에 들어간다: 인자가 같은 서로 다른 쓰기 도구(또는 사이트)가 한 원장 항목·초안을 공유하지 않는다
-        stepId: `mcp:${tool.gatewayName}:${sha256Hex(canonicalJson(args)).slice(0, 16)}`, action: MCP_OPERATION, target: tool.target, request: { arguments: args },
+        // API 동작은 초안에 선언 고정(pin)을 함께 남긴다: 승인 뒤 선언이 바뀌면 전송이 거절된다
+        stepId: `mcp:${tool.gatewayName}:${sha256Hex(canonicalJson(tool.api === null ? args : { arguments: args, pin: tool.inputSchemaSha256 })).slice(0, 16)}`,
+        action: MCP_OPERATION, target: tool.target, request: tool.api === null ? { arguments: args } : { arguments: args, pin: tool.inputSchemaSha256 },
       });
       return { result: outcome.state === 'drafted' ? { status: 'drafted', draft_id: outcome.draftId ?? null } : { status: outcome.state, effect_id: outcome.effectId ?? null } };
     },
@@ -119,9 +128,11 @@ export function createMcpEffectTools(manifest: McpSiteManifest, site: McpSiteCli
       actions: { [MCP_OPERATION]: { approval: tool.approval, idempotency: tool.idempotency === null ? { supported: false } : { supported: true, retention_ms: tool.idempotency.retentionMs } } },
       async send(call) {
         const failed = { status: 'failed', responseRef: null } as const;
-        const request = call.request as { arguments?: unknown } | null;
+        const request = call.request as { arguments?: unknown; pin?: unknown } | null;
         const approved = request?.arguments;
         if (approved === null || typeof approved !== 'object' || Array.isArray(approved)) return failed;
+        // API 동작: 승인된 초안의 선언 고정이 지금 선언과 같아야 한다 (같은 초안이 바뀐 선언으로 나가지 않는다)
+        if (tool.api !== null && request?.pin !== tool.inputSchemaSha256) return failed;
         // 전송 전체(목록 확인 + 속도 제한 대기 + 호출)에 하나의 기한을 둔다: 원장의 정책·펜싱 확인 뒤 오래 지난 요청이 나가지 않게 한다.
         // 기한 안에 서버를 부를 수 없으면 보내지 않고 definite 실패다.
         const deadline = clock.nowMs() + manifest.timeoutMs;
@@ -134,6 +145,10 @@ export function createMcpEffectTools(manifest: McpSiteManifest, site: McpSiteCli
         if (tool.idempotency !== null) {
           if (Object.hasOwn(args, tool.idempotency.keyArgument)) return failed;
           args[tool.idempotency.keyArgument] = call.effectKey;
+        }
+        if (tool.api !== null && tool.api.op.uses_effect_key) {
+          if (Object.hasOwn(args, EFFECT_KEY_ARG)) return failed;
+          args[EFFECT_KEY_ARG] = call.effectKey;
         }
         if (remaining() <= 0 || !(await site.acquireForSend(remaining()))) return failed;
         // 속도 제한을 기다리는 동안 상태가 바뀌었을 수 있다: 부르기 직전에 상태와 기한을 다시 확인한다
@@ -150,6 +165,11 @@ export function createMcpEffectTools(manifest: McpSiteManifest, site: McpSiteCli
           throw new Error(`mcp ${tool.gatewayName}: ${outcome.error.code}`);
         }
         if (outcome.result.is_error) return failed; // 서버가 실패했다고 말했다 (설계 C7)
+        if (tool.api !== null) {
+          // 원장 응답 기록: 해시 + 오너가 `record` 로 고른 필드(예: 커밋 번호). 에이전트에는 가지 않는다
+          const fields = JSON.stringify(outcome.result.structured ?? {}).slice(0, 300);
+          return { status: 'confirmed', responseRef: `api:${manifest.site}:${sha256Hex(canonicalJson(outcome.result)).slice(0, 16)} ${fields}` };
+        }
         return { status: 'confirmed', responseRef: `mcp:${manifest.site}:${sha256Hex(canonicalJson(outcome.result)).slice(0, 16)}` };
       },
     };

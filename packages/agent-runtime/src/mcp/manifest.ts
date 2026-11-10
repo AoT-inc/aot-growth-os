@@ -2,12 +2,16 @@
 // 알 수 없는 키·잘못된 조합은 거부한다(기본 거부). 에이전트가 보는 도구 목록·분류·설명은 모두 여기서만 나온다 — 서버가 알리는 값은 어디에도 쓰지 않는다.
 import { SCOPES, type Scope } from '@aot/domain';
 
+import { API_NETWORKS, apiDeclHash, parseApiOperation, type ApiNetwork, type ApiOperation } from './connector/api-decl.ts';
+
 export const DEFAULT_RATE_LIMIT_PER_MINUTE = 30;
 export const DEFAULT_TIMEOUT_MS = 20_000;
 
 export type McpTransportDecl =
   | { readonly kind: 'http'; readonly url: string }
-  | { readonly kind: 'stdio'; readonly command: string; readonly args: readonly string[] };
+  | { readonly kind: 'stdio'; readonly command: string; readonly args: readonly string[] }
+  /** MCP 서버가 없는 서비스의 HTTP API (ADR-0020). `baseUrl` 은 출처 + 선택적 경로 접두어(끝 `/` 없음) */
+  | { readonly kind: 'api'; readonly baseUrl: string; readonly network: ApiNetwork };
 
 export type McpAuthDecl =
   | { readonly kind: 'none' }
@@ -33,6 +37,8 @@ export interface McpToolDecl {
   readonly unitCostUsd: number | null;
   readonly idempotency: { readonly keyArgument: string; readonly retentionMs: number } | null;
   readonly ackServerHintConflict: boolean;
+  /** API 전송 사이트의 동작 선언 (ADR-0020). 그 밖에는 null. `inputSchemaSha256` 은 이 경우 오너가 적은 `pin` 이다 */
+  readonly api: { readonly op: ApiOperation; readonly declHash: string } | null;
 }
 
 export interface McpSiteManifest {
@@ -94,7 +100,19 @@ function parseTransport(raw: unknown, label: string, problems: string[]): McpTra
     if (typeof command !== 'string' || !Array.isArray(args)) return null;
     return { kind: 'stdio', command, args: Object.freeze([...(args as string[])]) };
   }
-  problems.push(`${label}.transport.kind must be 'http' or 'stdio'`);
+  if (raw['kind'] === 'api') {
+    checkKeys(raw, ['kind', 'base_url', 'network'], `${label}.transport`, problems);
+    const network = raw['network'] ?? 'public';
+    if (!(API_NETWORKS as readonly unknown[]).includes(network)) { problems.push(`${label}.transport.network must be ${API_NETWORKS.join('|')}`); return null; }
+    const url = parseHttpsUrl(raw['base_url'], `${label}.transport.base_url`, problems);
+    if (url === null) return null;
+    if (url.search !== '' || url.hash !== '' || url.hostname === '') problems.push(`${label}.transport.base_url must be an origin with an optional path prefix (no query or fragment)`);
+    if (network !== 'loopback' && url.protocol !== 'https:') problems.push(`${label}.transport.base_url must be https unless network is 'loopback'`);
+    if (network === 'loopback' && !LOOPBACK.has(url.hostname)) problems.push(`${label}.transport.network 'loopback' needs a base_url host of 127.0.0.1, localhost or [::1]`);
+    if (network !== 'loopback' && LOOPBACK.has(url.hostname)) problems.push(`${label}.transport.base_url points at this machine: declare network 'loopback'`);
+    return { kind: 'api', baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, '')}`, network: network as ApiNetwork };
+  }
+  problems.push(`${label}.transport.kind must be 'http', 'stdio' or 'api'`);
   return null;
 }
 
@@ -142,10 +160,15 @@ function parseAuth(raw: unknown, label: string, problems: string[]): McpAuthDecl
   return { kind: 'none' };
 }
 
-function parseTool(raw: unknown, site: string, label: string, problems: string[]): McpToolDecl | null {
+interface ApiContext { readonly baseUrl: string; readonly network: ApiNetwork; readonly auth: McpAuthDecl }
+/** 선언 고정을 적지 않았을 때의 자리 값: 어떤 합성 스키마 해시와도 같지 않아 그 도구는 `closed:drift` 로 닫힌다(mcp-pin 이 값을 출력한다) */
+export const API_PIN_MISSING = `sha256:${'0'.repeat(64)}`;
+
+function parseTool(raw: unknown, site: string, label: string, problems: string[], api: ApiContext | null = null): McpToolDecl | null {
   if (!isRecord(raw)) { problems.push(`${label} must be an object`); return null; }
   const before = problems.length;
-  checkKeys(raw, ['name', 'as', 'description', 'scope', 'impact', 'side_effect', 'approval', 'target', 'input_schema_sha256', 'unit_cost_usd', 'idempotency', 'ack_server_hint_conflict'], label, problems);
+  if (api === null) checkKeys(raw, ['name', 'as', 'description', 'scope', 'impact', 'side_effect', 'approval', 'target', 'input_schema_sha256', 'unit_cost_usd', 'idempotency', 'ack_server_hint_conflict'], label, problems);
+  else checkKeys(raw, ['name', 'as', 'description', 'scope', 'impact', 'side_effect', 'approval', 'target', 'pin', 'unit_cost_usd', 'ack_post_is_read', 'args', 'request', 'returns', 'record'], label, problems);
   const name = raw['name'];
   if (typeof name !== 'string' || !SERVER_NAME.test(name)) problems.push(`${label}.name must be a server tool name`);
   const as = raw['as'] ?? name;
@@ -164,8 +187,8 @@ function parseTool(raw: unknown, site: string, label: string, problems: string[]
   if (impact === 'external_effect' && approval !== 'draft' && approval !== 'scope') problems.push(`${label}.approval ('draft' or 'scope') is required for a write tool`);
   const target = raw['target'];
   if (typeof target !== 'string' || target.trim() === '' || target.length > 200) problems.push(`${label}.target is required (1-200 characters)`);
-  const hash = raw['input_schema_sha256'];
-  if (typeof hash !== 'string' || !SCHEMA_HASH.test(hash)) problems.push(`${label}.input_schema_sha256 is required ('sha256:' + 64 hex; run npm run mcp-pin)`);
+  const hash = api === null ? raw['input_schema_sha256'] : (raw['pin'] ?? API_PIN_MISSING);
+  if (typeof hash !== 'string' || !SCHEMA_HASH.test(hash)) problems.push(api === null ? `${label}.input_schema_sha256 is required ('sha256:' + 64 hex; run npm run mcp-pin)` : `${label}.pin must be 'sha256:' + 64 hex (run npm run mcp-pin)`);
   const cost = raw['unit_cost_usd'];
   if (cost !== undefined && !(typeof cost === 'number' && Number.isFinite(cost) && cost >= 0)) problems.push(`${label}.unit_cost_usd must be a non-negative number`);
   let idempotency: McpToolDecl['idempotency'] = null;
@@ -183,8 +206,23 @@ function parseTool(raw: unknown, site: string, label: string, problems: string[]
   const ack = raw['ack_server_hint_conflict'];
   if (ack !== undefined && typeof ack !== 'boolean') problems.push(`${label}.ack_server_hint_conflict must be a boolean`);
   if (ack !== undefined && impact !== 'read') problems.push(`${label}: ack_server_hint_conflict is only for read tools`);
+  let apiDecl: McpToolDecl['api'] = null;
+  if (api !== null) {
+    const op = parseApiOperation(raw, impact, label, problems);
+    if (op !== null && problems.length === before) {
+      const basis = {
+        base_url: api.baseUrl, network: api.network,
+        auth: api.auth.kind === 'header' ? { kind: 'header', header: api.auth.header.toLowerCase(), value_env: api.auth.valueEnv }
+          : api.auth.kind === 'bearer' ? { kind: 'bearer', token_env: api.auth.tokenEnv } : { kind: api.auth.kind },
+        tool: { name: name as string, impact: impact as string, side_effect: sideEffect as boolean, approval: impact === 'read' ? null : (approval as string), scope: scope as string, target: target as string, ack_post_is_read: raw['ack_post_is_read'] === true },
+        op,
+      };
+      apiDecl = Object.freeze({ op, declHash: apiDeclHash(basis) });
+    }
+  }
   if (problems.length > before) return null;
   return Object.freeze({
+    api: apiDecl,
     name: name as string, as: as as string, gatewayName: `mcp_${site}_${as as string}`, description: (description as string).trim(), scope: scope as Scope,
     impact: impact as 'read' | 'external_effect', sideEffect: sideEffect as boolean, approval: impact === 'read' ? null : (approval as 'draft' | 'scope'),
     target: target as string, inputSchemaSha256: hash as string, unitCostUsd: typeof cost === 'number' ? cost : null, idempotency, ackServerHintConflict: ack === true,
@@ -211,7 +249,7 @@ function validateSite(raw: unknown, label: string, problems: string[]): McpSiteM
     const env = raw['env_from'];
     if (!isRecord(env) || !Object.entries(env).every(([k, v]) => ENV_NAME.test(k) && typeof v === 'string' && ENV_NAME.test(v))) problems.push(`${label}.env_from must map environment names to daemon environment variable names`);
     else envFrom = { ...(env as Record<string, string>) };
-    if (transport?.kind === 'http') problems.push(`${label}.env_from is only for stdio transports`);
+    if (transport?.kind === 'http' || transport?.kind === 'api') problems.push(`${label}.env_from is only for stdio transports`);
   }
   if (auth.kind === 'oauth_delegated') {
     if (transport?.kind === 'stdio') problems.push(`${label}: oauth_delegated needs an http transport`);
@@ -219,6 +257,7 @@ function validateSite(raw: unknown, label: string, problems: string[]): McpSiteM
       try { if (new URL(auth.resource).origin !== new URL(transport.url).origin) problems.push(`${label}.auth.resource must have the same origin as transport.url (the token must not leave for another host)`); } catch { /* 위에서 보고했다 */ }
     }
   }
+  if (transport?.kind === 'api' && auth.kind === 'oauth_delegated') problems.push(`${label}: oauth_delegated is not supported by the api transport`);
   if (transport?.kind === 'stdio' && auth.kind !== 'none') problems.push(`${label}: a stdio server gets its secrets through env_from, not auth`);
   const rate = raw['rate_limit_per_minute'] ?? DEFAULT_RATE_LIMIT_PER_MINUTE;
   if (!isInt(rate, 1, 600)) problems.push(`${label}.rate_limit_per_minute must be an integer 1-600`);
@@ -231,7 +270,7 @@ function validateSite(raw: unknown, label: string, problems: string[]): McpSiteM
     const names = new Set<string>();
     const serverNames = new Set<string>();
     toolsRaw.forEach((entry, i) => {
-      const tool = parseTool(entry, site, `${label}.tools[${i}]`, problems);
+      const tool = parseTool(entry, site, `${label}.tools[${i}]`, problems, transport?.kind === 'api' ? { baseUrl: transport.baseUrl, network: transport.network, auth } : null);
       if (tool === null) return;
       if (names.has(tool.gatewayName)) problems.push(`${label}.tools[${i}]: agent tool name '${tool.gatewayName}' is used twice`);
       if (serverNames.has(tool.name)) problems.push(`${label}.tools[${i}]: server tool '${tool.name}' is declared twice`);

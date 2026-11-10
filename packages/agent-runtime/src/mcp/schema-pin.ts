@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer';
 
 import { canonicalJson, sha256Hex } from '@aot/domain';
 
+import { synthInputSchema } from './connector/api-decl.ts';
 import type { McpToolDecl } from './manifest.ts';
 
 export const MAX_ARGUMENT_BYTES = 64 * 1024;
@@ -92,3 +93,6 @@ export function checkArguments(schema: unknown, args: unknown, options: { hostSe
   }
   return null;
 }
+
+/** API 동작 선언이 내야 하는 `pin` (합성 입력 스키마의 해시). MCP 도구면 null. 오너는 mcp-pin 출력으로 이 값을 받는다 */
+export const apiPinOf = (tool: McpToolDecl): string | null => (tool.api === null ? null : schemaHash(synthInputSchema(tool.api.op, tool.api.declHash)));

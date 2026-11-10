@@ -5,10 +5,11 @@
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
 
+import { createApiClient } from './api-runtime.ts';
 import { schemaHashOf } from './canonical.ts';
 import { createMcpClient, type McpClient } from './client.ts';
 import { createHttpTransport } from './http-transport.ts';
-import { createRedactor, safeText, type Redactor } from './redact.ts';
+import { createRedactor, safeText, secretPieces, type Redactor } from './redact.ts';
 import { createStdioTransport } from './stdio-transport.ts';
 import type { Transport } from './transport.ts';
 import {
@@ -41,11 +42,21 @@ function build(config: ConnectorConfig): Runtime {
   const need = (name: string): string => {
     const value = envValue(name);
     if (value === undefined) throw new ConnectorFailure('config_invalid', `environment variable ${name} is not set for the connector`, true);
-    secrets.push(value);
+    secrets.push(value, ...secretPieces(value));
     return value;
   };
   let transport: Transport;
   let accessToken: string | null = null;
+  if (config.transport.kind === 'api') {
+    // API 전송 (ADR-0020): MCP 클라이언트 대신 선언에서 도구를 합성하는 클라이언트. 인증은 bearer/header 만(oauth_delegated 는 호스트가 거부한다)
+    const authHeaders: Record<string, string> = {};
+    if (config.auth.kind === 'bearer') authHeaders['authorization'] = `Bearer ${need(config.auth.token_env)}`;
+    else if (config.auth.kind === 'header') authHeaders[config.auth.header.toLowerCase()] = need(config.auth.value_env);
+    else if (config.auth.kind === 'oauth_delegated') throw new ConnectorFailure('config_invalid', 'oauth_delegated is not supported by the api transport', true);
+    const redactor = createRedactor(secrets);
+    const client = createApiClient({ transport: config.transport, authHeaders, redactor, maxResultBytes: config.max_result_bytes > 0 ? config.max_result_bytes : DEFAULT_MAX_RESULT_BYTES });
+    return { setToken: () => undefined, config, client, redactor, declared: new Set(config.tools) };
+  }
   if (config.transport.kind === 'http') {
     const headers: Record<string, string> = {};
     if (config.auth.kind === 'bearer') headers['authorization'] = `Bearer ${need(config.auth.token_env)}`;

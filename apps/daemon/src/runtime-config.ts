@@ -169,6 +169,8 @@ export interface AgentRuntimeOverrides {
   recorder?: ToolCallRecorder;
   /** 도구 호출·시간 제한 타이머 */
   timers?: GatewayTimers;
+  /** 에이전트에 보이는 도구 설명을 더한다(오너 MCP 도구의 오너 설명, ADR-0018). 등록 도구 설명과 합쳐진다 */
+  toolDescriptions?: Readonly<Record<string, string>>;
 }
 
 export interface AgentRuntimeBuild {
@@ -353,7 +355,8 @@ const DEFAULT_GITLEAKS_CONFIG = fileURLToPath(new URL('../../../config/gitleaks-
 
 export function buildAgentRuntime(config: AgentRuntimeConfig, instanceDir: string, overrides: AgentRuntimeOverrides = {}): AgentRuntimeBuild {
   const registration = parseRegistrationToolsConfig(config.registration_tools);
-  const built = buildAgentBase(config, instanceDir, overrides, registration === undefined ? undefined : REGISTRATION_TOOL_DESCRIPTIONS);
+  const descriptions = { ...(registration === undefined ? {} : REGISTRATION_TOOL_DESCRIPTIONS), ...(overrides.toolDescriptions ?? {}) };
+  const built = buildAgentBase(config, instanceDir, overrides, Object.keys(descriptions).length === 0 ? undefined : descriptions);
   if (registration === undefined) return built;
   if (overrides.db === undefined) throw new Error('registration_tools needs the database (the daemon passes it)');
   if (built.agent === undefined) throw new Error('registration_tools needs an agent adapter: set claude_code_cli or container_agent');

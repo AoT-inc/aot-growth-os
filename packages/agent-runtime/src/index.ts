@@ -89,3 +89,5 @@ export {
   REPO_READ_TOOL, REGISTRATION_TOOL_DESCRIPTIONS, registrationToolName, registrationToolSpecs, remoteKind, RepoToolError, SECRET_SCAN_TOOL,
   type CapturedEvidence, type EvidenceCapture, type GitRunner, type RegistrationQuota, type RegistrationTools, type RegistrationToolRun, type RegistrationToolsOptions, type RepoBinding, type RepoToolErrorCode,
 } from './registration/index.ts';
+// 오너 MCP 서버 커넥터 (ADR-0018): 오너 선언 검증, 사이트 연결(커넥터 프로세스 관리·고정 확인·속도 제한), 게이트웨이·부작용 도구.
+export * from './mcp/index.ts';

@@ -41,6 +41,11 @@ module.exports = {
       from: { path: '^packs/' },
       to: { path: '^(packages/[^/]+/src/(?!index\\.ts$)|apps/)' } },
 
+    { name: 'mcp-connector-isolated', severity: 'error',
+      comment: 'MCP 커넥터 프로세스(ADR-0018)는 DB·정책·다른 패키지를 모른다: node: 내장 모듈과 같은 폴더(connector/)의 파일만 import 한다',
+      from: { path: '^packages/agent-runtime/src/mcp/connector/' },
+      to: { pathNot: '^packages/agent-runtime/src/mcp/connector/', dependencyTypesNot: ['core'] } },
+
     { name: 'sqlite-driver-only-in-one-file', severity: 'error',
       comment: '연결은 openDb() 로만 연다. PRAGMA 순서(busy_timeout 먼저)와 BEGIN IMMEDIATE 규칙이 거기에 있다',
       from: { pathNot: '^packages/domain/src/db/node-sqlite\\.ts$' },

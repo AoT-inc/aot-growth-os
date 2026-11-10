@@ -35,13 +35,15 @@ import { advanceOrganization } from './org-cycle.ts';
 import { createRepeatFilter } from './log-throttle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
 import { mailOptionsFromConfig, type MailConfig } from './mail-config.ts';
+import { mcpToolDescriptions } from '@aot/agent-runtime';
+import { mcpOptionsFromConfig, type McpConfig } from './mcp-config.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
 import { startPhoneWebhookServer } from './phone-webhook-server.ts';
 import { buildAgentRuntime, buildClaudeGate, parseClaudeCodeCliConfig, type AgentRuntimeConfig } from './runtime-config.ts';
 
 /** 에이전트 쪽 키(container_agent·research_agent·instance_id·run_log_dir·default_time_limit)는 AgentRuntimeConfig 에 있다 */
 /** 팩 키(pack_dir·pack_values)는 PackConfig 에, 주간 사이클 키(experiment_cycle)는 CycleConfig 에 있다 */
-interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
+interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig, McpConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
   /** 메일 도구 (ADR-0017). 없으면 조립하지 않는다 */
@@ -92,11 +94,13 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
+  const mcp = mcpOptionsFromConfig(config); // 환경 변수가 비어 있으면 여기서 던진다(시작하지 않는다)
   // 실행 어댑터·검증기·위임 검토자가 같은 동의 읽기와 같은 게이트를 쓴다 (구독 풀이 하나다)
   const claudeConfig = parseClaudeCodeCliConfig(config.claude_code_cli);
   const claudeConsent = (): ReturnType<typeof readClaudeCodeConsent> => readClaudeCodeConsent(db);
   const claudeGate = claudeConfig === undefined ? undefined : buildClaudeGate(claudeConfig, systemClock);
   const { agent, evaluation, productChannel } = buildAgentRuntime(config, instanceDir, {
+    ...(mcp === undefined ? {} : { toolDescriptions: mcpToolDescriptions(mcp.sites.map((site) => site.manifest)) }), // 에이전트에는 오너가 쓴 설명만 보인다
     claudeCodeConsent: claudeConsent, db, ...(claudeGate === undefined ? {} : { claudeGate }),
     forbiddenRoots: daemonForbiddenRoots(config, instanceDir),
   });
@@ -128,6 +132,7 @@ async function main(): Promise<void> {
     ...(cycle === undefined ? {} : { cycle }),
     ...(phone === undefined ? {} : { phone: phone.options }),
     ...(mail === undefined ? {} : { mail }),
+    ...(mcp === undefined ? {} : { mcp }),
     ...(delegateReviewer === undefined ? {} : { delegate: { reviewer: delegateReviewer } }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,
@@ -144,6 +149,7 @@ async function main(): Promise<void> {
     console.log(`container agent: docker ${readiness.dockerVersion}, orphan containers removed: ${readiness.orphans.removed}/${readiness.orphans.found.length}`);
     for (const failure of readiness.orphans.failures) console.error(`orphan cleanup: ${failure}`);
   }
+  await daemon.mcp?.start(); // 사이트마다 커넥터 프로세스를 띄우고 첫 고정 확인을 한다(서버가 안 보여도 도구가 닫힌 채 시작하고 다시 시도한다)
   const channel = await daemon.startApprovalChannel((name) => console.error(`approval channel: ${String(name)}`));
   const { worker } = daemon;
   const experimentCycle = daemon.cycle;
@@ -224,6 +230,7 @@ async function main(): Promise<void> {
     onError: (error) => console.error('tick failed:', error),
   });
   await webhookServer?.close();
+  await daemon.mcp?.close();
   await channel.close();
   db.close();
   console.log(`aot-daemon ${config.worker_id}: stopped`);

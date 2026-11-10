@@ -420,6 +420,8 @@ function checkPhone(value: unknown, out: IssueCollector): PhonePolicySection | n
 export const DELEGATION_MAX_DAYS = 90;
 const MANDATE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const HOLDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+/** 위임 holder 가 될 수 없는 행위자 id (ADR-0019): 대화 AI(`owner-conversation`)는 어떤 위임으로도 승인할 수 없다. 정책 문서가 이 id 를 holder 로 지정하면 해석이 실패해 배포되지 않는다 */
+export const NON_HOLDER_ACTORS: readonly string[] = ['owner-conversation'];
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 export const MAX_GUIDANCE_CHARS = 500;
 
@@ -470,6 +472,7 @@ function checkDelegation(value: unknown, risky: RiskyChangeParams, out: IssueCol
     else seen.add(id);
     const holder = item['holder'];
     if (typeof holder !== 'string' || !HOLDER_ID.test(holder)) out.add(`${path}.holder`, 'format', 'holder must be an actor id');
+    else if (NON_HOLDER_ACTORS.includes(holder)) out.add(`${path}.holder`, 'reserved', `'${holder}' cannot be a delegation holder (the conversation actor never approves)`);
     const subjects = item['subjects'];
     if (Array.isArray(subjects) && subjects.some((entry) => entry !== 'task' && humanOnlyKind(entry) !== null && humanOnlyKind(entry) !== UNCLASSIFIED)) {
       // 항상 사람이 정하는 결정(정책 배포·조직 변경·게시·상품 등록 …)은 위임 대상으로 적을 수 없다 (ADR-0016 Decision 5)

@@ -389,7 +389,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
           }),
         })) }),
       });
-      return startApprovalServer({ socketPath, handle, ...(onError === undefined ? {} : { onError }) });
+      return startApprovalServer({ socketPath, handle, maxConnections: 8, ...(onError === undefined ? {} : { onError }) });
     },
     startApprovalChannel: (onError) => startApprovalServer({
       socketPath: options.paths.approvalSocket,

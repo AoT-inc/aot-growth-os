@@ -9,6 +9,7 @@ import { join } from 'node:path';
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const CALL_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_LINE_BYTES = 256 * 1024; // stdin 줄 하나의 상한. 넘으면 그 줄을 버리고 오류로 답한다
 
 const str = (description: string, extra: Record<string, unknown> = {}) => ({ type: 'string', description, ...extra });
 const none = { type: 'object', properties: {}, additionalProperties: false };
@@ -111,13 +112,24 @@ if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${proce
     process.exit(2);
   }
   let inputBuffer = '';
+  let discarding = false; // 상한을 넘은 줄의 나머지를 줄바꿈까지 버리는 중
   process.stdin.on('data', (chunk: Buffer) => {
     inputBuffer += chunk.toString('utf8');
-    let newline = inputBuffer.indexOf('\n');
-    while (newline !== -1) {
+    for (;;) {
+      const newline = inputBuffer.indexOf('\n');
+      if (newline < 0) {
+        if (inputBuffer.length > MAX_LINE_BYTES) {
+          if (!discarding) send({ id: null, error: { code: -32600, message: 'request line too long' } });
+          discarding = true;
+          inputBuffer = '';
+        }
+        return;
+      }
       const line = inputBuffer.slice(0, newline).trim();
+      const tooLong = newline > MAX_LINE_BYTES;
       inputBuffer = inputBuffer.slice(newline + 1);
-      newline = inputBuffer.indexOf('\n');
+      if (discarding) { discarding = false; continue; } // 버리던 줄의 끝
+      if (tooLong) { send({ id: null, error: { code: -32600, message: 'request line too long' } }); continue; }
       if (line === '') continue;
       try {
         void handle(socketPath!, JSON.parse(line) as Parameters<typeof handle>[1]);

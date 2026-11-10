@@ -18,7 +18,7 @@ export {
 } from './delegation.ts';
 export { recordDecision, type DecisionRecord } from './decisions.ts';
 export {
-  DELEGATION_MAX_DAYS, mandateExpiresAt, MAX_GUIDANCE_CHARS, memoryDefaultValidity, parseDuration, parsePolicy, PHONE_RECORDING_MODES, POLICY_FORMAT, policyHash, policyVersionIdOf,
+  DELEGATION_MAX_DAYS, mandateExpiresAt, NON_HOLDER_ACTORS, MAX_GUIDANCE_CHARS, memoryDefaultValidity, parseDuration, parsePolicy, PHONE_RECORDING_MODES, POLICY_FORMAT, policyHash, policyVersionIdOf,
   RISKY_CHANGE_RANGE, validatePolicyDocument,
   type DelegationSection, type Mandate, type MandateLimits, type MandateMode, type MandateMatch, type RecipientRule, type ParsedPolicy, type PhonePolicySection, type PhoneRecordingMode, type PolicyDocument, type PolicyLimits,
   type PolicyRule, type RiskyChangeParams,

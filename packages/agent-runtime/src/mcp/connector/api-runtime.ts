@@ -2,20 +2,11 @@
 // `list` 는 오너 선언에서 합성한 도구 목록을 내고, `call` 은 선언된 동작 하나를 HTTP 요청으로 바꿔 보낸다. 선언에 없는 동작·인자는 보낼 수 없다.
 // 응답은 읽기에서만 `returns` 허용 목록으로 걸러 돌려주고, 쓰기는 상태와 `record` 필드만 돌려준다. 비밀이 되돌아오면 가린다.
 import { buildApiRequest, ApiBuildError, selectFields, ShapeError, tryRecordFields } from './api-request.ts';
-import { checkApiArguments, synthInputSchema, type ApiNetwork, type ApiOperation } from './api-decl.ts';
+import { checkApiArguments, synthInputSchema } from './api-decl.ts';
 import { executeApiRequest } from './api-http.ts';
 import type { McpClient } from './client.ts';
 import type { Redactor } from './redact.ts';
-import { ConnectorFailure, type ConnectorCallResult } from './wire.ts';
-
-export interface ApiTransportConfig {
-  kind: 'api';
-  base_url: string;
-  network: ApiNetwork;
-  timeout_ms: number;
-  /** 서버 도구 이름(동작 이름) → 정규형 선언과 호스트가 계산한 선언 해시 */
-  operations: Record<string, { op: ApiOperation; decl_hash: string }>;
-}
+import { ConnectorFailure, type ApiTransportConfig, type ConnectorCallResult } from './wire.ts';
 
 export interface ApiClientOptions {
   transport: ApiTransportConfig;

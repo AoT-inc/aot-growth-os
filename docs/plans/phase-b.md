@@ -78,4 +78,4 @@ org rollback <id> --comment 사유 / org retire <id> --comment 사유   확정�
 ### 독립 리뷰 반영 (2026-11-04, 하위 에이전트 1회, 재현된 7건)
 시험 업무 집계에 시험 시작 뒤 배정된 `unassigned` 백로그 포함 / 승인·시험 시작 때 등급 재확인과 slug 중복 확인 / 확정 변경의 롤백·폐지는 마지막 확정 변경만 / 재시험과 시험 중 기준 버전 확인(기준이 바뀐 시험은 평가기가 `fail` → 롤백) /
 폐지·롤백 시 queued·retry_wait·needs_review 업무를 `reroute_to`로 이동(대상이 없으면 거부) / 금지 이름은 구분 문자를 빼고 부분 문자열로 검사 / 끝난 제안과 같은 내용은 새 행으로 다시 낼 수 있음.
-남은 한계: `approved` 상태에서 기준 버전이 바뀌면 시험을 시작하지 못하고 머문다(상태표에 `approved → superseded`가 없다 — 상태표 개정 필요). `role.allowed_tools`는 업무 경로에서 강제되지 않는 *요청*이고 실제 경계는 정책이다. 사람 리뷰는 아직 없다.
+남은 한계: `approved` 상태에서 기준 버전이 바뀌면 시험을 시작하지 못하고 머문다(상태표에 `approved → superseded`가 없다 — 상태표 개정 필요). `role.allowed_tools`는 업무 경로에서 강제되지 않는 *요청*이고 실제 경계는 정책이다. 사람 리뷰는 아직 없다. 사람이 제안·시험 결과를 쉽게 읽는 읽기 전용 화면은 [review-web](../operations/review-web.md).

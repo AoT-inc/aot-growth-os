@@ -98,6 +98,8 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
   const { agent } = deps;
   return {
     async execute(ctx) {
+      // 전송 단계(ADR-0015)는 호스트 전송기가 맡는다. 에이전트 실행기가 불리면 안 된다 (LLM 호출 0회)
+      if (ctx.phase === 'dispatch') throw new Error('the agent executor must not run in a dispatch phase (the host dispatcher sends the approved drafts)');
       const spec = ctx.spec;
       const executors = new Map<string, ToolExecutor>(agent.executors ?? []);
       for (const [name, runExecutor] of agent.runExecutors?.(ctx) ?? []) {
@@ -125,6 +127,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         createGateway: (hooks) => createToolGateway({
           runId: ctx.lease.runId, taskId: ctx.taskId, subject: subjectOf(spec), tools: offered, executors,
           policy: deps.toolCallPolicy, clock: deps.clock, constraints: toolCallConstraintsOf(input), toolTimeoutMs: agent.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
+          effectMode: ctx.phase === 'draft' ? 'draft' : 'send',
           signal: hooks.signal, onCostProgress: hooks.onCostProgress, ...(upstream.length === 0 ? {} : { externalInput: true }), ...(agent.timers === undefined ? {} : { timers: agent.timers }),
           ...(agent.recorder === undefined ? {} : { recorder: agent.recorder }),
         }),

@@ -1,5 +1,8 @@
 // @aot/domain 공개 API 진입점. 다른 패키지는 이 파일로만 참조한다 (경계 lint: .dependency-cruiser.cjs).
 // 시계 주입(Clock), SQLite 접근 계층(Db), 엔터티 타입, 상태 전이 허용표, task_spec·팩 manifest 검증, 실험 전략 제안(strategy_version, A6-U14)과 실험 활성화·종료 기록의 키·조회(A6-U15).
+export {
+  contactStatuses, domainOfAddress, FREE_MAIL_DOMAINS, isStrictDomain, listContacts, normalizeAddress, recipientAddressesOf, type RecipientAddresses,
+} from './contacts.ts';
 export { canonicalJson, contentHash, sha256Hex } from './canonical.ts';
 export { FakeClock, systemClock, type Clock } from './clock.ts';
 export { createDb } from './db/create-db.ts';
@@ -16,9 +19,13 @@ export {
 } from './state/machine.ts';
 export {
   CALL_MACHINE, CALL_OPEN_STATUSES, CALL_TERMINAL_STATUSES, isCallOpen,
-  EXTERNAL_EFFECT_MACHINE, isTaskTerminal, ORG_PROPOSAL_MACHINE, PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE,
+  EFFECT_DRAFT_MACHINE, EXTERNAL_EFFECT_MACHINE, isTaskTerminal, ORG_PROPOSAL_MACHINE, PRODUCT_LIFECYCLE_MACHINE, PRODUCT_REGISTRATION_MACHINE, PUBLICATION_MACHINE,
   ROLE_MACHINE, STATE_MACHINES, STRATEGY_MACHINE, TASK_MACHINE, TASK_TERMINAL_STATUSES,
 } from './state/machines.ts';
+export {
+  DRAFT_LIMITS, DRAFT_SEND_STATES, draftSendStates, draftSubjectEntries, HOST_DISPATCH_ADAPTER, isSecretKeyName, maskedPathsOf, maskSecretKeys, messagePreviewOf, proposedDraftsOf, transitionDrafts,
+  type DraftSendState, type DraftSubjectEntry, type DraftTransitionRequest, type MessagePreview,
+} from './drafts.ts';
 export {
   PHONE_TARGET_TOOLS, EXPECTED_CALL_OUTCOME_CHECK_ID, MAX_OUTCOME_DISPOSITIONS, MAX_OUTCOME_REQUIRED_FIELDS, type ExpectedCallOutcome,
   EXPECTED_QUOTES_CHECK_ID, MAX_EXPECTED_QUOTE_CHARS, MAX_EXPECTED_QUOTES, MAX_EXPECTED_QUOTES_PER_SOURCE, MAX_TASK_RESULT_BYTES, MAX_TASK_RESULT_INPUTS,
@@ -72,7 +79,7 @@ export type {
   TaskValidationRequest, TaskValidationVerdict, TaskValidator,
 } from './ports/task-validator.ts';
 export {
-  currentPolicyVersionId, DEFAULT_OWNER_NAME, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
+  APPROVAL_DELEGATE, currentPolicyVersionId, DEFAULT_OWNER_NAME, ensureApprovalDelegate, POLICY_V1_DOCUMENT, policyV1ContentHash, SEED_IDS, SEED_SLUGS, seedPhaseA,
   taskCreationPrerequisites, type SeedOptions, type SeedResult, type TaskCreationPrerequisites,
 } from './seed.ts';
 // 외부 대화 계층(ADR-0014 §0): 채널 중립 발화 기록·구조화 결과, 그리고 첫 채널인 전화(canonical 모델·검증·통화 저장·이벤트 적용·인바운드 라우팅).

@@ -8,7 +8,7 @@ import { minimalDraft } from './spec-fixtures.ts';
 /** 시험용: 생성·실행을 모두 허용한다. 실제 판정은 A3 의 policy 가 같은 포트로 구현한다. */
 export const ALLOW_ALL_GATE: TaskPolicyGate = {
   beforeCreate: () => ({ decision: 'allow' }),
-  beforeRun: () => ({ decision: 'allow' }),
+  beforeRun: () => ({ decision: 'allow', phase: 'execute' }),
   beforeEffect: () => ({ decision: 'allow' }),
 };
 
@@ -44,7 +44,7 @@ export interface EffectToolHooks {
 /** test/support/fake-tool.ts 의 가짜 도구를 엔진의 EffectTool 계약에 맞춘다. 응답 유실은 예외 → `unknown`. */
 export function asEffectTool(fake: FakeTool, hooks: EffectToolHooks = {}, actionNames: readonly string[] = ['send']): EffectTool {
   const actions: Record<string, EffectActionDeclaration> = Object.fromEntries(actionNames.map((name) => [
-    name, { idempotency: fake.idempotency, ...(fake.lookup ? { effect_key_carrier: 'metadata' as const } : {}) },
+    name, { approval: 'scope' as const, idempotency: fake.idempotency, ...(fake.lookup ? { effect_key_carrier: 'metadata' as const } : {}) },
   ]));
   const tool: EffectTool = {
     name: fake.name,

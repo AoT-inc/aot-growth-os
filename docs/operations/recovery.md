@@ -72,6 +72,8 @@ confirmed → compensated (보상 작업이 실행된 경우)
 - **닫힘:** 앞 판의 알려진 틈 둘(창 안 멱등 `unknown`이 `validating`으로 감, 이전 run의 `unknown`이 정산에 안 보임)은 위 관문으로 닫았다.
 - **닫힘:** 새 run이 다시 계획하지 않는 `unknown`을 사람이 `confirmed`/`failed`로 확정하는 경로를 만들었다(커밋 62056a6). 아래 "사람 확정 절차"를 따른다. 상태표·결과값·스키마 변경은 없다(상태표가 이미 허용한 `unknown → confirmed/failed`(사람)를 처음으로 코드로 낸 것이다).
 
+**전송 run (ADR-0015, 초안 승인 업무).** 사람이 초안을 승인하면 호스트가 `adapter='host:dispatch'`인 run을 연다. 이 run에는 에이전트·LLM이 없다. 전송기(`dispatchApprovedDrafts`)는 `proposed` 초안을 `seq` 순으로 먼저 모두 확인한 뒤(`sha256(payload) = payload_hash`, `effectKeyOf(task_id, step_id, payload) = effect_key`; 다르면 전송 0, run 오류) 기존 `performEffect`로 보낸다. **이 문서의 원장 규칙(펜싱, `planned → dispatched → confirmed/failed/unknown`, 재전송 창, `failed` 재전송은 정책 allow일 때만, 업무 범위 `unknown` 관문, 사람 확정)은 바뀌지 않았다.** 추가된 것은 하나다: `beforeEffect`가 `request_hash`가 승인된 초안의 해시이고 초안이 만료 전인지 먼저 확인하고, 그 뒤 현재 정책으로 재판정하며 초안 해시에 대한 사람 승인을 다시 확인한다. `unknown`이나 `failed`가 나오면 거기서 멈추고 뒤 초안은 보내지 않는다(`failed`는 run 오류 → `retry_wait`). `unknown`이 있으면 업무는 `needs_review`이고, 사람이 `resolve-effect`로 확정한 뒤 승인으로 재큐하면 이미 `confirmed`인 초안은 같은 행을 재사용해(전송 0회) 이어 간다. lease 만료·재시작은 기존 인수 규칙 그대로 다시 전송 단계가 된다. 초안 단계 run은 `beginDispatch`가 던지고 `beforeEffect`가 거부하므로 아무것도 보내지 않는다.
+
 **사람 확정 절차 (`unknown` 외부 효과).** 승인 CLI(`apps/daemon/src/approve.ts`, 승인 소켓)의 두 명령이다. 사람 actor만 쓴다(소켓 파일 권한 + `actor.kind='human'`을 채널과 트랜잭션 안에서 각각 확인).
 
 1. `effects` — `unknown`인 외부 효과 목록(읽기 전용). 효과 id, 업무 id·상태, run id, 도구·action·대상, `request_hash`, `planned_at`, 마지막 전이 시각(`external_effect.at`), `supports_idempotency`, `resend_window_open`(`resendAllowed`의 순수 판정), `run_active`, `resolved_before`를 보여 준다. 요청 본문·`effect_key`·`response_ref`·메모·TOTP는 나오지 않는다.

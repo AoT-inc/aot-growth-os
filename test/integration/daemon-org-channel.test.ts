@@ -68,6 +68,7 @@ test('draft: a proposal is generated from the signal — no JSON to write; defau
   assert.equal(made['change_class'], 'normal', 'the default tool set is the generalist\'s: no expansion');
   const shown = send({ cmd: 'show', actor: OWNER, kind: 'org_proposal', id: made['proposal_id'] });
   assert.match(String(shown['rationale']), /1건/);
+  assert.doesNotMatch(String(shown['rationale']), /unassigned/, 'human-facing draft text is plain Korean');
   assert.deepEqual(shown['trial_scope'], { task_types: [TYPE] });
   assert.equal(send({ cmd: 'approve', actor: OWNER, kind: 'org_proposal', id: made['proposal_id'], hash: shown['hash'] })['state'], 'approved');
   assert.equal(send({ cmd: 'org', actor: OWNER, op: 'propose', draft, proposal: BODY })['ok'], false, 'draft and proposal are exclusive');

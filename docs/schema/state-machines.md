@@ -18,11 +18,11 @@ queued ──► running ──► validating ──► completed
 | (none) | queued | 업무 생성 엔진 | 명세 검증 통과, 의존 업무 존재, 배정 가능한 `trial`/`active` 역할 있음 |
 | (none) | unassigned | 업무 생성 엔진 | 맞는 역할 없음 → 조직 관리팀의 재편 신호 |
 | unassigned | queued | 스케줄러 | 역할 배정됨(기존 역할 확장 또는 새 역할 `trial` 시작) |
-| queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용, 실행 인자 = `approved_hash`, lease 획득 |
+| queued | running | 스케줄러 | 선행 업무 `completed`, 예산 잔여, 정책 허용, 실행 인자 = `approved_hash`, lease 획득. **또는 초안 단계**(ADR-0015: 초안 승인 업무, `require_approval`이 모두 `external_effect`, 제안된 초안 없음 — 승인 없이 시작하고 아무것도 보내지 않는다), **또는 전송 단계**(제안된 초안 + 초안 해시 승인 유효, `adapter='host:dispatch'`; 이 경우 이미 쓴 비용으로 예산 정지하지 않는다) |
 | queued | needs_review | 스케줄러/정책 | `approved_hash` 불일치(재승인 요청), 실행 직전 재검증에서 승인 범위 이탈, 또는 (A6-U11) 명세의 선행 결과 입력(`inputs[kind=task_result]`)이 충족되지 않았거나(통과 평가가 있는 완료 업무가 아님) 업무별 어댑터를 고를 수 없음. run 을 만들지 않고 시도도 소모하지 않는다. 사유는 `upstream_unmet: <code>` / `adapter_unresolved` |
 | running | validating | 스케줄러 | `task_run.outcome='submitted'` |
 | running | queued | 스케줄러 | lease 만료로 run을 `lease_expired`로 닫음, 미확정 부작용 없음 ([recovery §4](../operations/recovery.md)) |
-| running | needs_review | 스케줄러 | run `effect_unknown`(재전송할 수 없는 `unknown`: 멱등 미지원, 또는 `planned_at`부터 `idempotency_retention_ms`의 50%가 지나 재전송 창이 닫힘. lease 만료 인수 때도 같은 판정), 또는 submit 시 업무 범위에 해결 안 된 `unknown`(다른 run의 것, 창 안 재전송 가능 포함)이나 다른 run의 `dispatched`가 남음, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈 |
+| running | needs_review | 스케줄러 | run `effect_unknown`(재전송할 수 없는 `unknown`: 멱등 미지원, 또는 `planned_at`부터 `idempotency_retention_ms`의 50%가 지나 재전송 창이 닫힘. lease 만료 인수 때도 같은 판정), 또는 submit 시 업무 범위에 해결 안 된 `unknown`(다른 run의 것, 창 안 재전송 가능 포함)이나 다른 run의 `dispatched`가 남음, 또는 실행 중 재검증에서 정책이 거부/승인 범위 이탈(전송 단계는 초안 불일치·만료·정책 변경 포함, ADR-0015) |
 | running | retry_wait | 스케줄러 | error/timeout, `attempts < max_attempts` |
 | running | failed | 스케줄러 | `attempts >= max_attempts` 또는 치명적 정책 위반 |
 | running | retry_wait / failed | 스케줄러 | 실행 관리가 `time_limit` 초과로 취소해 run을 `killed`로 닫음 — `error/timeout`과 같은 규칙(시도 1회 소모, `attempts < max_attempts`면 `retry_wait`, 아니면 `failed`). 허용표에 새 전이는 없다 (A5 U4) |
@@ -31,8 +31,8 @@ queued ──► running ──► validating ──► completed
 | running | retry_wait | 스케줄러 | 어댑터가 일을 시작하지 않고 미뤘다(`deferred`: `claude-code-cli` 의 사람 우선 게이트 `usage_deferred`). run은 `killed`. 실패가 아니라 "나중에 다시"이므로 **시도를 소모하지 않고**(`attempts` 그대로, 시도가 다 지난 뒤에도 `failed`가 되지 않는다) `next_run_at`을 defer 대기(`deferDelayMs`, 기본 15분) 뒤로 둔다. 허용표에 새 전이는 없다 |
 | validating | completed | **검증기만** | 모든 acceptance_criteria 충족 AND `safety != fail` |
 | validating | retry_wait | 검증기 | 기준 미충족, 재시도 가능 (`attempts + 1 < max_attempts`, 시도 1회 소모). 소진되면 `needs_review` — `validating → failed` 전이는 없으므로 사람이 정한다 |
-| validating | needs_review | 검증기/정책 | `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
-| needs_review | queued / completed / failed | 사람(approval 기록 필수) | |
+| validating | needs_review | 검증기/정책 | **초안 승인 대기**(ADR-0015: 평가 `pass`·`safety='pass'`이고 그 run의 초안이 있음 — 초안은 `proposed`가 된다. 초안 단계 run이 초안을 남기지 못하고 `completed`로 가려 하면 사유 `no_drafts`로 이 전이를 쓴다. `validation.human=true`여도 같은 한 번의 사람 단계로 합친다), `validation.human=true`, 승인 필요, **평가 `inconclusive`**(증거 부족: 관측 수 미달·데이터 품질 불량·측정 불가·원본 증거 없음), 또는 `safety='fail'`(자동 재시도·완료 금지, 사람이 정한다) |
+| needs_review | queued / completed / failed | 사람(approval 기록 필수). `needs_review → queued` 는 주체 `policy` 도 가능(ADR-0016 제안) | `needs_review → queued`의 승인 행은 `approved`(승인·해제) 또는 `changes_requested`(ADR-0015 변경 요청: 초안을 버리고 다시 쓰게 한다). 주체 `policy` 는 위임 승인(`approval.mandate_id` 가 있는 행)이 정족수이고 위임 cooldown 이 끝나 그 위임이 지금도 유효할 때(데몬 주기 `releaseDelegated`), 또는 위임 보유자의 `changes_requested` 일 때만 쓴다. `completed`·`failed` 는 사람만 |
 | retry_wait | queued | 스케줄러 | `next_run_at` 도달 |
 | * (비종료) | cancelled | 사람 또는 정책 | 사유 필수 |
 
@@ -120,6 +120,27 @@ approved ──► trial ──► active ──► retired
 - (A6-U15) 활성화·종료는 상태 전이가 아니라 기록이다. 활성화(task-engine `activateExperiment`, 승인 트랜잭션 밖, 주간 사이클)는 event `experiment-activate:<id>`(멱등, `occurred_at` = 활성화 시각 = 켠 루틴의 발화 기준점)와 함께 실험 루틴을 `enabled=1`로 켜거나 일회성 마케팅 업무(`task.strategy_version_id`)를 만든다. 활성화 직전에 승인을 다시 확인해, 활성화 전에 `cancel`된 승인이나 승인 뒤 바뀐 내용이면 켜지 않는다(상태는 `experiment`로 남는다 — 아래 열린 문제). 종료(`endExperiment`)는 루틴을 `enabled=0`으로 끄고 event `experiment-end:<id>`를 남기며 상태는 바꾸지 않는다.
 - (A6-U16) `experiment` 에서 나가는 길: ① 결과 검토 평가가 `pass`이면 사람이 `promote`(`experiment → active`, 위 표) ② 평가가 `fail`이면 시스템(평가기)이 `rejected` + 종료 ③ `inconclusive`·활성화 거부 등은 사람이 사유와 함께 `reject`(`experiment → rejected`). 에이전트는 어느 것도 못 한다. 전이와 결정 기록(event `experiment-decision:<id>`: 주체·사유·이전 `active` 목록)과 실험 종료(루틴 끄기)는 한 쓰기 트랜잭션이다(domain `promoteExperiment`·`rejectExperiment`, task-engine `endExperimentInTx`). 결과 기록·평가 절차는 [evaluation §8](../operations/evaluation.md), [memory-item](memory-item.md).
 - (A6-U16, 남은 문제) 활성화 전에 `cancel`된 `experiment`(승인 취소)는 여전히 `experiment`로 남지만 진행 중으로 세지 않는다. 사람이 `reject`로 정리할 수 있다. 검토 업무가 아직 도는 실험을 사람이 거절하면 그 업무는 취소되지 않고 끝까지 돈다.
+
+## 외부 부작용 초안 (`effect_draft.state`, ADR-0015)
+
+```
+pending ──► proposed ──► rejected     (사람 거절)
+   │            └──────► superseded   (사람 변경 요청, 새 초안 run 시작)
+   └──► superseded  (검증 미통과, run이 submit 못 하고 끝남, 새 초안 run 시작)
+```
+
+| From | To | 주체 | 조건 |
+|---|---|---|---|
+| (none) | pending | 스케줄러(원장 입구) | `draft` 단계 run, lease 보유 |
+| pending | proposed | 검증기 | 그 run의 평가 `pass` AND `safety='pass'` |
+| pending | superseded | 스케줄러/검증기 | 평가 미통과, run이 submit하지 못함, 새 초안 run 시작 |
+| proposed | superseded | 사람/스케줄러 | `request-changes`, 새 초안 run 시작 |
+| proposed | rejected | 사람 | `reject task` |
+
+규칙
+- 에이전트는 어떤 전이도 일으키지 못한다. 초안 행은 호스트(lease 펜싱 트랜잭션, 검증기, 승인 엔진)만 쓴다.
+- `superseded`·`rejected`는 되돌아가지 않는다. 한 업무에 `proposed` 초안은 한 run의 것만 있다.
+- 업무(`task.status`) 전이는 새로 생기지 않는다. 조건 문구만 넓어진다(아래 표의 `queued → running`, `validating → needs_review`, `needs_review → queued`, `running → needs_review`).
 
 ## 전화 통화 (`call.status`, ADR-0014)
 

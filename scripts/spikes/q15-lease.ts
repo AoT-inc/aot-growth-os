@@ -21,7 +21,7 @@ import {
 
 const MIGRATIONS = fileURLToPath(new URL('../../migrations', import.meta.url));
 const ALLOW: TaskPolicyGate = {
-  beforeCreate: () => ({ decision: 'allow' }), beforeRun: () => ({ decision: 'allow' }), beforeEffect: () => ({ decision: 'allow' }),
+  beforeCreate: () => ({ decision: 'allow' }), beforeRun: () => ({ decision: 'allow', phase: 'execute' }), beforeEffect: () => ({ decision: 'allow' }),
 };
 
 const spec = (n: string) => ({

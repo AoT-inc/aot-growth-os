@@ -22,6 +22,10 @@ export {
   type DispatchStart, type EffectCall, type EffectLookupResult, type EffectOutcome, type EffectSendResult, type EffectStep, type EffectTool,
 } from './effects.ts';
 export {
+  DEFAULT_DRAFT_TTL_MS, DraftIntegrityError, DraftRefusedError, dispatchApprovedDrafts, effectApprovalOf, recordDraft,
+  type DispatchedDraft, type DispatchResult, type RecordDraftOptions,
+} from './drafts.ts';
+export {
   activateExperiment, endExperiment, endExperimentInTx, EXPERIMENT_TASK_CAUSE, ExperimentActivationError,
   type ActivateExperimentInput, type ActivateExperimentResult, type ApprovalCheck, type EndExperimentInput, type EndExperimentResult, type ExperimentRefusalCode,
 } from './experiment.ts';
@@ -64,7 +68,7 @@ export {
   type CallWait, type ValidationEnd, type ValidationOptions, type ValidationRoute, type ValidationTarget,
 } from './validation.ts';
 export {
-  DEFAULT_DEFER_DELAY_MS, DEFAULT_RETRY_DELAY_MS, realTimers, RunTimeoutError, TaskWorker, VALIDATIONS_PER_TICK,
+  DEFAULT_DEFER_DELAY_MS, DEFAULT_DISPATCH_TIME_LIMIT_MS, DEFAULT_RETRY_DELAY_MS, realTimers, RunTimeoutError, TaskWorker, VALIDATIONS_PER_TICK,
   type ExecutionReport, type RunContext, type TaskExecutor, type TickReport, type Timers, type WorkerOptions,
 } from './worker.ts';
 export { routeUnassignedTasks, type RoutedTask } from './org-routing.ts';

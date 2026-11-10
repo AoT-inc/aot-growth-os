@@ -239,6 +239,7 @@ CREATE TABLE task_run (
   attempt      INTEGER NOT NULL,
   actor_id     TEXT NOT NULL REFERENCES actor(id),
   adapter      TEXT NOT NULL,
+  phase        TEXT NOT NULL DEFAULT 'execute' CHECK (phase IN ('execute','draft','dispatch')),  -- run 단계 (ADR-0015): 지금 방식 / 보내지 않고 초안만 / 호스트 전송
   started_at   TEXT NOT NULL,
   ended_at     TEXT,
   lease_owner  TEXT NOT NULL,                 -- 이 실행을 소유한 워커 id
@@ -273,6 +274,30 @@ CREATE TABLE external_effect (
   CHECK ((supports_idempotency = 0 AND idempotency_retention_ms IS NULL)
       OR (supports_idempotency = 1 AND idempotency_retention_ms IS NOT NULL AND idempotency_retention_ms > 0))
 );
+
+-- 외부 부작용 초안 (ADR-0015). 초안 run 의 에이전트가 원장에 넘기려던 요청을 보내지 않고 남긴다. 사람은 이 내용을 승인하고,
+-- 호스트 전송 run 이 payload 를 그대로 보낸다. 에이전트 출력이므로 내용은 항상 신뢰하지 않는 데이터다(trust_origin 은 external_untrusted 로 고정, 컬럼 없음).
+CREATE TABLE effect_draft (
+  id           TEXT PRIMARY KEY,
+  task_id      TEXT NOT NULL REFERENCES task(id),
+  task_run_id  TEXT NOT NULL REFERENCES task_run(id),  -- 초안을 만든 run
+  seq          INTEGER NOT NULL,              -- run 안 순서 (전송 순서)
+  tool         TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  target       TEXT NOT NULL,
+  step_id      TEXT NOT NULL,
+  payload      TEXT NOT NULL,                 -- canonicalJson(EffectStep.request). 보낼 바이트 그대로
+  payload_hash TEXT NOT NULL,                 -- sha256(payload) = 전송 때 external_effect.request_hash
+  effect_key   TEXT NOT NULL,                 -- effectKeyOf(task_id, step_id, request) = 전송 때 external_effect.effect_key
+  influenced_by_external_input INTEGER NOT NULL CHECK (influenced_by_external_input IN (0, 1)),
+  state        TEXT NOT NULL CHECK (state IN ('pending','proposed','superseded','rejected')),
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,                 -- 이 시각부터 승인·전송 불가 (기본 created_at + 72h)
+  at           TEXT NOT NULL,                 -- 마지막 전이 시각
+  UNIQUE (task_run_id, seq),
+  UNIQUE (task_run_id, effect_key)
+);
+CREATE INDEX effect_draft_task ON effect_draft(task_id, state);
 
 -- 정책 판정 기록 (append-only). 권한은 도구 이름이 아니라 7요소로 판정한다 (ADR-0006).
 CREATE TABLE policy_decision (
@@ -323,9 +348,11 @@ CREATE TABLE approval (
   subject_id   TEXT NOT NULL,
   decision     TEXT NOT NULL CHECK (decision IN ('approved','rejected','changes_requested')),
   subject_hash TEXT,                          -- 승인 당시 대상 내용의 해시 (내용이 바뀌면 승인 무효)
-  decided_by   TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 허용 (애플리케이션 규칙)
+  decided_by   TEXT NOT NULL REFERENCES actor(id),   -- human, 또는 mandate_id 가 있는 위임 보유자 (ADR-0016 위임 승인, 애플리케이션 규칙)
   comment      TEXT,
-  at           TEXT NOT NULL
+  at           TEXT NOT NULL,
+  mandate_id   TEXT,                          -- 위임 승인일 때만: 정책 delegation.mandates[].id (ADR-0016). 사람 행은 NULL
+  via          TEXT CHECK (via IS NULL OR via IN ('cli','web','delegate'))   -- 결정 경로(자기 신고, 감사용). 옛 행은 NULL
 );
 CREATE INDEX approval_subject ON approval(subject_kind, subject_id, at);
 
@@ -339,6 +366,48 @@ CREATE TABLE human_reauth (
   purpose      TEXT NOT NULL,                 -- 재인증 대상 (예: release:task:<id>:<approved_hash>)
   at           TEXT NOT NULL,
   UNIQUE (actor_id, method, time_step)
+);
+
+-- 위임 검토 기록 (ADR-0016). 위임 보유자 AI 가 적격 업무를 본 결과: 판정(approve|request_changes|escalate)과 그 사유, 엔진이 기록한 결과(recorded 또는 거부 코드).
+-- append-only. 같은 업무·같은 대상 해시는 한 번만 검토한다. 사람에게 넘긴 이유와 AI 검토 비용 집계가 여기서 나온다.
+CREATE TABLE delegate_review (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id      TEXT NOT NULL REFERENCES task(id),
+  subject_hash TEXT NOT NULL,                 -- 검토한 대상 해시 (초안 목록 포함)
+  mandate_id   TEXT NOT NULL,
+  verdict      TEXT NOT NULL CHECK (verdict IN ('approve','request_changes','escalate')),
+  reason       TEXT NOT NULL,                 -- AI 사유 또는 사람에게 온 이유 (200자)
+  outcome      TEXT NOT NULL,                 -- 엔진 결과: 'recorded' 또는 거부 코드 (예: not_eligible)
+  cost_usd     REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+  at           TEXT NOT NULL
+);
+CREATE INDEX delegate_review_task ON delegate_review(task_id, subject_hash);
+CREATE INDEX delegate_review_at ON delegate_review(at);
+
+-- 위임 정지·해제·철회 (ADR-0016). 강화(pause·revoke)는 정책 배포 없이 런타임에 하고, 해제(resume)는 사람 + TOTP. 철회는 되돌릴 수 없다. append-only.
+-- mandate_id NULL = 모든 위임 (pause·resume 만. revoke 는 위임마다 한 행씩 남긴다).
+CREATE TABLE delegation_control (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  action       TEXT NOT NULL CHECK (action IN ('pause','resume','revoke')),
+  mandate_id   TEXT,
+  actor_id     TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 (애플리케이션 규칙)
+  reason       TEXT NOT NULL,
+  at           TEXT NOT NULL,
+  CHECK (action <> 'revoke' OR mandate_id IS NOT NULL)
+);
+CREATE INDEX delegation_control_at ON delegation_control(at);
+
+-- 고객 연락처 (결정 위임 D-B11, ADR-0016). 위임 승인이 받는 사람을 확인하는 근거. 사람만 쓴다(승인 소켓의 `contacts` 명령). 에이전트·검토 화면·위임 보유자는 쓰기 경로가 없다.
+-- address 는 정규화된 주소(소문자, 표시 이름 없음). suppressed 는 위임으로 보낼 수 없고(사람이 직접 승인은 가능), 다시 active 로 되돌리는 경로는 v1 에 없다.
+CREATE TABLE contact (
+  address        TEXT PRIMARY KEY CHECK (address = lower(address) AND address = trim(address) AND instr(address, '@') > 1),
+  label          TEXT,
+  status         TEXT NOT NULL CHECK (status IN ('active','suppressed')),
+  added_by       TEXT NOT NULL REFERENCES actor(id),   -- kind='human'만 (애플리케이션 규칙)
+  added_at       TEXT NOT NULL,
+  suppressed_by  TEXT REFERENCES actor(id),
+  suppressed_at  TEXT,
+  CHECK ((status = 'suppressed') = (suppressed_at IS NOT NULL))
 );
 
 -- ===== 평가 (ADR-0007) =====
@@ -455,5 +524,9 @@ CREATE TRIGGER cost_entry_no_update BEFORE UPDATE ON cost_entry BEGIN SELECT RAI
 CREATE TRIGGER cost_entry_no_delete BEFORE DELETE ON cost_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER policy_decision_no_update BEFORE UPDATE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER policy_decision_no_delete BEFORE DELETE ON policy_decision BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegate_review_no_update BEFORE UPDATE ON delegate_review BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegate_review_no_delete BEFORE DELETE ON delegate_review BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegation_control_no_update BEFORE UPDATE ON delegation_control BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER delegation_control_no_delete BEFORE DELETE ON delegation_control BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER human_reauth_no_update BEFORE UPDATE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER human_reauth_no_delete BEFORE DELETE ON human_reauth BEGIN SELECT RAISE(ABORT, 'append-only'); END;

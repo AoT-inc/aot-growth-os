@@ -28,3 +28,6 @@
 ## Amendment (2026-10-25): 기대 통화 결과 필드
 - 전화 업무가 "통화 결과가 이 형식으로 남아야 한다"를 구조로 담도록 선택 필드 `expected_call_outcome: {dispositions, required_fields?}`를 둔다. `dispositions`는 허용 결과 분류(소문자 이름), `required_fields`는 `structured_data`에 있어야 하는 키다. 영업 절차는 Phone이 아니라 명세가 정한다. 실행 인자이므로 승인 대상 해시에 포함된다.
 - `expected_quotes`와 같은 이유로 `validation.deterministic`에 `call_outcome_recorded`가 없으면 생성 거부한다. 상세는 [task-spec](../schema/task-spec.md), [ADR-0014](0014-phone-capability.md).
+
+## Amendment (2026-11-05): 승인 스냅샷에 초안 목록 (ADR-0015)
+초안 승인 업무(외부 부작용 도구의 (도구, action) 선언이 `approval: 'draft'`)는 `task.approved_snapshot`/`approved_hash`가 제안된 외부 부작용 초안(`effect_draft` proposed)의 목록(`payload_hash`·도구·action·대상·`step_id`·만료)을 함께 묶는다. 초안이 없으면 스냅샷과 해시는 이전과 같다. 업무 전이는 새로 생기지 않고 조건 문구만 넓어졌다. 상세: [ADR-0015](0015-draft-before-approval.md), [state-machines](../schema/state-machines.md).

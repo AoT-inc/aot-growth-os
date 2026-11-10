@@ -15,7 +15,7 @@ import {
 export interface PhoneEffectTool {
   readonly name: string;
   /** (도구, action) 계약 선언 — task-engine 의 EffectActionDeclaration 과 구조가 같다 */
-  readonly actions: Readonly<Record<string, { readonly idempotency: { readonly supported: false } | { readonly supported: true; readonly retention_ms: number }; readonly effect_key_carrier?: 'metadata' | 'slug' | 'property' | 'none' }>>;
+  readonly actions: Readonly<Record<string, { readonly approval: 'draft' | 'scope'; readonly idempotency: { readonly supported: false } | { readonly supported: true; readonly retention_ms: number }; readonly effect_key_carrier?: 'metadata' | 'slug' | 'property' | 'none' }>>;
   send(call: { effectKey: string; action: string; target: string; request: unknown }): Promise<{ status: 'confirmed' | 'failed'; responseRef: string | null }>;
   lookup?: (effectKey: string) => Promise<{ found: true; responseRef: string | null } | { found: false }>;
 }
@@ -59,7 +59,7 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
 
   const phoneCall: PhoneEffectTool = {
     name: 'phone_call',
-    actions: { call: { idempotency: { supported: false }, effect_key_carrier: 'metadata' } },
+    actions: { call: { approval: 'scope', idempotency: { supported: false }, effect_key_carrier: 'metadata' } },
     async send(call) {
       if (!isCallRequest(call.request)) throw new Error('phone_call: malformed request');
       const request = call.request;
@@ -109,7 +109,7 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
 
   const phoneTransfer: PhoneEffectTool = {
     name: 'phone_transfer',
-    actions: { transfer: { idempotency: { supported: false }, effect_key_carrier: 'metadata' } },
+    actions: { transfer: { approval: 'scope', idempotency: { supported: false }, effect_key_carrier: 'metadata' } },
     async send(call) {
       const request = call.request as { callId?: unknown; to?: unknown; reason?: unknown };
       if (typeof request.callId !== 'string' || !isE164(request.to)) throw new Error('phone_transfer: malformed request');
@@ -142,7 +142,7 @@ export function createPhoneEffectTools(options: PhoneEffectToolsOptions): Record
 
   const phoneHangup: PhoneEffectTool = {
     name: 'phone_hangup',
-    actions: { hangup: { idempotency: { supported: false } } }, // 자연 멱등은 인정하지 않는다(ADR-0005 Amendment 2026-10-25)
+    actions: { hangup: { approval: 'scope', idempotency: { supported: false } } }, // 자연 멱등은 인정하지 않는다(ADR-0005 Amendment 2026-10-25)
     async send(call) {
       const request = call.request as { callId?: unknown };
       if (typeof request.callId !== 'string') throw new Error('phone_hangup: malformed request');

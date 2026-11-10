@@ -17,7 +17,7 @@ const guard = (): AbortSignal => AbortSignal.timeout(3000);
 
 function request(args: JsonObject, networkAllowlist: string[] | undefined, signal: AbortSignal = guard()): ToolExecutionRequest {
   return {
-    runId: 'run-1', tool: FETCH_URL_TOOL, operation: 'fetch', args, signal,
+    runId: 'run-1', tool: FETCH_URL_TOOL, operation: 'fetch', args, signal, influencedByExternalInput: false,
     constraints: { max_usd: 1, ...(networkAllowlist === undefined ? {} : { network_allowlist: networkAllowlist }) },
   };
 }

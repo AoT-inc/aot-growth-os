@@ -2,6 +2,8 @@
 // 선언은 tool_contract_version 에 들어가는 계약 데이터다. 판정의 근거는 언제나 external_effect 행(스냅숏)이고,
 // 현재 선언은 행을 강화(tightenSnapshot)만 할 수 있다. 이 파일은 effects.ts 를 가져오지 않는다 (구조적 타입만 쓴다).
 
+import { EFFECT_APPROVAL_MODES, type EffectApprovalMode } from '@aot/domain';
+
 /** effect_key 를 send() 가 어디에 싣는지 (lookup() 이 찾는 곳). 엔진은 동작을 바꾸지 않는 검증된 계약 데이터다 */
 export const EFFECT_KEY_CARRIERS = ['metadata', 'slug', 'property', 'none'] as const;
 export type EffectKeyCarrier = (typeof EFFECT_KEY_CARRIERS)[number];
@@ -16,6 +18,11 @@ export type IdempotencyDeclaration =
  */
 export interface EffectActionDeclaration {
   readonly idempotency: IdempotencyDeclaration;
+  /**
+   * 승인 방식(ADR-0015, 필수). `draft`: 보낼 내용 전체를 보내기 전에 확정할 수 있어 사람이 그 초안을 승인한다(메일·메시지·외부 API 쓰기).
+   * `scope`: 내용을 미리 확정할 수 없어(전화 통화·전환·끊기) 사람이 명세 범위를 승인한다. 빠뜨리면 선언이 거부된다.
+   */
+  readonly approval: EffectApprovalMode;
   readonly effect_key_carrier?: EffectKeyCarrier;
 }
 
@@ -32,6 +39,8 @@ export const DECLARATION_ERROR_CODES = [
   'carrier_invalid',
   'carrier_required',
   'carrier_without_lookup',
+  'approval_missing',
+  'approval_invalid',
   'name_mismatch',
 ] as const;
 export type DeclarationErrorCode = (typeof DECLARATION_ERROR_CODES)[number];
@@ -84,10 +93,15 @@ function validateAction(action: string, entry: unknown, hasLookup: boolean): Act
   if (!isPlainObject(entry)) return { ok: false, errors: [{ action, code: 'not_object', detail: 'action declaration must be an object' }] };
   const errors: DeclarationError[] = [];
   for (const key of Object.keys(entry)) {
-    if (key !== 'idempotency' && key !== 'effect_key_carrier') errors.push({ action, code: 'unknown_field', detail: `unknown field '${key}'` });
+    if (key !== 'idempotency' && key !== 'effect_key_carrier' && key !== 'approval') errors.push({ action, code: 'unknown_field', detail: `unknown field '${key}'` });
   }
   const idempotency = validateIdempotencyDeclaration(entry['idempotency'], action);
   if (!idempotency.ok) errors.push(idempotency.error);
+  const approval = entry['approval'];
+  let validApproval: EffectApprovalMode | undefined;
+  if (approval === undefined) errors.push({ action, code: 'approval_missing', detail: `approval is required (${EFFECT_APPROVAL_MODES.join(' | ')})` });
+  else if (typeof approval === 'string' && (EFFECT_APPROVAL_MODES as readonly string[]).includes(approval)) validApproval = approval as EffectApprovalMode;
+  else errors.push({ action, code: 'approval_invalid', detail: `approval must be one of ${EFFECT_APPROVAL_MODES.join(', ')}` });
   const carrier = entry['effect_key_carrier'];
   let validCarrier: EffectKeyCarrier | undefined;
   if (carrier !== undefined) {
@@ -96,8 +110,9 @@ function validateAction(action: string, entry: unknown, hasLookup: boolean): Act
   }
   if (hasLookup && carrier === undefined) errors.push({ action, code: 'carrier_required', detail: 'a tool with lookup must declare effect_key_carrier' });
   if (!hasLookup && validCarrier !== undefined) errors.push({ action, code: 'carrier_without_lookup', detail: 'effect_key_carrier declared but the tool has no lookup' });
-  if (errors.length > 0 || !idempotency.ok) return { ok: false, errors };
-  return { ok: true, declaration: validCarrier === undefined ? { idempotency: idempotency.declaration } : { idempotency: idempotency.declaration, effect_key_carrier: validCarrier } };
+  if (errors.length > 0 || !idempotency.ok || validApproval === undefined) return { ok: false, errors };
+  const base = { idempotency: idempotency.declaration, approval: validApproval };
+  return { ok: true, declaration: validCarrier === undefined ? base : { ...base, effect_key_carrier: validCarrier } };
 }
 
 const actionsMissing = (): DeclarationError => ({ action: null, code: 'actions_missing', detail: 'tool.actions must be a non-empty object' });

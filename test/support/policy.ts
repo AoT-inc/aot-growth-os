@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 
-import { FakeClock, type Db, type TaskRow } from '@aot/domain';
+import { applyMigrations, FakeClock, openDb, seedPhaseA, type Db, type TaskRow } from '@aot/domain';
 import {
   ApprovalEngine, createPolicyGate, generateTotpSecret, PolicyStore, totpCode, TotpSecretStore, base32Decode,
   type ApprovalResponse,
@@ -12,6 +12,7 @@ import { createTask, type CreateTaskInput } from '@aot/task-engine';
 
 import { DEFAULT_POLICY_TEMPLATE } from '../../apps/daemon/src/assemble.ts';
 import { minimalDraft } from './spec-fixtures.ts';
+import { MIGRATIONS_DIR } from './schema-snapshot.ts';
 import { addAgent, seededDb, START } from './seeded-db.ts';
 import { makeTempDir } from './temp.ts';
 
@@ -26,6 +27,8 @@ export interface PolicyEnv {
   db: Db;
   clock: FakeClock;
   dir: string;
+  /** `file: true` 일 때 DB 파일 경로 */
+  dbPath: string;
   store: PolicyStore;
   totp: TotpSecretStore;
   engine: ApprovalEngine;
@@ -38,18 +41,29 @@ export interface PolicyEnv {
   send(command: Record<string, unknown>): ApprovalResponse;
 }
 
-export function policyEnv(t: TestContext): PolicyEnv {
-  const { db, clock } = seededDb(t, new FakeClock(START));
+/** `file: true` 면 DB 를 임시 폴더의 파일로 둔다(다른 연결이 읽기 전용으로 열 수 있다 — 검토 화면 통합 시험) */
+export function policyEnv(t: TestContext, options: { file?: boolean } = {}): PolicyEnv {
+  const dir = makeTempDir(t, 'aot-policy-');
+  let db: Db;
+  let clock: FakeClock;
+  if (options.file === true) {
+    clock = new FakeClock(START);
+    db = openDb({ path: join(dir, 'db.sqlite') });
+    t.after(() => db.close());
+    applyMigrations(db, { dir: MIGRATIONS_DIR, clock });
+    seedPhaseA(db, { clock });
+  } else {
+    ({ db, clock } = seededDb(t, new FakeClock(START)));
+  }
   addAgent(db, clock, AGENT);
   db.writeTx((tx) => tx.run('INSERT INTO actor (id, kind, name, adapter, created_at) VALUES (?, ?, ?, NULL, ?)', [REVIEWER, 'human', 'example-reviewer', clock.nowIso()]));
-  const dir = makeTempDir(t, 'aot-policy-');
   const store = new PolicyStore({ dir: join(dir, 'policies'), templates: [DEFAULT_POLICY_TEMPLATE] });
   const totp = new TotpSecretStore(join(dir, 'totp'));
   const secrets = new Map<string, string>();
   for (const actor of [OWNER, REVIEWER]) secrets.set(actor, totp.enroll(actor, generateTotpSecret()));
   const engine = new ApprovalEngine({ db, clock, store, totp });
   return {
-    db, clock, dir, store, totp, engine, secrets,
+    db, clock, dir, dbPath: join(dir, 'db.sqlite'), store, totp, engine, secrets,
     gate: createPolicyGate({ store }),
     code: (actor = OWNER, atMs = clock.nowMs()) => totpCode(base32Decode(secrets.get(actor)!), atMs),
     send: (command) => engine.handle(command),

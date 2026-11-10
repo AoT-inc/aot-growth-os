@@ -23,3 +23,4 @@
 | [0016](0016-decision-delegation.md) | 화면에서 결정하고, 사람이 정한 위임 안에서는 AI가 결정한다 | accepted |
 | [0017](0017-mail-tool.md) | 첫 실제 메일 도구: 승인된 초안을 SMTP 로 바이트 그대로 보낸다 | proposed |
 | [0018](0018-mcp-connector.md) | 오너의 MCP 서버는 호스트 커넥터 프로세스가 오너 선언 도구만 게이트웨이로 내준다 | proposed |
+| [0019](0019-conversation-channel.md) | 대화 채널: 클로드 데스크탑·CLI 는 승인 소켓과 분리된 소켓에서 읽기·요청·메모만 한다 | proposed |

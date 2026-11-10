@@ -33,6 +33,7 @@ import { cycleOptionsFromConfig, type CycleConfig } from './cycle.ts';
 import { advanceOrganization } from './org-cycle.ts';
 import { createRepeatFilter } from './log-throttle.ts';
 import { packOptionsFromConfig, type PackConfig } from './pack-loader.ts';
+import { mailOptionsFromConfig, type MailConfig } from './mail-config.ts';
 import { phoneOptionsFromConfig, type PhoneConfig } from './phone-config.ts';
 import { startPhoneWebhookServer } from './phone-webhook-server.ts';
 import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts';
@@ -42,6 +43,8 @@ import { buildAgentRuntime, type AgentRuntimeConfig } from './runtime-config.ts'
 interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig {
   /** 전화 Capability (ADR-0014). 없으면 조립하지 않는다 */
   phone?: PhoneConfig | null;
+  /** 메일 도구 (ADR-0017). 없으면 조립하지 않는다 */
+  mail?: MailConfig | null;
   /** 결정 위임 검토자 (ADR-0016, 제안). 위임을 켜는 것은 정책의 `delegation.mandates` 다. 없으면 새 검토는 하지 않고 이미 기록된 위임 승인의 풀어 주기만 한다. 지금은 `{"kind":"stub"}` 뿐인데 시험 전용이라 데몬은 읽지 않고 시작을 거부한다 (delegate-cycle.ts) */
   delegate_reviewer?: unknown;
   db_path: string;
@@ -91,6 +94,7 @@ async function main(): Promise<void> {
   const pack = packOptionsFromConfig(config);
   const cycle = cycleOptionsFromConfig(config);
   const phone = phoneOptionsFromConfig(config);
+  const mail = mailOptionsFromConfig(config);
   const delegateReviewer = delegateReviewerFromConfig(parseDelegateReviewerConfig(config.delegate_reviewer));
   const daemon = assembleDaemon({
     db,
@@ -110,6 +114,7 @@ async function main(): Promise<void> {
     ...(pack === undefined ? {} : { pack }),
     ...(cycle === undefined ? {} : { cycle }),
     ...(phone === undefined ? {} : { phone: phone.options }),
+    ...(mail === undefined ? {} : { mail }),
     ...(delegateReviewer === undefined ? {} : { delegate: { reviewer: delegateReviewer } }),
     lease: { leaseMs: config.lease_ms ?? DEFAULT_LEASE_PARAMS.leaseMs, heartbeatMs: config.heartbeat_ms ?? DEFAULT_LEASE_PARAMS.heartbeatMs },
     retryDelayMs: config.retry_delay_ms ?? DEFAULT_RETRY_DELAY_MS,

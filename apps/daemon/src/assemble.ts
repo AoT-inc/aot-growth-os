@@ -33,6 +33,7 @@ import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, ty
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { createDelegateCycle, type DelegateCycle, type DelegateReviewer } from './delegate-cycle.ts';
+import { createMailRuntime, type MailOptions, type MailRuntime } from './mail.ts';
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
 import { createConsentHandler, isConsentCommand } from './consent.ts';
@@ -125,6 +126,11 @@ export interface AssembleOptions {
    */
   phone?: PhoneOptions;
   /**
+   * 메일 도구 (ADR-0017). 주면 메일 부작용 도구가 워커의 `tools` 에 합쳐지고, 에이전트 실행기가 있으면 게이트웨이에 `mail_send` 가 열린다.
+   * 도구가 열려도 명세의 `allowed_tools`(target `mail:<보내는 사람 키>` 필수)와 정책 판정, 초안 승인이 모두 통과해야 메일이 나간다.
+   */
+  mail?: MailOptions;
+  /**
    * 결정 위임 (ADR-0016, 제안). 위임(`delegation.mandates`)은 정책이 선언해야 켜진다 — 이 옵션은 위임 *검토자*(AI)를 연결할 뿐이다. 없으면 `Daemon.delegation.advance()` 는 이미 기록된 위임 승인을
    * cooldown 뒤에 풀어 주기만 하고 새 검토를 하지 않는다(적격한 업무는 사람에게 남는다). 위임이 없는 정책에서는 어느 쪽이든 아무것도 쓰지 않는다.
    */
@@ -161,6 +167,20 @@ function withPhone(agent: NonNullable<AssembleOptions['agent']>, phone: PhoneRun
   };
 }
 
+/** 메일 도구 선언과 run 별 실행기를 에이전트 옵션에 더한다. 같은 이름의 도구가 이미 있으면 거부한다 */
+function withMail(agent: NonNullable<AssembleOptions['agent']>, mail: MailRuntime): NonNullable<AssembleOptions['agent']> {
+  const existing = agent.tools ?? [];
+  for (const spec of mail.toolSpecs) {
+    if (existing.some((tool) => tool.tool === spec.tool)) throw new Error(`tool '${spec.tool}' is already configured; the mail tool provides it`);
+  }
+  const previous = agent.runExecutors;
+  return {
+    ...agent,
+    tools: [...existing, ...mail.toolSpecs],
+    runExecutors: (context) => new Map([...(previous?.(context) ?? []), ...mail.executorsFor(context)]),
+  };
+}
+
 export interface AgentRuntimeReadiness {
   dockerVersion: string;
   orphans: OrphanCleanupResult;
@@ -183,6 +203,8 @@ export interface Daemon {
   cycle: ExperimentCycle | null;
   /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
   phone: PhoneRuntime | null;
+  /** 메일 런타임 (ADR-0017). `mail` 옵션이 없으면 null */
+  mail: MailRuntime | null;
   /** 위임 주기 (ADR-0016, 제안): 위임 승인 풀어 주기 + 적격 업무 검토. main 루프가 tick 뒤마다 `advance()` 를 부른다. 소켓에 닿지 않는다 */
   delegation: DelegateCycle;
   /** 승인 소켓의 요청 하나를 처리한다: `effects`·`resolve-effect` 는 효과 해소 채널, `consent` 는 claude-code-cli 고지 동의 채널, `contacts` 는 고객 연락처 채널(D-B11), `measure`·`measurements` 는 측정 채널, 나머지는 승인 엔진 (소켓 서버와 같은 함수) */
@@ -208,8 +230,10 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   });
   const toolCallPolicy = createToolCallPolicy({ db: options.db, store });
   const phone = options.phone === undefined ? null : createPhoneRuntime({ db: options.db, clock: options.clock, store, options: options.phone });
-  const agentOptions = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
-  const tools = phone === null ? options.tools : { ...(options.tools ?? {}), ...phone.effectTools };
+  const mail = options.mail === undefined ? null : createMailRuntime({ db: options.db, clock: options.clock, options: options.mail });
+  const phoneAgent = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
+  const agentOptions = phoneAgent === undefined || mail === null ? phoneAgent : withMail(phoneAgent, mail);
+  const tools = phone === null && mail === null ? options.tools : { ...(options.tools ?? {}), ...(phone?.effectTools ?? {}), ...(mail?.effectTools ?? {}) };
   const executor = options.executor ?? (agentOptions === undefined
     ? undefined
     : createAgentExecutor({ db: options.db, clock: options.clock, agent: agentOptions, toolCallPolicy }));
@@ -299,6 +323,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     measurementSignals,
     cycle,
     phone,
+    mail,
     delegation,
     handleChannelRequest,
     async prepareAgentRuntime() {

@@ -24,6 +24,7 @@
     "scan:secrets": "node scripts/scan-secrets.mjs dir",
     "scan:history": "node scripts/scan-secrets.mjs git",
     "check": "npm run typecheck && npm run lint && npm run lint:boundaries && npm test && npm run check:schema && npm run scan:secrets",
+    "preflight": "node apps/daemon/src/preflight.ts",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {

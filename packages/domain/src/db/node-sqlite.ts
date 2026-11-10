@@ -10,13 +10,16 @@ export interface OpenDbOptions {
   /** 파일 경로 또는 ':memory:' */
   path: string;
   busyTimeoutMs?: number;
+  /** true 면 읽기 전용으로 연다: 파일이 없으면 만들지 않고 오류, `journal_mode` 같은 쓰기 PRAGMA 를 하지 않는다 (사전 점검용). ':memory:' 와 함께 쓸 수 없다 */
+  readOnly?: boolean;
 }
 
 export function openDb(options: OpenDbOptions): Db {
   const inMemory = options.path === ':memory:';
-  const raw = new DatabaseSync(options.path);
+  if (options.readOnly === true && inMemory) throw new RangeError('readOnly cannot be used with :memory:');
+  const raw = new DatabaseSync(options.path, options.readOnly === true ? { readOnly: true } : {});
   try {
-    for (const pragma of connectionPragmas(options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS, inMemory)) {
+    for (const pragma of connectionPragmas(options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS, inMemory, options.readOnly === true)) {
       raw.exec(pragma);
     }
   } catch (error) {

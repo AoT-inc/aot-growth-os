@@ -14,12 +14,12 @@ A0 착수 전에 사람이 정할 항목(Q2·Q5·Q6·Q23·Q25, 라이선스, 확
 | Q8 | 기억 검색 구현 (전문 검색 / 벡터) | ADR-0008 | 별도 ADR | memory 패키지 분리 시 |
 | Q9 | 고객 데이터·개인정보 분류와 보존 | 스키마 | 별도 문서 | 영업/지원 활성화 전 |
 | Q10 | (해소) 레지스트리 진실 원본 = 내부 인스턴스 DB, YAML 시드 없음 | ADR-0010 | 2026-10-14 결정 | 완료 |
-| Q11 | 시험 기간 기본값(14일 가정)과 시험 중 영향 범위 제한 방식 | ADR-0011 | 사람 결정 | MVP 설계 확정 전 |
-| Q12 | 조직 관리팀과의 대화 채널(Desktop / 내부 웹) 및 대화 내용 중 무엇을 `memory_item`으로 남길지 | ADR-0011, ADR-0008 | 사람 결정 | 조직 관리팀 구현 전 |
-| Q13 | 재편 신호의 임계값(예: 반복 실패 N회) | ADR-0011 | 초기 운영 데이터로 보정 | 시험 운영 후 |
+| Q11 | 시험 기간 기본값(14일 가정)과 시험 중 영향 범위 제한 방식 **2026-11-04 잠정 결정(Phase B 자동 진행, [phase-b](plans/phase-b.md))**: 최소 14일(제안마다 `trial_min_days`), 시험 중 영향 범위 = 제안의 `trial_scope.task_types`. 사용자가 바꿀 수 있다. | ADR-0011 | 사람 결정 | MVP 설계 확정 전 |
+| Q12 | 조직 관리팀과의 대화 채널(Desktop / 내부 웹) 및 대화 내용 중 무엇을 `memory_item`으로 남길지 **2026-11-04**: MVP 밖으로 둔다. 제안은 승인 CLI `org propose --file`(사람이 낸 초안)로만 들어온다. | ADR-0011, ADR-0008 | 사람 결정 | 조직 관리팀 구현 전 |
+| Q13 | 재편 신호의 임계값(예: 반복 실패 N회) **2026-11-04 잠정값**: unassigned ≥ 3건, 역할별 needs_review+failed ≥ 3건(최근 30일). `ORG_SIGNAL_THRESHOLDS` 한 곳. 운영 데이터로 보정. | ADR-0011 | 초기 운영 데이터로 보정 | 시험 운영 후 |
 | Q14 | (해소, 엔진 구현 완료) 외부 부작용 도구별 멱등 키 지원. 후보 13개를 문서로만 조사: 키 확인 2개(Resend 발송 24시간, Mastodon 게시 1시간), 조회로 전달 확인 7개, 키도 조회도 없어 승인 필수·자동 재시도 금지 4개(SES·SendGrid·Mailgun·Salesforce). 문서에 없으면 `false`. 2026-10-25 사용자 승인: 선언은 (도구, `action`) 단위 `{supported, retention_ms}`, 같은 키 재전송은 보존 기간의 50% 안에서만, 조회형은 `effect_key` 전달 방식을 선언(`none`은 "찾음"만 근거), 공개 게시물에는 키를 싣지 않음. 자연 멱등(upsert)은 인정하지 않고 첫 CRM 쓰기 어댑터 때 재검토. 구현(2026-10-25, 7fc4b02·fc84679): 재전송 창 기준은 `external_effect.planned_at`(경계 50% 포함, 시계 역행은 닫힘), 닫힘 판정은 행에 남김. 실제 어댑터·어댑터 계약 시험(A5)·오류 매핑 적용·`tool_contract_version` 해시는 아직 없음 | recovery | 2026-10-25 문서 조사 ([q14](spikes/q14-idempotency-support.md), 실제 호출 없음) + 결정 ([recovery §3](operations/recovery.md), ADR-0004·0005 Amendment) | 완료 (엔진 구현 2026-10-25. 어댑터 쪽은 첫 부작용 어댑터 때) |
 | Q15 | (해소) lease 90초, heartbeat 30초, 데몬 폴링 5초. 복구 지연 목표 120초(2026-10-19 사람 확인) | recovery | 2026-10-19 스파이크: 쓰기 경합 실측 + 가짜 시계 모의에서 오탐 인수 0 ([q15](spikes/q15-lease-parameters.md)) | 완료 |
-| Q16 | 시험 연장 상한 횟수와 `inconclusive` 재시험 정책. (2026-10-21 일부 결정: 조직 제안의 `inconclusive`는 재시험 승인 전까지 종료로 취급하고 별도 상태는 추가하지 않는다. 연장 상한 횟수와 재시험 조건은 미결정) | ADR-0011, ADR-0007 | 사람 결정 | Phase B 전 |
+| Q16 | 시험 연장 상한 횟수와 `inconclusive` 재시험 정책. (2026-10-21 일부 결정: 조직 제안의 `inconclusive`는 재시험 승인 전까지 종료로 취급하고 별도 상태는 추가하지 않는다. 연장 상한 횟수와 재시험 조건은 미결정) **2026-11-04 잠정 결정**: 재시험은 제안당 1회(`ORG_MAX_TRIAL_EXTENSIONS`), 사람 승인·새 평가 계획 필수. | ADR-0011, ADR-0007 | 사람 결정 | Phase B 전 |
 | Q17 | 변동성 높은 기억 종류의 기본 `valid_until` | memory-item | 정책 파라미터 | memory 구현 전 |
 | Q18 | `ProductDecision`을 `strategy_version` 하위로 둘지 분리할지 | product | 별도 검토 | Release/Capability 도입 시 |
 | Q19 | (해소) 모듈 경계 lint = dependency-cruiser 18.6.0 (의존 방향·공개 API 전용 참조·순환·팩 경계를 한 설정으로 표현) | ADR-0001, phase-a | 2026-10-19 스파이크: 가상 위반 10건 전부 검출 ([q19](spikes/q19-boundary-lint.md)) | 완료 (설정 반영은 A0) |

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { connectionPragmas, createDb, openDb, type DbDriver } from '@aot/domain';
@@ -80,4 +81,21 @@ test('SQL that reads the clock or controls transactions never reaches the driver
     assert.throws(() => tx.exec('COMMIT'), /transactions/);
   });
   assert.deepEqual(executed, ['BEGIN IMMEDIATE', 'COMMIT']);
+});
+
+test('readOnly open: reads work, nothing is written, a missing file is not created, and no write PRAGMA runs', (t) => {
+  const dir = makeTempDir(t);
+  const path = `${dir}/ro.db`;
+  const writer = openDb({ path });
+  writer.writeTx((tx) => tx.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'));
+  writer.writeTx((tx) => tx.run('INSERT INTO t (v) VALUES (?)', ['x']));
+  writer.close();
+  const db = openDb({ path, readOnly: true });
+  t.after(() => db.close());
+  assert.equal(db.get('SELECT v FROM t')?.['v'], 'x');
+  assert.throws(() => db.writeTx((tx) => tx.run('INSERT INTO t (v) VALUES (?)', ['y'])), /readonly|read-only|attempt to write/i);
+  assert.throws(() => openDb({ path: `${dir}/missing.db`, readOnly: true }));
+  assert.equal(existsSync(`${dir}/missing.db`), false, 'a missing database must not be created');
+  assert.throws(() => openDb({ path: ':memory:', readOnly: true }), RangeError);
+  assert.deepEqual(connectionPragmas(5000, false, true), ['PRAGMA busy_timeout = 5000']);
 });

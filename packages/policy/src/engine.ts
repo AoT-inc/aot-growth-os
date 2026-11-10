@@ -14,8 +14,9 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  checkTransition, contentHash, experimentsInProgress, findExperimentActivation, listStrategyReviews, StrategyRuleError, TASK_MACHINE, transitionStrategyVersion,
-  type Clock, type Db, type PublicationRow, type StrategyVersionRow, type TaskRow, type TaskSpec,
+  activeOrgVersion, checkTransition, contentHash, experimentsInProgress, findExperimentActivation, getOrgProposal, listStrategyReviews, OrgRuleError, StrategyRuleError, TASK_MACHINE,
+  transitionOrgProposal, transitionStrategyVersion,
+  type Clock, type Db, type OrgProposalRow, type PublicationRow, type StrategyVersionRow, type TaskRow, type TaskSpec,
 } from '@aot/domain';
 
 import {
@@ -27,13 +28,13 @@ import { evaluateRequest, requestsFromSpec, taskApprovalParams } from './evaluat
 import { PolicyFormatError, type ActivePolicy, type PolicyStore } from './store.ts';
 import { TotpSecretError, verifyTotp, type TotpSecretStore } from './totp.ts';
 
-export type ApprovalSubject = 'task' | 'publication' | 'policy_version' | 'strategy_version';
+export type ApprovalSubject = 'task' | 'publication' | 'policy_version' | 'strategy_version' | 'org_proposal';
 
 export type ApprovalCommand =
   | { cmd: 'whoami'; actor: string }
   | { cmd: 'list'; actor: string }
   | { cmd: 'show'; actor: string; kind: ApprovalSubject; id: string }
-  | { cmd: 'approve'; actor: string; kind: 'task' | 'publication' | 'strategy_version'; id: string; hash: string; comment?: string }
+  | { cmd: 'approve'; actor: string; kind: 'task' | 'publication' | 'strategy_version' | 'org_proposal'; id: string; hash: string; comment?: string }
   | { cmd: 'approve'; actor: string; kind: 'policy_version'; policy_text: string; comment?: string }
   | { cmd: 'release'; actor: string; kind: ApprovalSubject; id: string; totp?: string }
   | { cmd: 'cancel'; actor: string; kind: ApprovalSubject; id: string; comment?: string }
@@ -105,7 +106,7 @@ export class ApprovalEngine {
     } catch (error) {
       if (
         error instanceof ApprovalRefusedError || error instanceof ReauthError || error instanceof TotpSecretError || error instanceof PolicyFormatError
-        || error instanceof StrategyRuleError
+        || error instanceof StrategyRuleError || error instanceof OrgRuleError
       ) {
         return { ok: false, error: error.message };
       }
@@ -127,6 +128,7 @@ export class ApprovalEngine {
       case 'approve':
         if (c.kind === 'policy_version') return this.#approvePolicy(c.actor, c.policy_text, c.comment);
         if (c.kind === 'strategy_version') return this.#approveStrategy(c.actor, c.id, c.hash, c.comment);
+        if (c.kind === 'org_proposal') return this.#approveOrg(c.actor, c.id, c.hash, c.comment);
         return c.kind === 'task' ? this.#approveTask(c.actor, c.id, c.hash, c.comment) : this.#approvePublication(c.actor, c.id, c.hash, c.comment);
       case 'release':
         return this.#release(c.actor, c.kind, c.id, c.totp);
@@ -340,6 +342,84 @@ export class ApprovalEngine {
     return { state: 'rejected', approval_id: approvalId };
   }
 
+  // ===== 조직 변경 제안 (Phase B, ADR-0011) =====
+  // 일반 변경(normal)은 사람 1인 승인(humanApprovalParams), 위험 변경(risky = 권한 확대)은 **현재** 정책의 risky_change 절차(대기 + 취소 가능 + 해제 때 TOTP 재인증).
+  // 승인 해시 = 제안 해시(diff·기준 버전·시험 범위·평가 계획·롤백 계획·등급) + 승인 시점 정책 버전. 승인되면 같은 트랜잭션에서 `proposed → approved` (domain 허용표).
+  // 기준 버전 충돌·만료는 거부가 아니라 `superseded`/`expired` 전이로 기록하고 결과 상태를 돌려준다 (예외로 되돌리면 전이가 사라진다).
+  // `approved → trial` 은 시스템(주기 처리)이 한다 — 승인은 변경안 승인이지 무조건적인 실행 허가가 아니다.
+
+  #org(tx: Db, id: string) {
+    const row = getOrgProposal(tx, id) ?? refuse(`org_proposal '${id}' does not exist`);
+    const policy = this.#policy(tx);
+    const subject = {
+      kind: 'org_proposal' as const, proposal_id: row.id, proposal_hash: row.proposal_hash, base_org_version_id: row.base_org_version_id,
+      change_class: row.change_class, policy_version_id: policy.versionId, policy_hash: policy.hash,
+    };
+    const params = row.change_class === 'risky' ? riskyApprovalParams(policy.document) : humanApprovalParams(policy.document);
+    return { row, policy, subject, hash: contentHash(subject), requester: row.proposed_by, params };
+  }
+
+  /** 승인·해제 직전 점검: 만료·기준 버전 충돌이면 전이를 기록하고 그 결과를 돌려준다 (null 이면 계속) */
+  #orgStale(tx: Db, row: OrgProposalRow): Record<string, unknown> | null {
+    const now = this.#now();
+    if (now >= row.expires_at) {
+      transitionOrgProposal(tx, this.#o.clock, { proposalId: row.id, to: 'expired', by: 'system', reason: 'expires_at passed' });
+      return { state: 'expired', note: 'the proposal expired before it was approved; propose again' };
+    }
+    const current = activeOrgVersion(tx);
+    if (!current || current.id !== row.base_org_version_id) {
+      transitionOrgProposal(tx, this.#o.clock, { proposalId: row.id, to: 'superseded', by: 'system', reason: `base org_version is no longer active (now ${current?.id ?? 'none'})` });
+      return { state: 'superseded', note: 'the organization changed since this proposal was made; propose again on the latest org_version' };
+    }
+    return null;
+  }
+
+  #approveOrg(actor: string, id: string, hash: string, comment?: string): Record<string, unknown> {
+    return this.#o.db.writeTx((tx) => {
+      const ctx = this.#org(tx, id);
+      if (ctx.row.status !== 'proposed') refuse(`org_proposal '${id}' is '${ctx.row.status}'; only a proposed change can be approved`);
+      if (hash !== ctx.hash) refuse('the proposal changed since it was shown (subject hash mismatch); show it again before approving');
+      if (!ctx.params.self_approval && ctx.requester === actor) refuse(`the proposer cannot approve their own proposal (${SELF_APPROVAL_RULE})`);
+      const stale = this.#orgStale(tx, ctx.row);
+      if (stale) return stale;
+      const approvalId = this.#insertApproval(tx, 'org_proposal', id, 'approved', ctx.hash, actor, comment ?? null);
+      const status = approvalStatus(tx, { kind: 'org_proposal', id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now: this.#now() });
+      if (status.ok) {
+        transitionOrgProposal(tx, this.#o.clock, { proposalId: id, to: 'approved', by: 'human', actorId: actor, approvalId });
+        return { state: 'approved', approval_id: approvalId, hash: ctx.hash, note: 'the trial starts in the next organization cycle (outside this transaction)' };
+      }
+      return { state: status.state, approval_id: approvalId, hash: ctx.hash, reason: status.reason, cooldown_ends_at: status.cooldownEndsAt };
+    });
+  }
+
+  #releaseOrg(tx: Db, actor: string, id: string, code: string | undefined): Record<string, unknown> {
+    const ctx = this.#org(tx, id);
+    if (ctx.row.change_class !== 'risky') refuse('only a risky proposal needs a release: a normal change is approved by one human approval');
+    if (ctx.row.status !== 'proposed') refuse(`org_proposal '${id}' is '${ctx.row.status}'; only a proposed change can be released`);
+    const stale = this.#orgStale(tx, ctx.row);
+    if (stale) return stale;
+    const status = approvalStatus(tx, { kind: 'org_proposal', id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now: this.#now(), checkReauth: false });
+    if (!status.ok) refuse(status.reason);
+    if (ctx.params.reauth_before_effect) this.#reauth(tx, actor, code, reauthPurpose('org_proposal', id, ctx.hash));
+    transitionOrgProposal(tx, this.#o.clock, { proposalId: id, to: 'approved', by: 'human', actorId: actor, approvalId: status.quorumApprovalId! });
+    return { state: 'approved', change_class: 'risky', approval_id: status.quorumApprovalId };
+  }
+
+  #cancelOrg(tx: Db, actor: string, id: string, comment?: string): Record<string, unknown> {
+    const row = getOrgProposal(tx, id) ?? refuse(`org_proposal '${id}' does not exist`);
+    if (row.status !== 'proposed') refuse(`org_proposal '${id}' is '${row.status}'; nothing is waiting to be cancelled`);
+    const approvalId = this.#insertApproval(tx, 'org_proposal', id, 'rejected', null, actor, `cancelled${comment ? `: ${comment}` : ''}`);
+    return { state: 'cancelled', approval_id: approvalId, status: row.status };
+  }
+
+  #rejectOrg(tx: Db, actor: string, id: string, comment?: string): Record<string, unknown> {
+    const row = getOrgProposal(tx, id) ?? refuse(`org_proposal '${id}' does not exist`);
+    if (row.status !== 'proposed') refuse(`org_proposal '${id}' is '${row.status}'; only a proposed change can be rejected`);
+    const approvalId = this.#insertApproval(tx, 'org_proposal', id, 'rejected', null, actor, comment ?? 'rejected');
+    transitionOrgProposal(tx, this.#o.clock, { proposalId: id, to: 'rejected', by: 'human', actorId: actor, reason: comment ?? 'rejected by a human' });
+    return { state: 'rejected', approval_id: approvalId };
+  }
+
   // ===== 정책 배포 =====
 
   #approvePolicy(actor: string, text: string, comment?: string): Record<string, unknown> {
@@ -394,6 +474,7 @@ export class ApprovalEngine {
       if (kind === 'task') return this.#releaseTask(tx, actor, id, code);
       if (kind === 'publication') return this.#releasePublication(tx, actor, id, code);
       if (kind === 'strategy_version') refuse('a strategy needs no release: one human approval moves it to experiment (no cooldown or re-authentication)');
+      if (kind === 'org_proposal') return this.#releaseOrg(tx, actor, id, code);
       return this.#releasePolicy(tx, actor, id, code);
     });
   }
@@ -403,6 +484,7 @@ export class ApprovalEngine {
     return this.#o.db.writeTx((tx) => {
       const now = this.#now();
       if (kind === 'strategy_version') return this.#cancelStrategy(tx, actor, id, comment);
+      if (kind === 'org_proposal') return this.#cancelOrg(tx, actor, id, comment);
       if (kind === 'task') {
         const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [id]) ?? refuse(`task '${id}' does not exist`);
         if (task.status !== 'needs_review' && task.status !== 'queued') refuse(`task '${id}' is '${task.status}'; only a task that has not started can be cancelled`);
@@ -424,6 +506,7 @@ export class ApprovalEngine {
   #reject(actor: string, kind: ApprovalSubject, id: string, comment?: string): Record<string, unknown> {
     return this.#o.db.writeTx((tx) => {
       if (kind === 'strategy_version') return this.#rejectStrategy(tx, actor, id, comment);
+      if (kind === 'org_proposal') return this.#rejectOrg(tx, actor, id, comment);
       if (kind !== 'task') return { state: 'rejected', approval_id: this.#insertApproval(tx, kind, id, 'rejected', null, actor, comment ?? 'rejected') };
       const task = tx.get<TaskRow>('SELECT * FROM task WHERE id = ?', [id]) ?? refuse(`task '${id}' does not exist`);
       if (task.status !== 'needs_review') refuse(`task '${id}' is '${task.status}'; only a task in needs_review can be rejected`);
@@ -464,6 +547,16 @@ export class ApprovalEngine {
         approval: { state: status.state, reason: status.reason, approvers: status.approvers },
       };
     }
+    if (kind === 'org_proposal') {
+      const ctx = this.#org(db, id);
+      const status = approvalStatus(db, { kind, id, hash: ctx.hash, requesterId: ctx.requester, params: ctx.params, now: this.#now() });
+      return {
+        kind, id, status: ctx.row.status, hash: ctx.hash, change_class: ctx.row.change_class, subject: ctx.subject, policy_version: ctx.policy.versionId,
+        diff: JSON.parse(ctx.row.diff), rationale: ctx.row.rationale, expected_effect: ctx.row.expected_effect, risk_assessment: JSON.parse(ctx.row.risk_assessment),
+        trial_scope: JSON.parse(ctx.row.trial_scope), evaluation_plan: JSON.parse(ctx.row.evaluation_plan), rollback_plan: JSON.parse(ctx.row.rollback_plan),
+        expires_at: ctx.row.expires_at, approval: { state: status.state, reason: status.reason, approvers: status.approvers, cooldown_ends_at: status.cooldownEndsAt },
+      };
+    }
     const latest = db.get<{ subject_hash: string | null }>(
       "SELECT subject_hash FROM approval WHERE subject_kind = 'policy_version' AND subject_id = ? AND decision = 'approved' ORDER BY at DESC, rowid DESC LIMIT 1", [id],
     ) ?? refuse(`no policy proposal '${id}'`);
@@ -494,7 +587,8 @@ export class ApprovalEngine {
       const activation = findExperimentActivation(db, id);
       return { id, activated_at: activation?.activatedAt ?? null };
     });
-    return { tasks, publications, policy_proposals: policies.map((p) => p.subject_id), strategy_proposals: strategies, strategy_reviews: reviews, experiments };
+    const orgProposals = db.all<{ id: string; change_class: string; created_at: string }>("SELECT id, change_class, created_at FROM org_proposal WHERE status = 'proposed' ORDER BY created_at, id");
+    return { tasks, publications, policy_proposals: policies.map((p) => p.subject_id), strategy_proposals: strategies, strategy_reviews: reviews, experiments, org_proposals: orgProposals };
   }
 }
 
@@ -510,7 +604,7 @@ function assertAllowed(from: 'needs_review' | 'queued', to: 'queued' | 'needs_re
   if (!check.ok) refuse(check.message);
 }
 
-const SUBJECTS: readonly string[] = ['task', 'publication', 'policy_version', 'strategy_version'];
+const SUBJECTS: readonly string[] = ['task', 'publication', 'policy_version', 'strategy_version', 'org_proposal'];
 const CMDS: readonly string[] = ['whoami', 'list', 'show', 'approve', 'release', 'cancel', 'reject'];
 
 function parseCommand(raw: unknown): ApprovalCommand {
@@ -531,7 +625,7 @@ function parseCommand(raw: unknown): ApprovalCommand {
   const id = c['id'] as string;
   if (cmd === 'approve') {
     if (typeof c['hash'] !== 'string') refuse('hash is required (from `show`)');
-    return { cmd, actor: c['actor'] as string, kind: kind as 'task' | 'publication' | 'strategy_version', id, hash: c['hash'] as string, ...optional('comment') };
+    return { cmd, actor: c['actor'] as string, kind: kind as 'task' | 'publication' | 'strategy_version' | 'org_proposal', id, hash: c['hash'] as string, ...optional('comment') };
   }
   if (cmd === 'release') return { cmd, actor: c['actor'] as string, kind, id, ...optional('totp') };
   if (cmd === 'show') return { cmd, actor: c['actor'] as string, kind, id };

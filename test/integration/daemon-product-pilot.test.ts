@@ -351,3 +351,66 @@ test('the approval CLI reaches the product channel over the real socket: add, st
   const agent = await runApproveCli(['product', 'status'], { socket: channel.socketPath, actor: AGENT });
   assert.equal(agent.json!['code'], 'not_human');
 });
+
+test('remove: a candidate can be taken back and registered again with the same slug and path; the fact is an event; started or decided products are refused', async (t) => {
+  const r = rig(t);
+  // 결정이 난 상품도 지울 수 없다 (먼저 끝까지 돌린다: 워커는 오래된 업무부터 집는다)
+  const done = await r.verified('decided-product');
+  const decided = await r.send({ op: 'decide', slug: 'decided-product', decision: 'approve', hash: done['product'].review_hash });
+  assert.equal(decided['ok'], true, JSON.stringify(decided));
+  assert.equal((await r.send({ op: 'remove', slug: 'decided-product' }))['code'], 'wrong_state');
+
+  const path = r.repo();
+  assert.equal((await r.send({ op: 'add', slug: 'wrong-path', name: 'Wrong', repo_path: path }))['ok'], true);
+  const removed = await r.send({ op: 'remove', slug: 'wrong-path' });
+  assert.deepEqual([removed['ok'], removed['removed'], removed['removed_by']], [true, 'wrong-path', OWNER]);
+  assert.equal(r.env.db.get("SELECT count(*) AS n FROM product WHERE slug = 'wrong-path'")?.['n'], 0);
+  assert.equal(r.env.db.get('SELECT count(*) AS n FROM product_repo WHERE local_path = ?', [path])?.['n'], 0);
+  const events = r.env.db.all<{ source: string; external_id: string; payload: string }>("SELECT source, external_id, payload FROM event WHERE type = 'registration.candidate_removed'");
+  assert.equal(events.length, 1);
+  assert.deepEqual([events[0]!.source, events[0]!.external_id], ['product-registration', 'wrong-path']);
+  assert.equal(JSON.parse(events[0]!.payload).actor_id, OWNER);
+  assert.equal((await r.send({ op: 'status', slug: 'wrong-path' }))['code'], 'not_found');
+  assert.equal((await r.send({ op: 'remove', slug: 'wrong-path' }))['code'], 'not_found', 'a second remove');
+
+  // 같은 슬러그·같은 경로로 다시 올릴 수 있다
+  assert.equal((await r.send({ op: 'add', slug: 'wrong-path', name: 'Right', repo_path: path }))['ok'], true);
+
+  // 검증을 시작한 상품은 지울 수 없다
+  assert.equal((await r.send({ op: 'start', slug: 'wrong-path' }))['ok'], true);
+  assert.equal((await r.send({ op: 'remove', slug: 'wrong-path' }))['code'], 'wrong_state');
+  assert.equal((await r.send({ op: 'status', slug: 'wrong-path' }))['product'].registration_status, 'verifying');
+
+  assert.equal(r.env.db.get("SELECT count(*) AS n FROM event WHERE type = 'registration.candidate_removed'")?.['n'], 1, 'refused removals leave no event');
+});
+
+test('remove: only humans, with a slug and no extra fields; a candidate that somehow holds access or a task is not removed', async (t) => {
+  const r = rig(t);
+  assert.equal((await r.send({ op: 'add', slug: 'guarded', name: 'Guarded', repo_path: r.repo() }))['ok'], true);
+  assert.equal((await r.send({ op: 'remove', slug: 'guarded' }, AGENT))['code'], 'not_human');
+  assert.equal((await r.send({ op: 'remove' }))['code'], 'invalid_request');
+  assert.equal((await r.send({ op: 'remove', slug: 'guarded', force: true }))['code'], 'invalid_request');
+  // 정상 경로에서는 생기지 않는 상태(접근 승인이 남은 후보)도 거부한다
+  r.env.db.writeTx((tx) => tx.run("UPDATE product_repo SET access_scope = 'read' WHERE product_id = (SELECT id FROM product WHERE slug = 'guarded')"));
+  assert.equal((await r.send({ op: 'remove', slug: 'guarded' }))['code'], 'wrong_state');
+  assert.equal(r.env.db.get("SELECT count(*) AS n FROM product WHERE slug = 'guarded'")?.['n'], 1);
+});
+
+test('the approval CLI has product remove: it removes a candidate and keeps the usage error exit code 2', async (t) => {
+  const r = rig(t);
+  const channel = await r.daemon.startApprovalChannel();
+  t.after(() => channel.close());
+  const cli = (args: string[]) => runApproveCli(['product', ...args], { socket: channel.socketPath, actor: OWNER });
+  const path = r.repo();
+  assert.equal((await cli(['add', 'cli-removed', '--name', 'Cli Removed', '--repo', path])).code, 0);
+  const removed = await cli(['remove', 'cli-removed']);
+  assert.equal(removed.code, 0, removed.stdout + removed.stderr);
+  assert.equal(removed.json!['removed'], 'cli-removed');
+  assert.equal((await cli(['add', 'cli-removed', '--name', 'Again', '--repo', path])).code, 0, 'the same slug and path can be added again');
+  for (const args of [['remove'], ['remove', 'cli-removed', 'extra'], ['remove', 'cli-removed', '--comment', 'x']]) {
+    assert.equal((await cli(args)).code, 2, args.join(' '));
+  }
+  const refused = await cli(['remove', 'no-such-product']);
+  assert.notEqual(refused.code, 0);
+  assert.equal(refused.json!['code'], 'not_found');
+});

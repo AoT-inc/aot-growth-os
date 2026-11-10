@@ -2,7 +2,7 @@
 //  - 갱신 토큰은 이 파일(데몬 호스트의 instance/)에만 있다. 커넥터에는 접근 토큰만 간다. 토큰 값은 로그·이벤트·오류 문구에 싣지 않는다.
 //  - 갱신은 사이트마다 토큰 원천 하나가 한 번에 하나만 한다(갱신 토큰 재사용 시 연결 전체가 끊기는 허브 규칙).
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { GatewayTimers, McpAuthPort, McpSiteEvent, McpSiteManifest } from '@aot/agent-runtime';
@@ -23,7 +23,7 @@ export const isOauthManifest = (manifest: McpSiteManifest): manifest is OauthMan
 
 // ───────────────────────── 허브 프로토콜 ─────────────────────────
 
-export interface HubEndpoints { authorization: string; token: string; registration: string }
+export interface HubEndpoints { authorization: string; token: string; registration: string; issuer: string; issParameterSupported: boolean }
 export type FetchLike = typeof fetch;
 
 const sameOrigin = (a: string, b: string): boolean => new URL(a).origin === new URL(b).origin;
@@ -61,10 +61,15 @@ export async function discoverHub(hub: string, fetchImpl: FetchLike = fetch): Pr
   if (!response.ok) throw new Error(`hub metadata: HTTP ${response.status}`);
   const body = await readJson(response);
   if (!isRecord(body)) throw new Error('hub metadata is not a JSON object');
-  if (typeof body['issuer'] === 'string' && new URL(body['issuer']).origin !== new URL(hub).origin) throw new Error('hub metadata: issuer differs from the configured hub');
+  // issuer 가 없거나 설정한 허브와 다르면 거부한다(다른 허브의 메타데이터를 받아들이지 않는다)
+  if (typeof body['issuer'] !== 'string') throw new Error('hub metadata: issuer is missing');
+  let issuerOrigin: string;
+  try { issuerOrigin = new URL(body['issuer']).origin; } catch { throw new Error('hub metadata: issuer is not a URL'); }
+  if (issuerOrigin !== new URL(hub).origin) throw new Error('hub metadata: issuer differs from the configured hub');
   const methods = body['code_challenge_methods_supported'];
-  if (Array.isArray(methods) && !methods.includes('S256')) throw new Error('hub metadata: S256 PKCE is not supported');
+  if (!Array.isArray(methods) || !methods.includes('S256')) throw new Error('hub metadata: S256 PKCE is not supported');
   return {
+    issuer: issuerOrigin, issParameterSupported: body['authorization_response_iss_parameter_supported'] === true,
     authorization: allowedUrl(body['authorization_endpoint'], hub, 'authorization_endpoint'),
     token: allowedUrl(body['token_endpoint'], hub, 'token_endpoint'),
     registration: allowedUrl(body['registration_endpoint'], hub, 'registration_endpoint'),
@@ -146,6 +151,7 @@ export async function postToken(endpoints: HubEndpoints, form: Record<string, st
   if (!isRecord(body) || typeof body['access_token'] !== 'string' || body['access_token'] === '' || typeof body['expires_in'] !== 'number' || !(body['expires_in'] > 0)) {
     return { ok: false, kind: 'ambiguous', detail: 'the hub answered success with an unusable body' };
   }
+  if (typeof body['token_type'] === 'string' && body['token_type'].toLowerCase() !== 'bearer') return { ok: false, kind: 'ambiguous', detail: 'the hub issued a token of an unsupported type' };
   const refresh = body['refresh_token'];
   return {
     ok: true,
@@ -188,17 +194,29 @@ function ensureDir(dir: string): void {
   chmodSync(dir, 0o700);
 }
 
-/** 0600 파일을 원자적으로 쓴다(임시 파일 → rename) */
+/** 0600 파일을 원자적으로 쓴다(임시 파일 → fsync → rename). 실패하면 임시 파일을 지운다 */
 function writePrivate(path: string, value: unknown): void {
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
+  try {
+    const fd = openSync(tmp, 'w', 0o600);
+    try {
+      writeSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, path);
+  } catch (error) {
+    try { rmSync(tmp, { force: true }); } catch { /* 지우지 못해도 원래 오류를 올린다 */ }
+    throw error;
+  }
 }
 
 export function readGrant(dir: string, site: string): StoredGrant | null {
   const path = grantPath(dir, site);
   if (!existsSync(path)) return null;
+  if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path}: the grant file is readable by others (expected mode 0600)`);
   const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
   if (!isRecord(value) || value['version'] !== 1 || value['site'] !== site) throw new Error(`${path}: not a grant file for site '${site}'`);
   const str = (key: string): string => { const v = value[key]; if (typeof v !== 'string') throw new Error(`${path}: ${key} is missing`); return v; };
@@ -271,6 +289,9 @@ export function createTokenSource(deps: TokenSourceDeps): McpTokenSource {
   const timers = deps.timers ?? realGatewayTimers;
   const listeners = new Set<() => void>();
   let grant: StoredGrant | null = null;
+  /** 교체된 갱신 토큰을 디스크에 못 적었다: 메모리의 새 토큰이 더 새롭고, consumed(디스크의 옛 토큰)는 이미 쓰였으므로 다시 보내면 안 된다 */
+  let unsaved: { grant: StoredGrant; consumed: string } | null = null;
+  let saveFailures = 0;
   let access: string | null = null;
   let accessExpiresAt = 0;
   let inflight: Promise<void> | null = null;
@@ -279,6 +300,7 @@ export function createTokenSource(deps: TokenSourceDeps): McpTokenSource {
   let pollTimer: unknown = null;
   let retryMs = FIRST_RETRY_MS;
   let lastAttemptAt = Number.NEGATIVE_INFINITY;
+  let forcedCount = 0;
   let closed = false;
 
   const unref = (handle: unknown): void => { (handle as { unref?: () => void } | null)?.unref?.(); };
@@ -299,18 +321,25 @@ export function createTokenSource(deps: TokenSourceDeps): McpTokenSource {
     try { writeNotice(authDir, { site, at: clock.nowIso(), reason, action: `mcp-login ${site}` }); } catch { /* 알림 파일을 못 써도 이벤트는 남는다 */ }
     emit({ type: 'auth_failed', site, reason, action: `mcp-login ${site}` });
   };
-  const persist = (next: StoredGrant): void => {
-    try { writeGrant(authDir, next); } catch (error) {
-      // 새 갱신 토큰을 못 적으면 옛 토큰은 이미 쓰였다: 메모리에는 남기고 다음 기회에 다시 적는다
-      emit({ type: 'auth_failed', site, reason: `store_write_failed:${error instanceof Error ? error.name : 'error'}`, action: `check the permissions of ${authDir}` });
-    }
+  /**
+   * 비교 후 교환: 디스크의 갱신 토큰이 `base`(내가 읽고 쓴 토큰)일 때만 쓰거나 지운다.
+   * 그 사이 오너가 새로 로그인했으면(다른 토큰) 건드리지 않는다 → 'superseded'. 두 프로세스 사이의 완전한 잠금은 아니지만 창은 읽기-쓰기 사이로 좁다.
+   */
+  const commit = (base: string, next: StoredGrant | null): 'written' | 'superseded' | 'failed' => {
+    try {
+      const disk = readGrant(authDir, site);
+      if (disk === null) return next === null ? 'written' : 'superseded'; // 갱신 중 로그아웃
+      if (disk.refresh_token !== base) return 'superseded';
+      if (next === null) deleteGrant(authDir, site); else writeGrant(authDir, next);
+      return 'written';
+    } catch { return 'failed'; }
   };
   const scheduleRefresh = (): void => {
     refreshTimer = clear(refreshTimer);
     if (closed || grant === null || access === null) return;
     const lifetime = accessExpiresAt - clock.nowMs();
     const wait = lifetime > 2 * REFRESH_MARGIN_MS ? lifetime - REFRESH_MARGIN_MS : lifetime / 2;
-    refreshTimer = timers.setTimeout(() => { void refreshNow(); }, Math.max(0, wait));
+    refreshTimer = timers.setTimeout(() => { forcedCount = 0; void refreshNow(); }, Math.max(0, wait));
     unref(refreshTimer);
   };
   const startPolling = (): void => {
@@ -319,15 +348,26 @@ export function createTokenSource(deps: TokenSourceDeps): McpTokenSource {
     pollTimer = timers.setTimeout(() => { loadFromDisk(); if (grant === null) startPolling(); }, LOGIN_POLL_MS);
     unref(pollTimer);
   };
+  const retryAfter = (ms: number): void => {
+    refreshTimer = clear(refreshTimer);
+    refreshTimer = timers.setTimeout(() => { void refreshNow(); }, ms);
+    unref(refreshTimer);
+  };
 
-  /** 디스크의 로그인을 읽어 메모리에 반영한다. 로그인이 없거나 선언과 다르면 grant 는 null */
+  /** 디스크의 로그인을 읽어 메모리에 반영한다. 저장 못 한 더 새로운 토큰이 있으면 디스크의 옛 값으로 덮어쓰지 않는다 */
   function loadFromDisk(): void {
     let disk: StoredGrant | null;
     try { disk = readGrant(authDir, site); } catch (error) {
+      if (unsaved !== null) return; // 메모리의 토큰이 정본이다. 디스크를 못 읽어도 그것을 버리지 않는다
       grant = null;
       if (access !== null) setAccess(null, 0);
       notice(`store_unreadable:${error instanceof Error ? error.name : 'error'}`);
       return;
+    }
+    if (unsaved !== null) {
+      if (disk !== null && disk.refresh_token === unsaved.consumed) return; // 디스크는 이미 쓴 옛 토큰: 덮어쓰지 않는다
+      unsaved = null; // 오너가 새로 로그인했거나 로그아웃했다: 그쪽이 정본이다
+      saveFailures = 0;
     }
     if (disk === null) { grant = null; if (access !== null) setAccess(null, 0); return; } // 로그아웃(파일 삭제)이면 접근 토큰도 거둔다
     if (!grantMatches(disk, manifest)) {
@@ -350,45 +390,77 @@ export function createTokenSource(deps: TokenSourceDeps): McpTokenSource {
     }
   }
 
+  /** 저장 못 한 토큰을 다시 적는다. true 면 이제 디스크와 메모리가 같다 */
+  function flushUnsaved(): boolean {
+    if (unsaved === null) return true;
+    const result = commit(unsaved.consumed, unsaved.grant);
+    if (result === 'failed') {
+      saveFailures += 1;
+      if (saveFailures >= 3 && access !== null) { // 계속 못 적는다: 재시작하면 옛 토큰을 다시 보내게 되므로 이 사이트를 닫는다
+        setAccess(null, 0);
+        notice('store_write_failed');
+      }
+      emit({ type: 'auth_retry', site, reason: 'store_write_failed', inMs: saveFailures >= 3 ? 60_000 : FIRST_RETRY_MS });
+      retryAfter(saveFailures >= 3 ? 60_000 : FIRST_RETRY_MS);
+      return false;
+    }
+    if (result === 'superseded') { unsaved = null; saveFailures = 0; loadFromDisk(); return false; }
+    unsaved = null;
+    saveFailures = 0;
+    clearNotice(authDir, site);
+    return true;
+  }
+
   async function doRefresh(): Promise<void> {
     loadFromDisk(); // 새 로그인이 있으면 그 갱신 토큰으로 이어 간다
+    if (!flushUnsaved()) return;
     if (grant === null) { startPolling(); return; }
     const current = grant;
     lastAttemptAt = clock.nowMs();
     let endpoints: HubEndpoints;
     try { endpoints = await discoverHub(manifest.auth.hub, deps.fetchImpl); } catch {
-      await onFailure({ ok: false, kind: 'transient', detail: 'could not read the hub metadata' }); // 메타데이터 읽기는 갱신 토큰을 쓰기 전이라 다시 해도 안전하다
+      await onFailure({ ok: false, kind: 'transient', detail: 'could not read the hub metadata' }, current.refresh_token); // 메타데이터 읽기는 갱신 토큰을 쓰기 전이라 다시 해도 안전하다
       return;
     }
     const result = await refreshGrant(endpoints, { clientId: current.client_id, refreshToken: current.refresh_token, resource: current.resource }, deps.fetchImpl);
-    if (!result.ok) { await onFailure(result); return; }
+    if (!result.ok) { await onFailure(result, current.refresh_token); return; }
     const expiresAt = clock.nowMs() + Math.floor(result.tokens.expiresInS * 1000);
     const next: StoredGrant = {
       ...current, refresh_token: result.tokens.refreshToken ?? current.refresh_token, access_token: result.tokens.accessToken, access_expires_at_ms: expiresAt,
       scope: result.tokens.scope === '' ? current.scope : result.tokens.scope,
     };
-    persist(next); // 교체된 갱신 토큰을 먼저 적는다
+    const saved = commit(current.refresh_token, next); // 교체된 갱신 토큰을 먼저 적는다
+    if (saved === 'superseded') { loadFromDisk(); return; } // 갱신하는 동안 오너가 새로 로그인했다: 새 로그인을 지키고 이 결과는 버린다
     grant = next;
     retryMs = FIRST_RETRY_MS;
-    clearNotice(authDir, site);
     setAccess(result.tokens.accessToken, expiresAt);
+    if (saved === 'failed') {
+      unsaved = { grant: next, consumed: current.refresh_token }; // 새 토큰은 메모리에 두고 저장을 다시 시도한다(디스크의 옛 토큰은 이미 쓰였다)
+      saveFailures = 0;
+      flushUnsavedAfterFailure();
+      return;
+    }
+    clearNotice(authDir, site);
     scheduleRefresh();
     emit({ type: 'auth_refreshed', site, expiresInS: Math.floor(result.tokens.expiresInS) });
   }
+  function flushUnsavedAfterFailure(): void {
+    saveFailures = 1;
+    emit({ type: 'auth_retry', site, reason: 'store_write_failed', inMs: FIRST_RETRY_MS });
+    retryAfter(FIRST_RETRY_MS);
+  }
 
-  async function onFailure(result: Extract<TokenResult, { ok: false }>): Promise<void> {
+  async function onFailure(result: Extract<TokenResult, { ok: false }>, base: string): Promise<void> {
     if (result.kind === 'transient') {
       const wait = retryMs;
       retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
       emit({ type: 'auth_retry', site, reason: result.detail, inMs: wait });
-      refreshTimer = clear(refreshTimer);
-      refreshTimer = timers.setTimeout(() => { void refreshNow(); }, wait);
-      unref(refreshTimer);
+      retryAfter(wait);
       return;
     }
     // rejected / ambiguous: 갱신 토큰은 더 쓸 수 없다(옛 토큰을 다시 보내면 허브가 연결 전체를 끊을 수 있다)
+    if (commit(base, null) === 'superseded') { loadFromDisk(); return; } // 그 사이 새 로그인이 있었다: 지우지 않고 이어받는다
     const reason = result.kind === 'rejected' ? 'refresh_rejected' : 'refresh_ambiguous';
-    try { deleteGrant(authDir, site); } catch { /* 지우지 못해도 메모리에서는 버린다 */ }
     grant = null;
     refreshTimer = clear(refreshTimer);
     setAccess(null, 0);
@@ -411,7 +483,10 @@ export function createTokenSource(deps: TokenSourceDeps): McpTokenSource {
     current: () => (access !== null && clock.nowMs() < accessExpiresAt ? access : null),
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     rejected() {
-      if (closed || grant === null || clock.nowMs() - lastAttemptAt < MIN_FORCED_REFRESH_GAP_MS) return;
+      // 사이트가 계속 401 을 주면(aud·범위 문제) 갱신 간격을 두 배씩 늘린다(1분 → 최대 30분). 정기 갱신이 돌면 처음으로 돌아간다
+      const gap = Math.min(MIN_FORCED_REFRESH_GAP_MS * 2 ** forcedCount, 30 * 60_000);
+      if (closed || grant === null || clock.nowMs() - lastAttemptAt < gap) return;
+      forcedCount += 1;
       void refreshNow();
     },
     start() {
@@ -443,6 +518,6 @@ export function createReadOnlyTokenSource(manifest: OauthManifest, authDir: stri
     else if (grant.access_token === null || grant.access_expires_at_ms === null || grant.access_expires_at_ms - clock.nowMs() < 30_000) {
       problem = `the stored access token for '${manifest.site}' has expired and mcp-pin never refreshes it (the daemon does); start the daemon, or log in again`;
     } else token = grant.access_token;
-  } catch (error) { problem = `could not read the stored login: ${error instanceof Error ? error.message : 'error'}`; }
+  } catch (error) { problem = `could not read the stored login (${error instanceof Error ? error.name : 'error'}); check the file under ${authDir}`; }
   return { port: { current: () => token, subscribe: () => () => undefined, rejected: () => undefined }, problem };
 }

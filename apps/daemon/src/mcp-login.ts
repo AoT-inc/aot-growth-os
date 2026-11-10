@@ -29,7 +29,7 @@ export interface LoginDeps {
   timeoutMs?: number;
 }
 
-function callbackServer(expectedState: string): { server: Server; code: Promise<string>; redirectUri: Promise<string> } {
+function callbackServer(expectedState: string, issuer: { expected: string; required: boolean }): { server: Server; code: Promise<string>; redirectUri: Promise<string> } {
   let resolveCode!: (code: string) => void;
   let rejectCode!: (error: Error) => void;
   const code = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
@@ -40,6 +40,8 @@ function callbackServer(expectedState: string): { server: Server; code: Promise<
       response.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end(text);
     };
     if (url.searchParams.get('state') !== expectedState) { reply(400, 'state mismatch'); return; } // 다른 곳에서 온 요청은 무시한다(기다림은 계속)
+    const iss = url.searchParams.get('iss'); // RFC 9207: 다른 인가 서버가 보낸 응답을 거른다
+    if ((iss !== null && iss.replace(/\/$/, '') !== issuer.expected) || (iss === null && issuer.required)) { reply(400, 'issuer mismatch'); rejectCode(new Error('the authorization response came from an unexpected issuer')); return; }
     const error = url.searchParams.get('error');
     const value = url.searchParams.get('code');
     if (error !== null) { reply(200, 'Login was not completed. You can close this tab.'); rejectCode(new Error(`the hub returned an error (${/^[a-z_]{1,40}$/.test(error) ? error : 'error'})`)); return; }
@@ -60,7 +62,7 @@ export async function loginSite(manifest: OauthManifest, instanceDir: string, de
   const endpoints = await discoverHub(manifest.auth.hub, deps.fetchImpl);
   const state = randomBytes(24).toString('base64url');
   const pkce = newPkce();
-  const callback = callbackServer(state);
+  const callback = callbackServer(state, { expected: endpoints.issuer, required: endpoints.issParameterSupported });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const redirectUri = await callback.redirectUri;
@@ -71,6 +73,8 @@ export async function loginSite(manifest: OauthManifest, instanceDir: string, de
     const code = await Promise.race([callback.code, timeout]);
     const result = await exchangeCode(endpoints, { clientId, code, redirectUri, verifier: pkce.verifier, resource: manifest.auth.resource }, deps.fetchImpl);
     if (!result.ok) throw new Error(result.detail);
+    const granted = result.tokens.scope === '' ? [] : result.tokens.scope.split(/\s+/);
+    if (!granted.every((scope) => manifest.auth.scopes.includes(scope))) throw new Error('the hub granted scopes that were not requested; nothing was stored'); // 요청보다 넓은 권한은 저장하지 않는다
     if (result.tokens.refreshToken === null) throw new Error('the hub did not issue a refresh token; the daemon could not keep the connection');
     const grant: StoredGrant = {
       version: 1, site: manifest.site, hub: manifest.auth.hub, resource: manifest.auth.resource, scopes: [...manifest.auth.scopes], client_id: clientId,

@@ -115,7 +115,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      if (response.status === 401) throw new ConnectorFailure('unauthorized', 'the MCP server rejected the access token (HTTP 401)', true);
+      if (response.status === 401 && options.dynamicHeaders !== undefined) throw new ConnectorFailure('unauthorized', 'the MCP server rejected the access token (HTTP 401)', true);
       throw new ConnectorFailure('http_status', `the MCP server answered HTTP ${response.status}`, response.status === 401 || response.status === 403);
     }
     return response;

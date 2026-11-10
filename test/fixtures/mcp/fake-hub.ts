@@ -16,6 +16,12 @@ export interface FakeHub {
   accessLifetimeS: number;
   /** 다음 token 요청을 이렇게 망친다: reject(400 invalid_grant) | error500 | drop(응답 없이 연결 끊기) */
   failNext: 'reject' | 'error500' | 'drop' | null;
+  /** 메타데이터 문서에 덮어쓰는 값(null 이면 지운다) */
+  metadata: Record<string, unknown>;
+  /** 토큰 응답의 scope 를 이 값으로 바꾼다 */
+  grantScope: string | null;
+  /** 인가 응답 되돌림에 iss 를 실을 값(null 이면 싣지 않는다) */
+  authorizeIss: string | null;
   /** 연결(gid) 폐지 여부 — 옛 갱신 토큰 재사용으로 true 가 된다 */
   readonly revoked: boolean;
   /** 마지막으로 인가 요청이 받은 쿼리 */
@@ -42,7 +48,7 @@ export async function startFakeHub(): Promise<FakeHub> {
   let origin = '';
   const state: { revoked: boolean } = { revoked: false };
   const hub: FakeHub = {
-    get url() { return origin; }, records, accessLifetimeS: 3600, failNext: null, lastAuthorize: null, counts,
+    get url() { return origin; }, records, accessLifetimeS: 3600, metadata: {}, grantScope: null, authorizeIss: null, failNext: null, lastAuthorize: null, counts,
     get revoked() { return state.revoked; },
     validAccessTokens: () => [...access],
     close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }),
@@ -55,7 +61,7 @@ export async function startFakeHub(): Promise<FakeHub> {
     access.add(accessToken);
     if (currentRefresh !== null) usedRefresh.add(currentRefresh);
     currentRefresh = `rt-${randomBytes(12).toString('hex')}`;
-    return { access_token: accessToken, refresh_token: currentRefresh, expires_in: hub.accessLifetimeS, token_type: 'Bearer', scope: 'course.read units.write' };
+    return { access_token: accessToken, refresh_token: currentRefresh, expires_in: hub.accessLifetimeS, token_type: 'Bearer', scope: hub.grantScope ?? 'course.read units.write' };
   };
 
   const server: Server = createServer((req, res) => {
@@ -67,10 +73,12 @@ export async function startFakeHub(): Promise<FakeHub> {
       const parsed: unknown = type.includes('json') && raw !== '' ? JSON.parse(raw) : null;
       records.push({ path: url.pathname, form, json: parsed });
       if (url.pathname === '/.well-known/oauth-authorization-server') {
-        json(res, 200, {
+        const doc: Record<string, unknown> = {
           issuer: origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
-          code_challenge_methods_supported: ['S256'], grant_types_supported: ['authorization_code', 'refresh_token'],
-        });
+          code_challenge_methods_supported: ['S256'], grant_types_supported: ['authorization_code', 'refresh_token'], ...hub.metadata,
+        };
+        for (const [key, value] of Object.entries(doc)) if (value === null) delete doc[key];
+        json(res, 200, doc);
       } else if (url.pathname === '/register') {
         const value = parsed as { redirect_uris?: string[] };
         const clientId = `client-${randomBytes(6).toString('hex')}`;
@@ -87,6 +95,7 @@ export async function startFakeHub(): Promise<FakeHub> {
         const back = new URL(q['redirect_uri']!);
         back.searchParams.set('code', code);
         back.searchParams.set('state', q['state'] ?? '');
+        if (hub.authorizeIss !== null) back.searchParams.set('iss', hub.authorizeIss);
         res.writeHead(302, { location: back.toString() }).end();
       } else if (url.pathname === '/token') {
         if (hub.failNext !== null) {

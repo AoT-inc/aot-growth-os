@@ -92,3 +92,12 @@ test('an oauth_delegated site cannot be built without a token source; closing un
   await r.client.close();
   assert.equal(r.auth.listenerCount, 0);
 });
+
+test('connector redactor: dynamic secrets are replaced (not accumulated) while the fixed ones stay', async () => {
+  const { createRedactor } = await import('../../packages/agent-runtime/src/mcp/connector/redact.ts');
+  const redactor = createRedactor(['fixed-secret']);
+  redactor.setDynamic(['tok-1', 'tok-2']);
+  assert.equal(redactor.text('fixed-secret tok-1 tok-2'), '[redacted] [redacted] [redacted]');
+  redactor.setDynamic(['tok-3']);
+  assert.equal(redactor.text('fixed-secret tok-1 tok-3'), '[redacted] tok-1 [redacted]');
+});

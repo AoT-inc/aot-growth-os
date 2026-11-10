@@ -69,9 +69,14 @@ function build(config: ConnectorConfig): Runtime {
   const client = createMcpClient({
     transport, redactor, maxResultBytes: config.max_result_bytes > 0 ? config.max_result_bytes : DEFAULT_MAX_RESULT_BYTES, onNotice: write,
   });
+  const recentTokens: string[] = []; // 가릴 토큰은 최근 4개만 둔다(1시간마다 하나씩 쌓이지 않게)
   const setToken = (token: string | null): void => {
     accessToken = token;
-    if (token !== null) redactor.add(token);
+    if (token !== null && !recentTokens.includes(token)) {
+      recentTokens.push(token);
+      if (recentTokens.length > 4) recentTokens.shift();
+      redactor.setDynamic(recentTokens);
+    }
   };
   return { setToken, config, client, redactor, declared: new Set(config.tools) };
 }

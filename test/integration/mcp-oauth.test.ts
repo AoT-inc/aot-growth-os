@@ -11,38 +11,11 @@ import { createMcpSiteClient, parseMcpSite, spawnConnectorProcess, type McpSiteE
 import { mcpOptionsFromConfig } from '../../apps/daemon/src/mcp-config.ts';
 import { runMcpLogin } from '../../apps/daemon/src/mcp-login.ts';
 import { runMcpPin } from '../../apps/daemon/src/mcp-pin.ts';
-import { authDirOf, createTokenSource, readGrant, readNotice, type OauthManifest } from '../../apps/daemon/src/mcp-oauth.ts';
-import { startFakeHttpServer } from '../fixtures/mcp/fake-server.ts';
-import { startFakeHub, type FakeHub } from '../fixtures/mcp/fake-hub.ts';
+import { createTokenSource, readGrant, readNotice, type OauthManifest } from '../../apps/daemon/src/mcp-oauth.ts';
 import { SEARCH_TOOL, UPDATE_TOOL, waitFor } from '../support/mcp.ts';
-import { loginWithFakeBrowser, manualClocks, oauthSiteRaw, oauthWorkdir } from '../support/mcp-oauth.ts';
+import { flushAll, login, refreshCalls, rig, sourceOf } from '../support/mcp-oauth.ts';
 
 const MIN = 60_000;
-const refreshCalls = (hub: FakeHub): number => hub.records.filter((x) => x.path === '/token' && x.form['grant_type'] === 'refresh_token').length;
-const flushAll = async (): Promise<void> => { for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r)); };
-
-async function rig(t: import('node:test').TestContext, options: { scenario?: 'normal' | 'echoes_secret'; lifetimeS?: number; mcpRequireLatest?: boolean } = {}) {
-  const hub = await startFakeHub();
-  hub.accessLifetimeS = options.lifetimeS ?? 3600;
-  t.after(() => hub.close());
-  const accept: { override: string[] | null } = { override: null };
-  const mcp = await startFakeHttpServer({ scenario: options.scenario ?? 'normal', expectBearer: () => accept.override ?? (options.mcpRequireLatest === false ? hub.validAccessTokens() : hub.validAccessTokens().slice(-1)) });
-  t.after(() => mcp.close());
-  const raw = oauthSiteRaw(hub.url, mcp.url);
-  const dir = oauthWorkdir(t, raw);
-  const manifest = parseMcpSite(raw) as OauthManifest;
-  const time = manualClocks();
-  const events: McpSiteEvent[] = [];
-  return { hub, mcp, accept, raw, dir, manifest, ...time, events, authDir: authDirOf(dir.instanceDir) };
-}
-
-type Rig = Awaited<ReturnType<typeof rig>>;
-const sourceOf = (r: Rig) => createTokenSource({ manifest: r.manifest, authDir: r.authDir, clock: r.clock, timers: r.timers, emit: (e) => r.events.push(e) });
-const login = async (r: Rig) => {
-  const result = await loginWithFakeBrowser(r.dir.configPath, r.clock);
-  assert.equal(result.code, 0, result.output);
-  return result;
-};
 
 test('login: authorization code + PKCE (S256) + dynamic registration + loopback redirect; the grant is stored 0600 and nothing secret is printed', async (t) => {
   const r = await rig(t);

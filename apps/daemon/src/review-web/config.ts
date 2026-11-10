@@ -19,6 +19,10 @@ export interface ReviewWebConfig {
   actor: string | null;
   /** 승인 엔진 소켓 (승인 CLI 와 같은 기본값) */
   socketPath: string;
+  /** 데몬 설정의 mcp_sites 원문(없으면 null) */
+  mcpSites: unknown;
+  /** run 기록 폴더 (설정의 run_log_dir > <인스턴스>/run-logs) */
+  runLogDir: string;
 }
 
 export class UsageError extends Error {}
@@ -88,5 +92,6 @@ export function parseReviewWebArgs(argv: readonly string[], deps: ConfigDeps = r
     evidenceRoots: flags.get('evidence-root') ?? [],
     actor: one('actor') ?? str(deps.env['AOT_ACTOR']) ?? null,
     socketPath: one('socket') ?? str(deps.env['AOT_APPROVAL_SOCKET']) ?? str(config['approval_socket']) ?? join(instanceDir, 'run', 'approval.sock'),
+    mcpSites: config['mcp_sites'] ?? null, runLogDir: str(config['run_log_dir']) ?? join(instanceDir, 'run-logs'),
   };
 }

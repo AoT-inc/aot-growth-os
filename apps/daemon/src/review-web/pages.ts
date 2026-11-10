@@ -17,6 +17,10 @@ export interface Rendered {
   title: string;
   body: Raw;
   status: number;
+  /** 있으면 이 초마다 저절로 새로 고친다(meta refresh). 읽기 화면에만 */
+  refresh?: number;
+  /** 읽기만 하는 현황 화면: 하단에 "버튼으로 결정" 문구를 내지 않는다 */
+  viewOnly?: boolean;
 }
 
 const badgesOf = (d: Decision): { label: string; tone: Tone }[] => [...(d.badge === undefined ? [] : [d.badge]), ...(d.badges ?? [])];

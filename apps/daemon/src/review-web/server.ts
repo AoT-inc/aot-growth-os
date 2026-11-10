@@ -14,6 +14,7 @@ import { decide, resultPage } from './decide.ts';
 import { readEvidence } from './evidence-file.ts';
 import { h, page, type Raw } from './html.ts';
 import { FormGuard } from './nonce.ts';
+import { costPage, nowPage, orgPage, sitesPage } from './status.ts';
 import {
   approvalDetail, batchDetail, delegatedPage, effectsDetail, evidenceDetail, evidenceList, experimentDetail, homePage, productDetail, signalDetail, trialDetail, watchPage, type Rendered,
 } from './pages.ts';
@@ -53,18 +54,22 @@ const MAX_BODY_BYTES = 16 * 1024;
 const BODY_TIMEOUT_MS = 5_000;
 const FORM_TYPE = 'application/x-www-form-urlencoded';
 
-const htmlReply = (title: string, body: Raw, status = 200, ctx?: ReviewContext): Reply => ({
+const htmlReply = (title: string, body: Raw, status = 200, ctx?: ReviewContext, refresh?: number, viewOnly = false): Reply => ({
   status, headers: { 'Content-Type': 'text/html; charset=utf-8' },
-  body: page(title, body, ctx === undefined ? {} : { mode: ctx.write === null ? 'readonly' : 'decide', notice: ctx.notice }),
+  body: page(title, body, ctx === undefined ? {} : { mode: viewOnly ? 'view' : ctx.write === null ? 'readonly' : 'decide', notice: ctx.notice, ...(refresh === undefined ? {} : { refresh }) }),
 });
 const plain = (status: number, message: string, extra: Record<string, string> = {}): Reply => ({ status, headers: { 'Content-Type': 'text/plain; charset=utf-8', ...extra }, body: message });
 const notFound = (ctx?: ReviewContext): Reply => htmlReply('찾을 수 없습니다', h`<p class="card">그런 화면이 없습니다. <a href="/">결정할 일로 가기</a></p>`, 404, ctx);
 
 function route(ctx: ReviewContext, segments: string[], query: URLSearchParams): Reply {
   const [first, second, third] = segments;
-  const out = (r: Rendered): Reply => htmlReply(r.title, r.body, r.status, ctx);
+  const out = (r: Rendered): Reply => htmlReply(r.title, r.body, r.status, ctx, r.refresh, r.viewOnly === true);
   if (first === undefined) return out(homePage(ctx));
   if (segments.length === 1) {
+    if (first === 'now') return out(nowPage(ctx));
+    if (first === 'org') return out(orgPage(ctx));
+    if (first === 'sites') return out(sitesPage(ctx));
+    if (first === 'cost') return out(costPage(ctx));
     if (first === 'watch') return out(watchPage(ctx));
     if (first === 'delegated') return out(delegatedPage(ctx));
     if (first === 'effects') return out(effectsDetail(ctx));

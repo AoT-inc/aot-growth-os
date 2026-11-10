@@ -73,14 +73,14 @@ export function list(items: readonly unknown[], empty = '없음'): Raw {
   return items.length === 0 ? h`<p class="empty">${empty}</p>` : h`<ul>${items.map((item) => h`<li>${item}</li>`)}</ul>`;
 }
 
-const NAV: readonly (readonly [string, string])[] = [['/', '결정할 일'], ['/watch', '지켜보는 중'], ['/evidence', '증거']];
+const NAV: readonly (readonly [string, string])[] = [['/', '결정할 일'], ['/now', '지금'], ['/org', '조직'], ['/sites', '사이트'], ['/cost', '비용'], ['/watch', '지켜보는 중'], ['/evidence', '증거']];
 
 const STYLE = `
 :root{color-scheme:light dark;--bg:#f7f7f5;--fg:#1d2330;--mute:#5f6878;--card:#fff;--line:#dcdfe5;--accent:#1f4fc4;--ok:#17703a;--warn:#8a5300;--bad:#b3261e;--code:#eef0f4}
 @media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e8eaf0;--mute:#a0a8b8;--card:#1c2129;--line:#323a48;--accent:#8fb0ff;--ok:#6cd696;--warn:#f2b660;--bad:#ff9a90;--code:#10131a}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
 header{background:var(--card);border-bottom:1px solid var(--line);padding:12px 16px}
-nav{max-width:720px;margin:0 auto;display:flex;gap:22px}nav a{color:var(--mute);text-decoration:none;padding:2px 0}nav a:hover{color:var(--accent)}
+nav{max-width:720px;margin:0 auto;display:flex;gap:6px 18px;flex-wrap:wrap}nav a{color:var(--mute);text-decoration:none;padding:2px 0}nav a:hover{color:var(--accent)}
 main{max-width:720px;margin:0 auto;padding:20px 16px 48px}
 h1{font-size:24px;line-height:1.4;margin:12px 0 10px;color:var(--accent)}h2{font-size:18px;margin:34px 0 10px}h3{font-size:16px;margin:16px 0 6px}
 .lead{font-size:17px;margin:0 0 14px}.mute{color:var(--mute)}.empty{color:var(--mute)}
@@ -101,16 +101,18 @@ dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:6px 0;
 pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;max-height:420px;font-size:13px}
 img.evidence{max-width:100%;max-height:420px;border:1px solid var(--line);border-radius:8px;background:#fff}img.thumb{width:140px;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;display:block;margin:6px 0}
 svg.chart{max-width:100%;height:auto}svg.chart text{fill:var(--fg);font-size:12px}svg.chart .axis{stroke:var(--line)}svg.chart .b1{fill:var(--accent)}svg.chart .b2{fill:var(--mute)}svg.chart .line{stroke:var(--accent);fill:none;stroke-width:2}svg.chart .ref{stroke:var(--bad);stroke-dasharray:4 3}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:12px 0}.stat{display:block;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;color:inherit;text-decoration:none}a.stat:hover,a.stat:focus-visible{border-color:var(--accent)}.stat .n{display:block;font-size:40px;line-height:1.1;color:var(--accent)}.stat .l{display:block;font-weight:600}.stat .d{display:block;color:var(--mute);font-size:13px}.stamp{font-size:13px;margin-top:28px}
 .banner{color:var(--mute);font-size:13px;margin-top:40px}
 @media (max-width:520px){h1{font-size:21px}main{padding:14px 12px 40px}.card{padding:14px}}
 `;
 
-export function page(title: string, body: Raw, options: { mode?: 'decide' | 'readonly' | 'none'; notice?: string | null } = {}): string {
+export function page(title: string, body: Raw, options: { mode?: 'decide' | 'readonly' | 'view' | 'none'; notice?: string | null; refresh?: number } = {}): string {
   const mode = options.mode ?? 'none';
-  const banner = mode === 'decide' ? h`<p class="banner">결정은 이 화면의 버튼으로 합니다. 결정한 내용은 승인 엔진이 확인하고 기록합니다.</p>`
+  const banner = mode === 'view' ? h`<p class="banner">이 화면은 보기만 하는 화면입니다. 결정은 <a href="/">결정할 일</a>에서 합니다.</p>`
+    : mode === 'decide' ? h`<p class="banner">결정은 이 화면의 버튼으로 합니다. 결정한 내용은 승인 엔진이 확인하고 기록합니다.</p>`
     : mode === 'readonly' ? h`<p class="banner">이 화면은 보기 전용입니다.${options.notice === undefined || options.notice === null ? '' : h` ${options.notice}`}</p>` : h``;
   return h`<!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · 검토 화면</title><style>${raw(STYLE)}</style></head>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${options.refresh === undefined ? '' : h`<meta http-equiv="refresh" content="${String(Math.round(options.refresh))}">`}<title>${title} · 검토 화면</title><style>${raw(STYLE)}</style></head>
 <body><header><nav>${NAV.map(([href, label]) => h`<a href="${href}">${label}</a>`)}</nav></header>
 <main><h1>${title}</h1>${body}
 ${banner}</main></body></html>`.html;

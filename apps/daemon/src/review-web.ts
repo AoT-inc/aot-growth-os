@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   const db = openReadOnlyDb(config.dbPath);
   const { writer, notice } = await connectWriter(config.actor, createSocketClient(config.socketPath));
   const ctx = createReviewContext({
-    db, policyStoreDir: config.policyStoreDir, evidenceDir: config.evidenceDir, evidenceRoots: config.evidenceRoots,
+    db, policyStoreDir: config.policyStoreDir, evidenceDir: config.evidenceDir, evidenceRoots: config.evidenceRoots, mcpSites: config.mcpSites, runLogDir: config.runLogDir,
     ...(writer === undefined ? {} : { writer }), ...(notice === undefined ? {} : { notice }),
   });
   const server = await startReviewServer(ctx, { port: config.port, host: config.host });

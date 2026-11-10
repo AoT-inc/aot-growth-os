@@ -106,9 +106,10 @@ svg.chart{max-width:100%;height:auto}svg.chart text{fill:var(--fg);font-size:12p
 @media (max-width:520px){h1{font-size:21px}main{padding:14px 12px 40px}.card{padding:14px}}
 `;
 
-export function page(title: string, body: Raw, options: { mode?: 'decide' | 'readonly' | 'none'; notice?: string | null; refresh?: number } = {}): string {
+export function page(title: string, body: Raw, options: { mode?: 'decide' | 'readonly' | 'view' | 'none'; notice?: string | null; refresh?: number } = {}): string {
   const mode = options.mode ?? 'none';
-  const banner = mode === 'decide' ? h`<p class="banner">결정은 이 화면의 버튼으로 합니다. 결정한 내용은 승인 엔진이 확인하고 기록합니다.</p>`
+  const banner = mode === 'view' ? h`<p class="banner">이 화면은 보기만 하는 화면입니다. 결정은 <a href="/">결정할 일</a>에서 합니다.</p>`
+    : mode === 'decide' ? h`<p class="banner">결정은 이 화면의 버튼으로 합니다. 결정한 내용은 승인 엔진이 확인하고 기록합니다.</p>`
     : mode === 'readonly' ? h`<p class="banner">이 화면은 보기 전용입니다.${options.notice === undefined || options.notice === null ? '' : h` ${options.notice}`}</p>` : h``;
   return h`<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${options.refresh === undefined ? '' : h`<meta http-equiv="refresh" content="${String(Math.round(options.refresh))}">`}<title>${title} · 검토 화면</title><style>${raw(STYLE)}</style></head>

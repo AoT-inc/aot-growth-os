@@ -54,16 +54,16 @@ const MAX_BODY_BYTES = 16 * 1024;
 const BODY_TIMEOUT_MS = 5_000;
 const FORM_TYPE = 'application/x-www-form-urlencoded';
 
-const htmlReply = (title: string, body: Raw, status = 200, ctx?: ReviewContext, refresh?: number): Reply => ({
+const htmlReply = (title: string, body: Raw, status = 200, ctx?: ReviewContext, refresh?: number, viewOnly = false): Reply => ({
   status, headers: { 'Content-Type': 'text/html; charset=utf-8' },
-  body: page(title, body, ctx === undefined ? {} : { mode: ctx.write === null ? 'readonly' : 'decide', notice: ctx.notice, ...(refresh === undefined ? {} : { refresh }) }),
+  body: page(title, body, ctx === undefined ? {} : { mode: viewOnly ? 'view' : ctx.write === null ? 'readonly' : 'decide', notice: ctx.notice, ...(refresh === undefined ? {} : { refresh }) }),
 });
 const plain = (status: number, message: string, extra: Record<string, string> = {}): Reply => ({ status, headers: { 'Content-Type': 'text/plain; charset=utf-8', ...extra }, body: message });
 const notFound = (ctx?: ReviewContext): Reply => htmlReply('찾을 수 없습니다', h`<p class="card">그런 화면이 없습니다. <a href="/">결정할 일로 가기</a></p>`, 404, ctx);
 
 function route(ctx: ReviewContext, segments: string[], query: URLSearchParams): Reply {
   const [first, second, third] = segments;
-  const out = (r: Rendered): Reply => htmlReply(r.title, r.body, r.status, ctx, r.refresh);
+  const out = (r: Rendered): Reply => htmlReply(r.title, r.body, r.status, ctx, r.refresh, r.viewOnly === true);
   if (first === undefined) return out(homePage(ctx));
   if (segments.length === 1) {
     if (first === 'now') return out(nowPage(ctx));

@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { parseMcpSites, type McpSiteManifest } from '@aot/agent-runtime';
+import { maskString, parseMcpSites, type McpSiteManifest } from '@aot/agent-runtime';
 
 import { buildInbox } from './decisions.ts';
 import type { ReviewContext } from './context.ts';
@@ -20,7 +20,8 @@ export const REFRESH_SECONDS = 30;
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 /** 사람이 쓴 글을 화면용으로: 이메일 주소를 가리고 한 줄로 줄인다 */
-const safe = (value: unknown, max = 60): string => clip(String(value ?? '').replace(EMAIL, '(메일 주소 가림)'), max);
+/** 이메일과 비밀 모양을 먼저 가린 뒤 자른다(자르기 전에 가려야 경계에서 잘린 비밀 앞부분이 남지 않는다) */
+const safe = (value: unknown, max = 60): string => clip(maskString(String(value ?? '').replace(EMAIL, '(메일 주소 가림)')), max);
 
 /** "14:03:12" (한국 시간) */
 export const clockText = (ms: number): string => new Date(ms + KST).toISOString().slice(11, 19);
@@ -59,7 +60,7 @@ const LIMIT_REASON = /usage_limit|server_limited/;
 interface LimitFacts {
   /** 한도 도달로 사람 검토에 멈춰 있는 업무 수 */
   stopped: number;
-  /** 이번 주 사람 우선 게이트로 미뤄진 run 수 */
+  /** 최근 7일 사람 우선 게이트로 미뤄진 run 수 */
   deferredThisWeek: number;
 }
 
@@ -67,7 +68,8 @@ function limitFacts(ctx: ReviewContext, sinceIso: string): LimitFacts {
   const rows = ctx.db.all<{ reason: string }>(
     `SELECT (SELECT reason FROM task_transition x WHERE x.task_id = t.id ORDER BY x.id DESC LIMIT 1) AS reason FROM task t WHERE t.status = 'needs_review'`,
   );
-  const deferred = ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM task_transition WHERE at >= ? AND reason LIKE '%killed: deferred:%'", [sinceIso]);
+  // 전이 사유는 'run <run id> killed: deferred: …' 로 시작한다: run 단위로 센다(같은 run 의 전이가 여러 줄이어도 한 번)
+  const deferred = ctx.db.get<{ n: number }>("SELECT COUNT(DISTINCT substr(reason, 1, instr(reason, ' killed: deferred:'))) AS n FROM task_transition WHERE at >= ? AND reason LIKE 'run %killed: deferred:%'", [sinceIso]);
   return { stopped: rows.filter((r) => LIMIT_REASON.test(r.reason ?? '')).length, deferredThisWeek: Number(deferred?.n ?? 0) };
 }
 
@@ -91,12 +93,12 @@ export function nowPage(ctx: ReviewContext): Rendered {
   const limits = limitFacts(ctx, new Date(nowMs - WEEK_MS).toISOString());
   const limitLine = limits.stopped > 0
     ? `한도에 닿아 멈춘 업무가 ${limits.stopped}건 있습니다. 한도가 풀리는 시각은 알 수 없고, 저절로 다시 시작되지 않습니다.`
-    : limits.deferredThisWeek > 0 ? `한도에 닿아 멈춘 업무는 없습니다. 이번 주 ${limits.deferredThisWeek}번은 사람이 쓰는 몫을 남기려고 실행을 미뤘습니다.` : '한도에 닿아 멈춘 업무는 없습니다.';
+    : limits.deferredThisWeek > 0 ? `한도에 닿아 멈춘 업무는 없습니다. 최근 7일 동안 ${limits.deferredThisWeek}번은 사람이 쓰는 몫을 남기려고 실행을 미뤘습니다.` : '한도에 닿아 멈춘 업무는 없습니다.';
   const decisionTitle = decisions.length === 0 ? '지금 결정할 일이 없습니다.' : `결정할 일이 ${decisions.length}건 있습니다.`;
-  const line = (task: TaskLine, extra: string): Raw => h`<li><b>${task.role ?? '역할 없음'}</b> — ${safe(task.objective)} <span class="mute">(${extra})</span></li>`;
+  const line = (task: TaskLine, extra: string): Raw => h`<li><b>${task.role === null ? '역할 없음' : safe(task.role, 40)}</b> — ${safe(task.objective)} <span class="mute">(${extra})</span></li>`;
   const section = (title: string, rows: readonly TaskLine[], extra: (task: TaskLine) => string, empty: string): Raw => h`<h2 class="grp">${title}</h2>${rows.length === 0 ? h`<p class="empty">${empty}</p>` : h`<ul class="facts">${rows.map((task) => line(task, extra(task)))}</ul>`}`;
   return {
-    title: '지금', status: 200, refresh: REFRESH_SECONDS,
+    title: '지금', status: 200, refresh: REFRESH_SECONDS, viewOnly: true,
     body: h`<p class="lead">${decisionTitle}</p>${problem === null ? '' : h`<p class="card">${problem}</p>`}
       <div class="stats">${stat(decisions.length, '결정할 일', '사람이 정해야 하는 일', '/')}${stat(Number(counts?.running ?? 0), '진행 중', '실행·대기·검증 중인 업무')}${stat(Number(counts?.blocked ?? 0), '막힌 일', '사람 검토나 역할이 필요한 업무')}${stat(limits.stopped, '한도로 멈춤', '구독 한도에 닿아 멈춘 업무', '/cost')}</div>
       <p class="mute">${limitLine}</p>
@@ -130,19 +132,19 @@ export function orgPage(ctx: ReviewContext): Rendered {
   const units = ctx.db.all<UnitRow>('SELECT u.id, u.slug, u.name, u.lifecycle, u.responsibility, p.name AS parent_name FROM org_unit u LEFT JOIN org_unit p ON p.id = u.parent_id ORDER BY u.created_at, u.id');
   const roles = ctx.db.all<RoleRow>('SELECT id, org_unit_id, slug, description, allowed_tools, lifecycle, version FROM role ORDER BY created_at, id');
   const staffed = new Map(ctx.db.all<{ role_id: string; n: number }>('SELECT role_id, COUNT(*) AS n FROM role_assignment WHERE valid_from <= ? AND (valid_until IS NULL OR valid_until > ?) GROUP BY role_id', [nowIso, nowIso]).map((r) => [r.role_id, Number(r.n)]));
-  if (units.length === 0) return { title: '조직·역할', status: 200, body: h`<p class="empty">아직 등록된 부서가 없습니다.</p>` };
+  if (units.length === 0) return { title: '조직·역할', status: 200, viewOnly: true, body: h`<p class="empty">아직 등록된 부서가 없습니다.</p>` };
   const live = roles.filter((r) => r.lifecycle !== 'retired').length;
   return {
-    title: '조직·역할', status: 200,
+    title: '조직·역할', status: 200, viewOnly: true,
     body: h`<p class="lead">부서 ${units.length}곳, 역할 ${live}개가 있습니다. 역할이 열 수 있는 도구 수는 그 역할이 요청할 수 있는 최대치이고, 실제로 쓸 수 있는지는 정책이 호출마다 정합니다.</p>
       ${units.map((unit) => {
         const mine = roles.filter((r) => r.org_unit_id === unit.id);
         return h`<section class="card"><h3>${safe(unit.name, 40)} ${lifecycleBadge(unit.lifecycle)}</h3><p class="mute">${safe(unit.responsibility, 120)}</p>
           ${mine.length === 0 ? h`<p class="empty">이 부서에는 아직 역할이 없습니다.</p>` : table(['역할', '단계', '열린 도구', '맡은 담당자'], mine.map((role) => {
             const tools = toolCount(role.allowed_tools);
-            return [h`${role.slug}<br><span class="mute">${safe(role.description, 70)}</span>`, lifecycleBadge(role.lifecycle), tools === null ? '알 수 없음' : `${tools}개`, `${staffed.get(role.id) ?? 0}명`];
+            return [h`${safe(role.slug, 40)}<br><span class="mute">${safe(role.description, 70)}</span>`, lifecycleBadge(role.lifecycle), tools === null ? '알 수 없음' : `${tools}개`, `${staffed.get(role.id) ?? 0}명`];
           }))}
-          ${details(kv([['부서 이름표', unit.slug], ['상위 부서', unit.parent_name === null ? '없음' : safe(unit.parent_name, 40)], ['역할 버전', mine.map((r) => `${r.slug} v${r.version}`).join(', ') || '-']]))}</section>`;
+          ${details(kv([['부서 이름표', safe(unit.slug, 40)], ['상위 부서', unit.parent_name === null ? '없음' : safe(unit.parent_name, 40)], ['역할 버전', mine.map((r) => `${safe(r.slug, 40)} v${r.version}`).join(', ') || '-']]))}</section>`;
       })}
       <p class="mute">조직을 바꾸자는 제안은 <a href="/">결정할 일</a>에서 결정합니다. 이 화면에서는 바꿀 수 없습니다.</p>`,
   };
@@ -168,13 +170,13 @@ export function sitesPage(ctx: ReviewContext): Rendered {
     `SELECT tool, COUNT(*) AS n, SUM(state IN ('failed','unknown')) AS failed, MAX(at) AS last FROM external_effect WHERE tool LIKE 'mcp\\_%' ESCAPE '\\' GROUP BY tool`,
   )) effects.set(row.tool, { n: Number(row.n), failed: Number(row.failed ?? 0), last: row.last });
   const unknown = h`<p class="card">${badge('상태 확인 불가', 'warn')} 연결됨·끊김과 도구의 열림·닫힘은 데몬만 알고 DB 에 남지 않습니다. 이 화면은 지금 읽을 수 있는 선언 목록과 마지막으로 바깥에 영향을 준 호출 기록만 보입니다. 닫힌 도구와 닫힌 이유를 보려면 데몬이 읽기 응답을 내야 합니다.</p>`;
-  if (!configured) return { title: '사이트 연결', status: 200, body: h`${unknown}<p class="empty">데몬 설정 파일을 찾지 못했거나 사이트 선언이 없습니다. 화면을 시작할 때 <code>--config</code> 로 데몬 설정을 알려 주세요.</p>` };
-  if (problem !== null) return { title: '사이트 연결', status: 200, body: h`${unknown}<p class="card">${problem}</p>` };
-  if (sites.length === 0) return { title: '사이트 연결', status: 200, body: h`${unknown}<p class="empty">연결하기로 선언한 사이트가 없습니다.</p>` };
+  if (!configured) return { title: '사이트 연결', status: 200, viewOnly: true, body: h`${unknown}<p class="empty">데몬 설정 파일을 찾지 못했거나 사이트 선언이 없습니다. 화면을 시작할 때 <code>--config</code> 로 데몬 설정을 알려 주세요.</p>` };
+  if (problem !== null) return { title: '사이트 연결', status: 200, viewOnly: true, body: h`${unknown}<p class="card">${problem}</p>` };
+  if (sites.length === 0) return { title: '사이트 연결', status: 200, viewOnly: true, body: h`${unknown}<p class="empty">연결하기로 선언한 사이트가 없습니다.</p>` };
   return {
-    title: '사이트 연결', status: 200,
+    title: '사이트 연결', status: 200, viewOnly: true,
     body: h`<p class="lead">선언한 사이트 ${sites.length}곳, 도구 ${sites.reduce((sum, s) => sum + s.tools.length, 0)}개입니다.</p>${unknown}
-      ${sites.map((site) => h`<section class="card"><h3>${site.site} ${badge('연결 상태 확인 불가', 'warn')}</h3>
+      ${sites.map((site) => h`<section class="card"><h3>${safe(site.site, 20)} ${badge('연결 상태 확인 불가', 'warn')}</h3>
         <p class="mute">선언한 도구 ${site.tools.length}개 · 열림/닫힘은 확인 불가</p>
         ${table(['도구', '하는 일', '바깥에 미친 호출', '마지막 호출'], site.tools.map((tool) => {
           const seen = effects.get(tool.gatewayName);
@@ -236,12 +238,12 @@ export function costPage(ctx: ReviewContext): Rendered {
     ? (ctx.runLogDir === null ? '확인 불가 — 실행 기록 폴더를 알 수 없습니다.' : '기록 없음 — 사용률은 경고 기준을 넘을 때만 남습니다.')
     : `${usage.percent ?? '사용률 기록 없음'}${usage.status === null ? '' : ` · 한도 상태 ${usage.status}`} (${usage.at === '' ? '시각 모름' : when(usage.at, nowMs)} 기록)`;
   return {
-    title: '비용·구독', status: 200, refresh: REFRESH_SECONDS,
+    title: '비용·구독', status: 200, refresh: REFRESH_SECONDS, viewOnly: true,
     body: h`<p class="lead">최근 7일 동안 ${tok(total)}을 썼습니다.</p>
       <div class="stats">${stat(limits.deferredThisWeek, '미뤄진 실행', '사람 몫을 남기려고 시작을 미룬 횟수(최근 7일)')}${stat(limits.stopped, '한도로 멈춘 업무', '지금 사람 검토에 멈춘 업무', '/now')}</div>
       <p class="card">${badge('약관 미확인', 'warn')} ${TERMS_NOTICE}</p>
       <p>마지막으로 본 구독 사용률: <b>${usageText}</b></p>
-      <h2 class="grp">역할별 토큰 (최근 7일)</h2>${table(['역할', '토큰'], byRole.map((row) => [row.role ?? '역할 없음', tok(row.tokens)]), '최근 7일 동안 기록된 토큰이 없습니다.')}
+      <h2 class="grp">역할별 토큰 (최근 7일)</h2>${table(['역할', '토큰'], byRole.map((row) => [row.role === null ? '역할 없음' : safe(row.role, 40), tok(row.tokens)]), '최근 7일 동안 기록된 토큰이 없습니다.')}
       <h2 class="grp">업무별 토큰 (많이 쓴 순, 최대 10개)</h2>${table(['업무', '토큰'], byTask.map((row) => [row.objective === null ? '(업무 없음)' : safe(row.objective, 60), tok(row.tokens)]), '최근 7일 동안 기록된 토큰이 없습니다.')}
       ${details(h`${table(['업무 번호', '토큰'], byTask.map((row) => [row.id ?? '-', tok(row.tokens)]), '없음')}<p class="mute">“최근 7일”은 지금부터 7일 전까지입니다. 달력의 주와 다를 수 있습니다.</p>`)}
       ${refreshNote(nowMs)}`,

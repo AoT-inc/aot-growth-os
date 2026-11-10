@@ -215,3 +215,111 @@ test('the status source reads only: no write SQL in status.ts', async () => {
   assert.ok(!/\b(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP|CREATE)\b\s/.test(source.replace(/\/\/.*$/gm, '').replace(/'[^'\n]*'|`[^`]*`/g, (m) => (/^[`']\s*(SELECT|WITH)/i.test(m) ? m : ''))), 'no write statements');
   assert.ok(!/\.writeTx|\.run\(/.test(source));
 });
+
+// ----- 검사 반영 -----
+const SECRET = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345';
+
+test('a secret that straddles the 60-character cut is masked before cutting, so no prefix of it is shown', async (t) => {
+  for (const pad of [40, 45, 50, 55, 58, 60]) {
+    const rig = await startRig(t, {
+      before: (db) => {
+        const id = firstTask(db);
+        db.writeTx((tx) => tx.run("UPDATE task SET objective = ?, status = 'running' WHERE id = ?", [`${'가'.repeat(pad)} ${SECRET}`, id]));
+      },
+    });
+    for (const path of ['/now', '/cost']) {
+      const body = (await rig.get(path)).text;
+      assert.ok(!body.includes('sk-ant') && !body.includes('sk-a…') && !/sk-ant-?a?p?i?0?3?-?a/.test(body), `${path} pad ${pad}: no secret prefix`);
+    }
+  }
+});
+
+test('markup in task goals, role names, role descriptions and department names is escaped on every status page', async (t) => {
+  const rig = await startRig(t, {
+    before: (db) => {
+      const id = firstTask(db);
+      db.writeTx((tx) => {
+        tx.run("UPDATE task SET objective = ?, status = 'running' WHERE id = ?", ['<script>alert(1)</script>"><img src=x onerror=alert(2)>', id]);
+        tx.run("UPDATE role SET description = ? WHERE id = (SELECT id FROM role ORDER BY created_at LIMIT 1)", ['<script>alert(3)</script>']);
+        tx.run("UPDATE role SET slug = ? WHERE id = (SELECT id FROM role ORDER BY created_at LIMIT 1)", ['<img src=x onerror=alert(4)>']);
+        tx.run("UPDATE org_unit SET name = ?", ['<script>alert(5)</script>']);
+        tx.run("INSERT INTO cost_entry (id, task_id, task_run_id, product_id, category, amount_usd, units, at) VALUES ('c-xss', ?, NULL, NULL, 'llm', 0, '{\"tokens\":5}', ?)", [id, iso(-1000)]);
+      });
+    },
+  });
+  for (const path of ['/now', '/org', '/cost']) {
+    const body = (await rig.get(path)).text.replace(/<style>[\s\S]*?<\/style>/g, '');
+    assert.ok(!/<script|<img/i.test(body), `${path}: no live tag`);
+    assert.ok(!/ onerror=/.test(body.replace(/&lt;[^&]*&gt;/g, '')), `${path}: no live attribute`);
+  }
+  assert.ok((await rig.get('/now')).text.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'shown as text');
+  assert.ok((await rig.get('/org')).text.includes('&lt;script&gt;alert(5)&lt;/script&gt;'));
+});
+
+test('no sentence of any draft body reaches a status page', async (t) => {
+  const rig = await startRig(t);
+  const strings: string[] = [];
+  const walk = (value: unknown): void => {
+    if (typeof value === 'string') { if (value.length >= 6) strings.push(value); } else if (Array.isArray(value)) value.forEach(walk); else if (value !== null && typeof value === 'object') Object.values(value).forEach(walk);
+  };
+  for (const row of rig.db.all<{ payload: string }>('SELECT payload FROM effect_draft')) walk(JSON.parse(row.payload));
+  // 업무 목표는 화면에 나와도 되는 글이다: 초안 제목이 목표와 같으면 거기서 온 것으로 본다
+  const objectives = rig.db.all<{ objective: string }>('SELECT objective FROM task').map((r) => r.objective);
+  const draftOnly = strings.filter((piece) => !objectives.some((o) => o.includes(piece)));
+  assert.ok(draftOnly.length > 5, 'the demo drafts have text to look for');
+  for (const path of PAGES) {
+    const text = textOf((await rig.get(path)).text);
+    for (const piece of draftOnly) assert.ok(!text.includes(piece.replace(/\s+/g, ' ').trim()), `${path}: draft text '${piece.slice(0, 20)}'`);
+  }
+});
+
+test('/org shows the exact stage and tool count of the demo roles', async (t) => {
+  const rig = await startRig(t);
+  const text = firstLevel((await rig.get('/org')).text);
+  assert.match(text, /generalist .*?사용 중 2개/);
+  assert.match(text, /registration-verifier .*?사용 중 3개/);
+  assert.match(text, /example-analyst .*?시험 중 1개/);
+});
+
+test('the seven-day window includes exactly -7 days and excludes older entries; one deferred run counts once however many rows it has', async (t) => {
+  const rig = await startRig(t, {
+    before: (db) => {
+      const id = firstTask(db);
+      const week = 7 * 86_400_000;
+      db.writeTx((tx) => {
+        const cost = (key: string, tokens: number, at: string): void => void tx.run("INSERT INTO cost_entry (id, task_id, task_run_id, product_id, category, amount_usd, units, at) VALUES (?, ?, NULL, NULL, 'llm', 0, ?, ?)", [key, id, JSON.stringify({ tokens }), at]);
+        cost('b-in', 100, iso(-week));
+        cost('b-out', 1000, iso(-week - 1));
+        const move = (run: string, at: string): void => void tx.run('INSERT INTO task_transition (task_id, from_status, to_status, reason, caused_by, at) VALUES (?, ?, ?, ?, ?, ?)', [id, 'running', 'retry_wait', `run ${run} killed: deferred: usage_deferred: yield`, 'system:scheduler', at]);
+        move('run-a', iso(-1000));
+        move('run-a', iso(-900));
+        move('run-b', iso(-week));
+        move('run-c', iso(-week - 1));
+      });
+    },
+  });
+  const cost = await rig.get('/cost');
+  assert.match(firstLevel(cost.text), /최근 7일 동안 100 토큰을 썼습니다/);
+  assert.ok(/<b class="n">2<\/b><span class="l">미뤄진 실행/.test(cost.text), 'run-a once + run-b at the boundary; run-c is too old');
+});
+
+test('role and site names pass through the same hiding as other text', async (t) => {
+  const rig = await startRig(t, {
+    before: (db) => db.writeTx((tx) => {
+      tx.run("UPDATE role SET slug = 'kim@example.com' WHERE id = (SELECT id FROM role ORDER BY created_at LIMIT 1)");
+    }),
+  });
+  assert.ok(!EMAIL.test(textOf((await rig.get('/org')).text)));
+});
+
+test('status pages never say decisions are made with buttons on this screen, even when decisions are enabled elsewhere', async (t) => {
+  const { startWriteRig } = await import('../support/review-web-write.ts');
+  const rig = await startWriteRig(t);
+  const home = await rig.get('/');
+  assert.match(home.text, /결정은 이 화면의 버튼으로 합니다/, 'the decision pages keep their banner');
+  for (const path of PAGES) {
+    const body = (await rig.get(path)).text;
+    assert.ok(!body.includes('버튼으로 합니다'), path);
+    assert.ok(body.includes('이 화면은 보기만 하는 화면입니다'), path);
+  }
+});

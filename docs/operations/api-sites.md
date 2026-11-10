@@ -2,6 +2,7 @@
 
 결정은 [ADR-0020](../adr/0020-api-connector.md), MCP 쪽 절차는 [mcp-sites](mcp-sites.md). API 전송은 같은 `mcp_sites[]` 항목에 `transport.kind: "api"` 를 쓰고, 정책·승인·원장·속도 제한·비밀 처리는 MCP 도구와 같다.
 에이전트는 URL·메서드·헤더·본문을 정하지 못한다. 에이전트가 내는 것은 **선언된 동작 이름과 인자 값**뿐이고, 요청 모양은 오너가 선언한 틀이 정한다. 틀에 없는 요청은 보낼 수 없다.
+전체 절차 개요는 [new-site](new-site.md). 글 초안 올리기 + PR 열기 선언은 `config/site-declarations/aot-web.json`.
 예시는 자리표시자다(`gitea.example.net`). 실제 주소·토큰은 저장소에 넣지 않는다. 전체 예시 선언은 `config/daemon.config.example.json` 의 `_api_sites_example` (선언 고정까지 채워져 있고 시험이 일관성을 확인한다).
 
 ## 1. 선언 형식

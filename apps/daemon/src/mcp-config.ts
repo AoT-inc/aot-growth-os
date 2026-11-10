@@ -3,7 +3,11 @@
 // 읽은 값은 커넥터 프로세스의 환경으로만 넘어간다(mcp.ts): 설정 줄·DB·로그·호출 기록·초안에는 실리지 않는다.
 import { parseMcpSites, secretEnvNames, type McpSiteManifest } from '@aot/agent-runtime';
 
+import type { Clock } from '@aot/domain';
+import { systemClock } from '@aot/domain';
+
 import type { McpOptions } from './mcp.ts';
+import { authDirOf, createTokenSource, isOauthManifest, type FetchLike } from './mcp-oauth.ts';
 
 export interface McpConfig {
   /** 오너 MCP 서버 선언 목록. 없으면 조립하지 않는다 */
@@ -23,8 +27,24 @@ export function readSiteSecrets(manifest: McpSiteManifest, env: NodeJS.ProcessEn
   return out;
 }
 
-export function mcpOptionsFromConfig(config: McpConfig, env: NodeJS.ProcessEnv = process.env): McpOptions | undefined {
+export interface McpAuthContext {
+  /** 로그인 위임 토큰 파일이 있는 instance 디렉터리 (기본: AOT_INSTANCE_DIR 또는 instance) */
+  instanceDir?: string;
+  clock?: Clock;
+  /** 시험용: 허브 호출을 바꾼다 */
+  fetchImpl?: FetchLike;
+}
+
+export function mcpOptionsFromConfig(config: McpConfig, env: NodeJS.ProcessEnv = process.env, context: McpAuthContext = {}): McpOptions | undefined {
   const manifests = parseMcpSites(config.mcp_sites);
   if (manifests.length === 0) return undefined;
-  return { sites: manifests.map((manifest) => ({ manifest, secretEnv: readSiteSecrets(manifest, env) })) };
+  const authDir = authDirOf(context.instanceDir ?? env['AOT_INSTANCE_DIR'] ?? 'instance');
+  return {
+    sites: manifests.map((manifest) => ({
+      manifest, secretEnv: readSiteSecrets(manifest, env),
+      ...(isOauthManifest(manifest)
+        ? { createAuth: ({ emit }: { emit: Parameters<typeof createTokenSource>[0]['emit'] }) => createTokenSource({ manifest, authDir, clock: context.clock ?? systemClock, emit, ...(context.fetchImpl === undefined ? {} : { fetchImpl: context.fetchImpl }) }) }
+        : {}),
+    })),
+  };
 }

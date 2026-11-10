@@ -9,12 +9,13 @@ import { createMcpSiteClient, evaluateTool, parseMcpSites, spawnConnectorProcess
 import { systemClock } from '@aot/domain';
 
 import { readSiteSecrets } from './mcp-config.ts';
+import { authDirOf, createReadOnlyTokenSource, isOauthManifest } from './mcp-oauth.ts';
 
 export interface PinRow {
   name: string;
   hash: string;
   annotations: Record<string, unknown> | null;
-  status: 'open' | 'drift' | 'missing' | 'hint_conflict' | 'undeclared' | 'invalid_declaration' | 'duplicate';
+  status: 'open' | 'drift' | 'missing' | 'hint_conflict' | 'undeclared' | 'invalid_declaration' | 'duplicate' | 'unauthorized';
 }
 
 export interface PinReport {
@@ -59,11 +60,19 @@ export function formatPinReport(report: PinReport): string {
 export async function runMcpPin(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<{ code: number; output: string }> {
   const [configPath, site] = argv;
   if (configPath === undefined || site === undefined) return { code: 2, output: 'usage: npm run mcp-pin -- <daemon config path> <site>' };
-  const config = JSON.parse(readFileSync(configPath, 'utf8')) as { mcp_sites?: unknown };
+  const config = JSON.parse(readFileSync(configPath, 'utf8')) as { mcp_sites?: unknown; instance_dir?: string };
   const manifest = parseMcpSites(config.mcp_sites).find((entry) => entry.site === site);
   if (manifest === undefined) return { code: 2, output: `site '${site}' is not in mcp_sites of ${configPath}` };
   const secretEnv = readSiteSecrets(manifest, env);
-  const client = createMcpSiteClient({ manifest, clock: systemClock, spawn: () => spawnConnectorProcess(secretEnv), inspect: true, onEvent: () => undefined });
+  // 로그인 위임 사이트: 파일의 접근 토큰이 유효할 때만 읽는다. 갱신은 데몬이 하므로 여기서는 하지 않는다(갱신 주체가 둘이면 허브가 연결을 끊는다)
+  let auth: ReturnType<typeof createReadOnlyTokenSource>['port'] | undefined;
+  if (isOauthManifest(manifest)) {
+    const instanceDir = (config as { instance_dir?: string }).instance_dir ?? env['AOT_INSTANCE_DIR'] ?? 'instance';
+    const source = createReadOnlyTokenSource(manifest, authDirOf(instanceDir), systemClock);
+    if (source.problem !== null) return { code: 1, output: source.problem };
+    auth = source.port;
+  }
+  const client = createMcpSiteClient({ manifest, clock: systemClock, spawn: () => spawnConnectorProcess(secretEnv), inspect: true, onEvent: () => undefined, ...(auth === undefined ? {} : { auth }) });
   try {
     await client.start();
     const listing = client.lastListing();

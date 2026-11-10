@@ -3,13 +3,19 @@
 export const CONNECTOR_REDACTED = '[redacted]';
 
 export interface Redactor {
+  /** 나중에 알게 된 비밀(호스트가 보낸 접근 토큰)을 더한다 */
+  add(secret: string): void;
   text(value: string): string;
   deep<T>(value: T): T;
 }
 
 export function createRedactor(secrets: readonly string[]): Redactor {
   // 긴 값부터 바꾼다(짧은 비밀이 긴 비밀의 일부여도 긴 쪽이 먼저 통째로 가려진다)
-  const list = [...new Set(secrets.filter((s) => s.length > 0))].sort((a, b) => b.length - a.length);
+  let list = [...new Set(secrets.filter((s) => s.length > 0))].sort((a, b) => b.length - a.length);
+  const add = (secret: string): void => {
+    if (secret.length === 0 || list.includes(secret)) return;
+    list = [...list, secret].sort((a, b) => b.length - a.length);
+  };
   const text = (value: string): string => {
     let out = value;
     for (const secret of list) if (out.includes(secret)) out = out.split(secret).join(CONNECTOR_REDACTED);
@@ -28,7 +34,7 @@ export function createRedactor(secrets: readonly string[]): Redactor {
     };
     return walk(value) as T;
   };
-  return { text, deep };
+  return { add, text, deep };
 }
 
 /** 서버가 정한 문자열(이름 등)을 사람이 읽는 출력·로그에 싣기 전에 제어 문자를 `?` 로 바꾸고 길이를 자른다 */

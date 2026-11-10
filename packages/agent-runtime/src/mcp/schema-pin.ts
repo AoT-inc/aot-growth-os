@@ -13,7 +13,7 @@ export const schemaHash = (schema: unknown): string => `sha256:${sha256Hex(canon
 
 export type ToolState =
   | { readonly status: 'open' }
-  | { readonly status: 'closed'; readonly reason: 'drift' | 'missing' | 'hint_conflict' | 'unavailable' | 'invalid_declaration' | 'duplicate' };
+  | { readonly status: 'closed'; readonly reason: 'drift' | 'missing' | 'hint_conflict' | 'unavailable' | 'invalid_declaration' | 'duplicate' | 'unauthorized' };
 
 export type ClosedReason = Extract<ToolState, { status: 'closed' }>['reason'];
 

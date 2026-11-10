@@ -208,7 +208,7 @@ export interface FakeHttpOptions {
   /** 응답 형식: json(기본) 또는 sse(요청마다 스트림으로, 서버 요청·알림을 같은 스트림에 싣는다) */
   responseMode?: 'json' | 'sse';
   /** 이 값이 아닌 Authorization 은 401 */
-  expectBearer?: string;
+  expectBearer?: string | (() => readonly string[]);
 }
 
 export async function startFakeHttpServer(options: FakeHttpOptions): Promise<FakeHttpServer> {
@@ -245,7 +245,8 @@ export async function startFakeHttpServer(options: FakeHttpOptions): Promise<Fak
             headers: { session: header('mcp-session-id') ?? null, protocol: header('mcp-protocol-version') ?? null, accept: header('accept') ?? null, authorization: header('authorization') ?? null },
           })}\n`);
         }
-        if (options.expectBearer !== undefined && header('authorization') !== `Bearer ${options.expectBearer}`) {
+        const accepted = options.expectBearer === undefined ? null : typeof options.expectBearer === 'function' ? options.expectBearer() : [options.expectBearer];
+        if (accepted !== null && !accepted.some((token) => header('authorization') === `Bearer ${token}`)) {
           res.statusCode = 401;
           res.end();
           return;

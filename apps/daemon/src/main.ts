@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   const applied = applyMigrations(db, { dir: MIGRATIONS, clock: systemClock });
   const instanceDir = config.instance_dir ?? process.env['AOT_INSTANCE_DIR'] ?? 'instance';
   const defaults = defaultInstancePaths(instanceDir);
-  const mcp = mcpOptionsFromConfig(config); // 환경 변수가 비어 있으면 여기서 던진다(시작하지 않는다)
+  const mcp = mcpOptionsFromConfig(config, process.env, { instanceDir }); // 환경 변수가 비어 있으면 여기서 던진다(시작하지 않는다)
   // 실행 어댑터·검증기·위임 검토자가 같은 동의 읽기와 같은 게이트를 쓴다 (구독 풀이 하나다)
   const claudeConfig = parseClaudeCodeCliConfig(config.claude_code_cli);
   const claudeConsent = (): ReturnType<typeof readClaudeCodeConsent> => readClaudeCodeConsent(db);

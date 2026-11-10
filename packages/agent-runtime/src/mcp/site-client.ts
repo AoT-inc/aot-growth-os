@@ -23,7 +23,26 @@ export type McpSiteEvent =
   | { type: 'tool_state'; site: string; tool: string; state: string; previous: string }
   | { type: 'undeclared_tools'; site: string; names: string[] }
   | { type: 'server_request_refused'; site: string; method: string }
-  | { type: 'server_requests_suppressed'; site: string; count: number };
+  | { type: 'server_requests_suppressed'; site: string; count: number }
+  /** 로그인 위임: 사이트가 접근 토큰을 거절했다(401) */
+  | { type: 'auth_rejected'; site: string }
+  /** 토큰 원천(데몬): 갱신 성공 / 재시도 예정 / 로그인이 필요해졌다. 토큰 값은 싣지 않는다 */
+  | { type: 'auth_refreshed'; site: string; expiresInS: number }
+  | { type: 'auth_retry'; site: string; reason: string; inMs: number }
+  | { type: 'auth_failed'; site: string; reason: string; action: string };
+
+/**
+ * 로그인 위임 사이트의 접근 토큰 원천 (ADR-0018 개정 1). 갱신은 이 포트 뒤(데몬의 토큰 원천) 한 곳에서만 한다.
+ * 사이트 연결은 현재 토큰을 커넥터에 `token` 줄로 전달하고, 토큰이 바뀌면(null 포함) 다시 전달한다.
+ */
+export interface McpAuthPort {
+  /** 지금 쓸 수 있는 접근 토큰. 없거나 만료됐으면 null */
+  current(): string | null;
+  /** 토큰이 바뀔 때(갱신, 로그인, 폐기) 부른다. 반환하는 함수로 해제 */
+  subscribe(listener: () => void): () => void;
+  /** 사이트가 토큰을 거절했다(401). 원천이 한 번 갱신을 시도한다 */
+  rejected(): void;
+}
 
 /** 커넥터와의 통신 자체가 실패했다. `definite`: 요청이 서버에 닿지 않았음이 확실한가 */
 export class McpTransportError extends Error {
@@ -44,6 +63,8 @@ export interface McpSiteClientOptions {
   clock: Clock;
   spawn: ConnectorSpawner;
   timers?: GatewayTimers;
+  /** 로그인 위임(`oauth_delegated`) 사이트의 토큰 원천. 그 인증 종류에 필수다 */
+  auth?: McpAuthPort;
   onEvent?: (event: McpSiteEvent) => void;
   /** 주기 확인 간격 (기본 10분) */
   recheckIntervalMs?: number;
@@ -85,6 +106,8 @@ const MAX_REFUSAL_EVENTS_PER_MINUTE = 5;
 
 export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClient {
   const { manifest, clock } = options;
+  const delegated = manifest.auth.kind === 'oauth_delegated';
+  if (delegated && options.auth === undefined) throw new Error(`site '${manifest.site}': oauth_delegated needs a token source (auth port)`);
   const timers = options.timers ?? realGatewayTimers;
   const emit = (event: McpSiteEvent): void => {
     try { options.onEvent?.(event); } catch { /* 운영 이벤트 처리기의 오류가 연결을 깨뜨리지 않게 한다 */ }
@@ -122,7 +145,8 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
     transport: manifest.transport.kind === 'http' ? { kind: 'http', url: manifest.transport.url } : { kind: 'stdio', command: manifest.transport.command, args: [...manifest.transport.args] },
     auth: manifest.auth.kind === 'none' ? { kind: 'none' }
       : manifest.auth.kind === 'bearer' ? { kind: 'bearer', token_env: manifest.auth.tokenEnv }
-        : { kind: 'header', header: manifest.auth.header, value_env: manifest.auth.valueEnv },
+        : manifest.auth.kind === 'oauth_delegated' ? { kind: 'oauth_delegated' }
+          : { kind: 'header', header: manifest.auth.header, value_env: manifest.auth.valueEnv },
     env_from: { ...manifest.envFrom },
     tools: manifest.tools.map((tool) => tool.name),
     max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
@@ -140,6 +164,18 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
     timerHandle = timers.setTimeout(run, ms);
     (timerHandle as { unref?: () => void } | null)?.unref?.();
   };
+
+  const sendToken = (target: ConnectorLink): void => {
+    try { target.send({ type: 'token', access_token: options.auth?.current() ?? null }); } catch { /* 커넥터가 없다: 다시 뜰 때 보낸다 */ }
+  };
+  /** 토큰이 바뀌었다: 커넥터에 전달하고, 닫혀 있던 도구는 다시 확인한다. 토큰이 사라졌으면 이 사이트의 도구를 닫는다 */
+  const onTokenChange = (): void => {
+    if (closing) return;
+    if (link !== null) sendToken(link);
+    if (options.auth?.current() == null) { closeAll('unauthorized'); return; }
+    if (link !== null) void refresh();
+  };
+  const unsubscribe = delegated ? options.auth!.subscribe(onTokenChange) : () => undefined;
 
   const onLine = (line: string): void => {
     let message: unknown;
@@ -196,6 +232,7 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
       fresh.onExit(() => onExit(fresh));
       fresh.onStderr((text) => emit({ type: 'connector_stderr', site: manifest.site, text }));
       fresh.send(configLine());
+      if (delegated) sendToken(fresh);
       emit({ type: 'connector_started', site: manifest.site });
     } catch (error) {
       link = null;
@@ -258,7 +295,8 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
       return;
     }
     if (!response.ok || !('tools' in response)) {
-      closeAll('unavailable');
+      closeAll(response.ok === false && response.error.code === 'unauthorized' ? 'unauthorized' : response.ok === false && response.error.code === 'auth_required' ? 'unauthorized' : 'unavailable');
+      if (response.ok === false && response.error.code === 'unauthorized') { emit({ type: 'auth_rejected', site: manifest.site }); options.auth?.rejected(); }
       emit({ type: 'list_failed', site: manifest.site, error: !response.ok ? `${response.error.code}: ${response.error.message}` : 'unexpected list response' });
       if (link !== null) { schedule(restartDelay, () => { void refresh(); }); restartDelay = Math.min(restartDelay * 2, MAX_RESTART_MS); }
       return;
@@ -336,12 +374,16 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
       const response = await request(
         { op: 'call', tool: serverTool, arguments: args, ...(callOptions.retrySafe === true ? { retry_safe: true } : {}) }, callOptions.timeoutMs, callOptions.signal,
       );
-      if (!response.ok) return { ok: false, error: response.error };
+      if (!response.ok) {
+        if (response.error.code === 'unauthorized') { emit({ type: 'auth_rejected', site: manifest.site }); options.auth?.rejected(); }
+        return { ok: false, error: response.error };
+      }
       if (!('result' in response)) throw new McpTransportError('protocol', 'the connector answered a call with something else', false);
       return { ok: true, result: response.result };
     },
     close() {
       closing = true;
+      unsubscribe();
       clearTimer();
       const active = link;
       link = null;

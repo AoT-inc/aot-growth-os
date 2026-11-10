@@ -1,6 +1,8 @@
 // 데몬 ↔ 커넥터 줄 단위 JSON 프로토콜의 타입 (docs/plans/mcp-connector.md §3). 호스트(site-client.ts)와 커넥터가 같이 쓴다.
 // 이 폴더의 파일은 node: 내장 모듈과 같은 폴더의 파일만 import 한다 (.dependency-cruiser.cjs 의 mcp-connector-isolated).
 
+import type { ApiTransportConfig } from './api-runtime.ts';
+
 export const CLIENT_VERSION = '1.0.0';
 /** 커넥터가 아는 MCP 프로토콜 버전 (최신이 먼저) */
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26'] as const;
@@ -9,6 +11,7 @@ export const MAX_LINE_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_MAX_RESULT_BYTES = 256 * 1024;
 
 export type ConnectorTransportConfig =
+  | ApiTransportConfig
   | { kind: 'http'; url: string }
   | { kind: 'stdio'; command: string; args: string[] };
 

@@ -27,6 +27,7 @@
     "preflight": "node apps/daemon/src/preflight.ts",
     "review-web": "node apps/daemon/src/review-web.ts",
     "mcp-pin": "node apps/daemon/src/mcp-pin.ts",
+    "api-pin": "node apps/daemon/src/mcp-pin.ts",
     "mcp-login": "node apps/daemon/src/mcp-login.ts",
     "hooks:install": "git config core.hooksPath .githooks"
   },

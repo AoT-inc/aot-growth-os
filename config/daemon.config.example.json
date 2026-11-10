@@ -58,5 +58,174 @@
       "tools": []
     }
   ],
+  "_api_sites_example_comment": "MCP 서버가 없는 서비스의 HTTP API (ADR-0020, docs/operations/api-sites.md). _api_sites_example 의 한 항목을 mcp_sites 에 복사해 고친다. 아래는 gitea 에 새 브랜치로 한국어·영문 글 파일을 올리는 쓰기 1개와 읽기 2개의 예시이며 주소(gitea.example.net)는 자리표시자다. 토큰은 환경 변수 AOT_API_WEB_TOKEN 의 값(`token <gitea 토큰>`)으로만 준다. pin 은 `npm run mcp-pin -- <설정> web` 이 출력하는 input_schema_sha256 이며 선언을 고치면 다시 받아야 한다(다르면 그 동작은 closed:drift 로 닫힌다). network: public(기본) | tailnet(100.64.0.0/10 허용) | loopback(로컬 개발용).",
+  "_api_sites_example": [
+    {
+      "site": "web",
+      "transport": {
+        "kind": "api",
+        "base_url": "https://gitea.example.net/gitea/api/v1",
+        "network": "tailnet"
+      },
+      "auth": {
+        "kind": "header",
+        "header": "Authorization",
+        "value_env": "AOT_API_WEB_TOKEN"
+      },
+      "rate_limit_per_minute": 20,
+      "timeout_ms": 20000,
+      "tools": [
+        {
+          "name": "create_post_branch",
+          "as": "draft_post",
+          "description": "홈페이지 글 초안(한국어·영어 한 쌍)을 새 브랜치로 올린다. main 에는 닿지 않고 공개 전 상태(published:false)다.",
+          "scope": "public",
+          "impact": "external_effect",
+          "side_effect": true,
+          "approval": "draft",
+          "target": "site:web/posts",
+          "args": {
+            "slug": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{2,60}$",
+              "required": true
+            },
+            "date": {
+              "type": "string",
+              "pattern": "^20[0-9]{2}-[01][0-9]-[0-3][0-9]$",
+              "required": true
+            },
+            "image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}\\.(webp|jpg|png)$",
+              "required": true
+            },
+            "ko_title": {
+              "type": "string",
+              "pattern": "^[^\\n\\r]+$",
+              "required": true,
+              "max_length": 120
+            },
+            "ko_excerpt": {
+              "type": "string",
+              "pattern": "^[^\\n\\r]+$",
+              "required": true,
+              "max_length": 300
+            },
+            "ko_body": {
+              "type": "string",
+              "max_length": 20000,
+              "required": true
+            },
+            "en_title": {
+              "type": "string",
+              "pattern": "^[^\\n\\r]+$",
+              "required": true,
+              "max_length": 120
+            },
+            "en_excerpt": {
+              "type": "string",
+              "pattern": "^[^\\n\\r]+$",
+              "required": true,
+              "max_length": 300
+            },
+            "en_body": {
+              "type": "string",
+              "max_length": 20000,
+              "required": true
+            }
+          },
+          "request": {
+            "method": "POST",
+            "path": "/repos/aot/aot-web/contents",
+            "body": {
+              "branch": {
+                "$const": "main"
+              },
+              "new_branch": {
+                "$template": "agent/post-{slug}"
+              },
+              "message": {
+                "$template": "글 초안 {slug}\n\neffect-key: {effect_key}"
+              },
+              "files": [
+                {
+                  "operation": {
+                    "$const": "create"
+                  },
+                  "path": {
+                    "$template": "src/ko/posts/{slug}.md"
+                  },
+                  "content": {
+                    "$template": "---\ntitle: {ko_title|json_string}\ndate: {date}\ncategory: \"AoT blog\"\nexcerpt: {ko_excerpt|json_string}\nimage: {image|json_string}\npublished: false\n---\n\n{ko_body}\n",
+                    "encode": "base64"
+                  }
+                },
+                {
+                  "operation": {
+                    "$const": "create"
+                  },
+                  "path": {
+                    "$template": "src/en/posts/{slug}.md"
+                  },
+                  "content": {
+                    "$template": "---\ntitle: {en_title|json_string}\ndate: {date}\ncategory: \"AoT blog\"\nexcerpt: {en_excerpt|json_string}\nimage: {image|json_string}\npublished: false\n---\n\n{en_body}\n",
+                    "encode": "base64"
+                  }
+                }
+              ]
+            }
+          },
+          "record": [
+            "/commit/sha",
+            "/commit/html_url"
+          ],
+          "pin": "sha256:5af3a543d39cbaa2a90c2b13073f780bfb24448efc0ea96e29d5476ad879e86c"
+        },
+        {
+          "name": "list_images",
+          "as": "list_images",
+          "description": "홈페이지가 쓰는 이미지 파일 이름 목록을 읽는다. 읽기 전용.",
+          "scope": "internal",
+          "impact": "read",
+          "side_effect": false,
+          "target": "site:web/posts",
+          "args": {},
+          "request": {
+            "method": "GET",
+            "path": "/repos/aot/aot-web/contents/static/img",
+            "query": {
+              "ref": "main"
+            }
+          },
+          "returns": [
+            "/*/name"
+          ],
+          "pin": "sha256:da00f44ea858af11d5f4cdb5ff8400ea01ab80a41396d22e1ab93736c80a6f6f"
+        },
+        {
+          "name": "list_posts",
+          "as": "list_posts",
+          "description": "한국어 글 파일 이름 목록을 읽는다(같은 주소 중복 확인용). 읽기 전용.",
+          "scope": "internal",
+          "impact": "read",
+          "side_effect": false,
+          "target": "site:web/posts",
+          "args": {},
+          "request": {
+            "method": "GET",
+            "path": "/repos/aot/aot-web/contents/src/ko/posts",
+            "query": {
+              "ref": "main"
+            }
+          },
+          "returns": [
+            "/*/name"
+          ],
+          "pin": "sha256:7fe5c7bb0ad8fe90898f5760cd94f25f131c4abeeb959af61d048b26deff9243"
+        }
+      ]
+    }
+  ],
   "log_level": "info"
 }

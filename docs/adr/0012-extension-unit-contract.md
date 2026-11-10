@@ -21,6 +21,7 @@
 | 측정 신호 정의 | 팩이 단위를 선언한다. 정의 형식은 A6-U10 에서 정했다 (Amendment 2026-10-24) |
 
 ### 2. 커넥터·검증기 코드는 별도 프로세스
+(커넥터 종류: MCP 서버 접속 [ADR-0018](0018-mcp-connector.md), MCP 가 없는 서비스의 HTTP API [ADR-0020](0020-api-connector.md). 둘 다 같은 커넥터 프로세스 안에서 돈다.)
 도구 게이트웨이 계약으로만 호출된다. DB와 `policies/`에 접근할 수 없고, 비밀값은 게이트웨이가 주입한다 ([trust-boundaries §3](../security/trust-boundaries.md)). 코어 프로세스에 로드하지 않는다.
 
 ### 3. 팩이 할 수 없는 것

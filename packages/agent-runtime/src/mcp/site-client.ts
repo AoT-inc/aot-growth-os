@@ -142,7 +142,12 @@ export function createMcpSiteClient(options: McpSiteClientOptions): McpSiteClien
 
   const configLine = (): ConnectorConfig => ({
     type: 'config', site: manifest.site,
-    transport: manifest.transport.kind === 'http' ? { kind: 'http', url: manifest.transport.url } : { kind: 'stdio', command: manifest.transport.command, args: [...manifest.transport.args] },
+    transport: manifest.transport.kind === 'api'
+      ? {
+        kind: 'api', base_url: manifest.transport.baseUrl, network: manifest.transport.network, timeout_ms: manifest.timeoutMs,
+        operations: Object.fromEntries(manifest.tools.flatMap((tool) => (tool.api === null ? [] : [[tool.name, { op: tool.api.op, decl_hash: tool.api.declHash }] as const]))),
+      }
+      : manifest.transport.kind === 'http' ? { kind: 'http', url: manifest.transport.url } : { kind: 'stdio', command: manifest.transport.command, args: [...manifest.transport.args] },
     auth: manifest.auth.kind === 'none' ? { kind: 'none' }
       : manifest.auth.kind === 'bearer' ? { kind: 'bearer', token_env: manifest.auth.tokenEnv }
         : manifest.auth.kind === 'oauth_delegated' ? { kind: 'oauth_delegated' }

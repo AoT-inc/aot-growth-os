@@ -46,6 +46,15 @@ module.exports = {
       from: { path: '^packages/agent-runtime/src/mcp/connector/' },
       to: { pathNot: '^packages/agent-runtime/src/mcp/connector/', dependencyTypesNot: ['core'] } },
 
+    { name: 'conversation-mcp-isolated', severity: 'error',
+      comment: '대화 MCP 서버(ADR-0019)는 오너 UID 로 대화 앱 안에서 뜬다: 승인 소켓 모듈(@aot/policy 의 channel)·승인 CLI·데몬·DB 를 가져오지 않는다. node: 내장 모듈과 같은 패키지의 파일만 import 한다',
+      from: { path: '^apps/conversation-mcp/' },
+      to: { pathNot: '^apps/conversation-mcp/', dependencyTypesNot: ['core'] } },
+    { name: 'approval-socket-not-from-conversation', severity: 'error',
+      comment: '승인 소켓 클라이언트·서버(packages/policy/src/channel.ts)와 승인 CLI(approve.ts)는 대화 MCP 쪽에서 참조하지 않는다 (위 규칙의 좁은 안전망)',
+      from: { path: '^apps/conversation-mcp/' },
+      to: { path: '^(packages/policy/|apps/daemon/src/(approve|assemble)\\.ts$)' } },
+
     { name: 'sqlite-driver-only-in-one-file', severity: 'error',
       comment: '연결은 openDb() 로만 연다. PRAGMA 순서(busy_timeout 먼저)와 BEGIN IMMEDIATE 규칙이 거기에 있다',
       from: { pathNot: '^packages/domain/src/db/node-sqlite\\.ts$' },

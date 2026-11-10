@@ -43,6 +43,7 @@ import { createProductChannel, isProductCommand } from './product-channel.ts';
 import { createEffectResolutionHandler, isEffectResolutionCommand } from './effect-resolve.ts';
 import { createExperimentDecisionHandler, isExperimentDecisionCommand } from './experiment-review.ts';
 import { createOrgChannel, isOrgCommand } from './org-channel.ts';
+import { createConversationChannel, type ConversationChannelOptions } from './conversation-channel.ts';
 import { createMeasurementHandler, isMeasurementCommand } from './measure.ts';
 import { loadPack, syncPackRoutines, type LoadedPack, type PackOptions, type PackSyncResult } from './pack-loader.ts';
 
@@ -56,6 +57,8 @@ export interface InstancePaths {
   totpDir: string;
   /** 승인 소켓 (instance/run/approval.sock). 디렉터리는 0700 이어야 한다 */
   approvalSocket: string;
+  /** 대화 채널 소켓 (instance/run/conversation.sock, ADR-0019). 승인 소켓과 별개다. 생략하면 대화 채널을 열 수 없다 */
+  conversationSocket?: string;
 }
 
 export function defaultInstancePaths(instanceDir: string): InstancePaths {
@@ -63,6 +66,7 @@ export function defaultInstancePaths(instanceDir: string): InstancePaths {
     policyStoreDir: join(instanceDir, 'policies'),
     totpDir: join(instanceDir, 'totp'),
     approvalSocket: join(instanceDir, 'run', 'approval.sock'),
+    conversationSocket: join(instanceDir, 'run', 'conversation.sock'),
   };
 }
 
@@ -249,6 +253,8 @@ export interface Daemon {
    */
   prepareAgentRuntime(): Promise<AgentRuntimeReadiness | null>;
   startApprovalChannel(onError?: (error: unknown) => void): Promise<ApprovalServer>;
+  /** 대화 채널 (ADR-0019): 승인 소켓과 별개의 소켓에서 읽기·요청·메모만 받는다. `paths.conversationSocket` 이 필요하다 */
+  startConversationChannel(conversation?: Pick<ConversationChannelOptions, 'maxPending' | 'maxPerDay' | 'maxNotesPerTask'>, onError?: (error: unknown) => void): Promise<ApprovalServer>;
 }
 
 export function assembleDaemon(options: AssembleOptions): Daemon {
@@ -369,6 +375,21 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
       const dockerVersion = await checkDockerAvailable(docker);
       const orphans = await cleanupOrphanContainers({ docker, instance: options.agent!.instanceId! });
       return { dockerVersion, orphans };
+    },
+    startConversationChannel: (conversation, onError) => {
+      const socketPath = options.paths.conversationSocket ?? (() => { throw new Error('paths.conversationSocket is required to open the conversation channel'); })();
+      if (socketPath === options.paths.approvalSocket) throw new Error('the conversation socket must differ from the approval socket');
+      const handle = createConversationChannel({
+        db: options.db, clock: options.clock, gate, ...conversation,
+        ...(mcp === null ? {} : { sites: () => [...mcp.sites.values()].map((client) => ({
+          site: client.site,
+          tools: (options.mcp?.sites.find((setup) => setup.manifest.site === client.site)?.manifest.tools ?? []).map((tool) => {
+            const state = client.stateOf(tool.gatewayName);
+            return { name: tool.gatewayName, state: state.status === 'open' ? 'open' : `closed:${state.reason}` };
+          }),
+        })) }),
+      });
+      return startApprovalServer({ socketPath, handle, maxConnections: 8, ...(onError === undefined ? {} : { onError }) });
     },
     startApprovalChannel: (onError) => startApprovalServer({
       socketPath: options.paths.approvalSocket,

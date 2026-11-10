@@ -38,7 +38,7 @@ export interface ApprovalServer {
 
 export type ApprovalHandler = (request: unknown) => unknown;
 
-export async function startApprovalServer(options: { socketPath: string; handle: ApprovalHandler; onError?: (error: unknown) => void }): Promise<ApprovalServer> {
+export async function startApprovalServer(options: { socketPath: string; handle: ApprovalHandler; onError?: (error: unknown) => void; /** 동시 접속 상한(넘는 접속은 닫힌다). 생략하면 제한 없음(승인 소켓의 기존 동작) */ maxConnections?: number }): Promise<ApprovalServer> {
   const { socketPath } = options;
   prepareSocketDir(dirname(socketPath));
   if (existsSync(socketPath)) {
@@ -46,6 +46,7 @@ export async function startApprovalServer(options: { socketPath: string; handle:
     unlinkSync(socketPath); // 이전 데몬이 남긴 소켓
   }
   const server: Server = createServer((socket) => serve(socket, options.handle, options.onError));
+  if (options.maxConnections !== undefined) server.maxConnections = options.maxConnections;
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(socketPath, () => {

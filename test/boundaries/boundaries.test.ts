@@ -19,6 +19,10 @@ const LEGAL: Record<string, string> = {
   'packages/agent-runtime/src/mcp/connector/legal.ts': "import { createHash } from 'node:crypto';\nimport { helper } from './helper.ts';\nexport const a = [createHash, helper];\n",
   'packages/agent-runtime/src/mcp/connector/helper.ts': 'export const helper = 1;\n',
   'packages/agent-runtime/src/mcp/tools.ts': 'export const impl = 1;\n',
+  // 대화 MCP 서버(ADR-0019)는 node: 내장 모듈과 같은 패키지의 파일만 import 한다
+  'apps/conversation-mcp/src/legal.ts': "import { createConnection } from 'node:net';\nimport { helper } from './helper.ts';\nexport const a = [createConnection, helper];\n",
+  'apps/conversation-mcp/src/helper.ts': 'export const helper = 1;\n',
+  'apps/daemon/src/approve.ts': 'export const a = 1;\n',
   'packages/domain/src/a.ts': "import { b } from './b.ts';\nexport const a = b;\n",
   'packages/domain/src/b.ts': 'export const b = 1;\n',
   // 연결 열기 파일은 node:sqlite 를 import 할 수 있다
@@ -48,6 +52,13 @@ const VIOLATIONS: ViolationCase[] = [
     content: "import { domain } from '@aot/domain';\nexport const v = domain;\n", rules: ['mcp-connector-isolated'] },
   { name: 'V9b mcp connector -> host-side mcp module', file: 'packages/agent-runtime/src/mcp/connector/v9b.ts',
     content: "import { impl } from '../tools.ts';\nexport const v = impl;\n", rules: ['mcp-connector-isolated'] },
+  // ADR-0019: 대화 MCP 서버는 승인 소켓 모듈·승인 CLI·패키지를 가져오지 않는다
+  { name: 'V12 conversation-mcp -> @aot/policy (approval socket client)', file: 'apps/conversation-mcp/src/v12.ts',
+    content: "import { sendApprovalRequest } from '@aot/policy';\nexport const v = sendApprovalRequest;\n", rules: ['approval-socket-not-from-conversation', 'conversation-mcp-isolated'] },
+  { name: 'V12b conversation-mcp -> approval CLI', file: 'apps/conversation-mcp/src/v12b.ts',
+    content: "import { a } from '../../daemon/src/approve.ts';\nexport const v = a;\n", rules: ['approval-socket-not-from-conversation', 'conversation-mcp-isolated'] },
+  { name: 'V12c conversation-mcp -> domain (any package)', file: 'apps/conversation-mcp/src/v12c.ts',
+    content: "import { domain } from '@aot/domain';\nexport const v = domain;\n", rules: ['conversation-mcp-isolated'] },
   { name: 'V4 pack -> task-engine internal', file: 'packs/example-marketing/src/v4.ts',
     content: "import { impl } from '../../../packages/task-engine/src/internal/impl.ts';\nexport const v = impl;\n",
     rules: ['only-public-api-across-packages', 'packs-not-to-core-internals'] },

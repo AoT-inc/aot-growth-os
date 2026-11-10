@@ -16,7 +16,9 @@ export type ConnectorTransportConfig =
 export type ConnectorAuthConfig =
   | { kind: 'none' }
   | { kind: 'bearer'; token_env: string }
-  | { kind: 'header'; header: string; value_env: string };
+  | { kind: 'header'; header: string; value_env: string }
+  /** 접근 토큰은 설정이 아니라 호스트가 보내는 `token` 줄로 온다 (ADR-0018 개정 1) */
+  | { kind: 'oauth_delegated' };
 
 export interface ConnectorConfig {
   type: 'config';
@@ -62,6 +64,9 @@ export type ConnectorResponse =
   | { id: number; ok: true; result: ConnectorCallResult }
   | { id: number; ok: true }
   | { id: number; ok: false; error: ConnectorError };
+
+/** 호스트 → 커넥터 (id 없음): 로그인 위임 사이트의 현재 접근 토큰. null 이면 토큰이 없다(요청은 서버에 닿기 전에 막힌다) */
+export interface ConnectorTokenMessage { type: 'token'; access_token: string | null }
 
 export type ConnectorNotice =
   | { type: 'list_changed' }

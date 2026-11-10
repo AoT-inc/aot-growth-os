@@ -138,6 +138,8 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       };
     } catch (error) {
       await transport.close().catch(() => undefined);
+      // 로그인 위임 사이트의 토큰 문제는 그대로 올려 호스트가 알아본다(초기화 단계의 401 도 같다). 다른 인증 종류는 이 코드가 나오지 않으므로 동작이 같다
+      if (error instanceof ConnectorFailure && (error.code === 'unauthorized' || error.code === 'auth_required')) throw error;
       if (error instanceof ConnectorFailure) throw new ConnectorFailure('init_failed', `${error.code}: ${error.message}`, true);
       throw new ConnectorFailure('init_failed', error instanceof Error ? error.message : 'initialize failed', true);
     }

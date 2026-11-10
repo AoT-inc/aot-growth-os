@@ -12,7 +12,9 @@ export type McpTransportDecl =
 export type McpAuthDecl =
   | { readonly kind: 'none' }
   | { readonly kind: 'bearer'; readonly tokenEnv: string }
-  | { readonly kind: 'header'; readonly header: string; readonly valueEnv: string };
+  | { readonly kind: 'header'; readonly header: string; readonly valueEnv: string }
+  /** 오너 로그인 위임 토큰 (ADR-0018 개정 1). 비밀은 선언에 없다: 데몬의 토큰 원천이 instance/mcp-auth 에서 읽고 갱신한다 */
+  | { readonly kind: 'oauth_delegated'; readonly hub: string; readonly resource: string; readonly scopes: readonly string[] };
 
 export interface McpToolDecl {
   /** 서버가 아는 도구 이름 */
@@ -53,6 +55,7 @@ const HEADER_NAME = /^[A-Za-z0-9-]{1,64}$/;
 const FORBIDDEN_HEADERS = new Set(['host', 'content-length', 'content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'connection', 'transfer-encoding', 'upgrade', 'cookie']);
 const SCHEMA_HASH = /^sha256:[0-9a-f]{64}$/;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const SCOPE_TOKEN = /^[A-Za-z0-9._:-]{1,64}$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isInt = (value: unknown, min: number, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
@@ -95,6 +98,15 @@ function parseTransport(raw: unknown, label: string, problems: string[]): McpTra
   return null;
 }
 
+function parseHttpsUrl(raw: unknown, label: string, problems: string[]): URL | null {
+  if (typeof raw !== 'string') { problems.push(`${label} must be a string`); return null; }
+  let url: URL;
+  try { url = new URL(raw); } catch { problems.push(`${label} is not a valid URL`); return null; }
+  if (url.username !== '' || url.password !== '') problems.push(`${label} must not carry credentials`);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK.has(url.hostname))) problems.push(`${label} must be https (http is allowed only for 127.0.0.1, localhost, [::1])`);
+  return url;
+}
+
 function parseAuth(raw: unknown, label: string, problems: string[]): McpAuthDecl {
   if (raw === undefined) return { kind: 'none' };
   if (!isRecord(raw)) { problems.push(`${label}.auth must be an object`); return { kind: 'none' }; }
@@ -111,7 +123,22 @@ function parseAuth(raw: unknown, label: string, problems: string[]): McpAuthDecl
     if (typeof raw['value_env'] !== 'string' || !ENV_NAME.test(raw['value_env'])) problems.push(`${label}.auth.value_env must name an environment variable`);
     return { kind: 'header', header: String(header), valueEnv: String(raw['value_env']) };
   }
-  problems.push(`${label}.auth.kind must be 'none', 'bearer' or 'header'`);
+  if (raw['kind'] === 'oauth_delegated') {
+    checkKeys(raw, ['kind', 'hub', 'resource', 'scopes'], `${label}.auth`, problems);
+    const hub = parseHttpsUrl(raw['hub'], `${label}.auth.hub`, problems);
+    if (hub !== null && (hub.pathname !== '/' || hub.search !== '' || hub.hash !== '')) problems.push(`${label}.auth.hub must be an origin only (no path, query or fragment)`);
+    const resource = parseHttpsUrl(raw['resource'], `${label}.auth.resource`, problems);
+    if (resource !== null && resource.hash !== '') problems.push(`${label}.auth.resource must not carry a fragment`);
+    const scopes = raw['scopes'];
+    if (!Array.isArray(scopes) || scopes.length === 0 || scopes.length > 20 || !scopes.every((scope) => typeof scope === 'string' && SCOPE_TOKEN.test(scope)) || new Set(scopes).size !== scopes.length) {
+      problems.push(`${label}.auth.scopes must be 1-20 distinct scope names`);
+    }
+    return {
+      kind: 'oauth_delegated', hub: hub === null ? '' : hub.origin, resource: typeof raw['resource'] === 'string' ? raw['resource'] : '',
+      scopes: Object.freeze(Array.isArray(scopes) ? scopes.filter((scope): scope is string => typeof scope === 'string') : []),
+    };
+  }
+  problems.push(`${label}.auth.kind must be 'none', 'bearer', 'header' or 'oauth_delegated'`);
   return { kind: 'none' };
 }
 
@@ -185,6 +212,12 @@ function validateSite(raw: unknown, label: string, problems: string[]): McpSiteM
     if (!isRecord(env) || !Object.entries(env).every(([k, v]) => ENV_NAME.test(k) && typeof v === 'string' && ENV_NAME.test(v))) problems.push(`${label}.env_from must map environment names to daemon environment variable names`);
     else envFrom = { ...(env as Record<string, string>) };
     if (transport?.kind === 'http') problems.push(`${label}.env_from is only for stdio transports`);
+  }
+  if (auth.kind === 'oauth_delegated') {
+    if (transport?.kind === 'stdio') problems.push(`${label}: oauth_delegated needs an http transport`);
+    else if (transport?.kind === 'http') {
+      try { if (new URL(auth.resource).origin !== new URL(transport.url).origin) problems.push(`${label}.auth.resource must have the same origin as transport.url (the token must not leave for another host)`); } catch { /* 위에서 보고했다 */ }
+    }
   }
   if (transport?.kind === 'stdio' && auth.kind !== 'none') problems.push(`${label}: a stdio server gets its secrets through env_from, not auth`);
   const rate = raw['rate_limit_per_minute'] ?? DEFAULT_RATE_LIMIT_PER_MINUTE;

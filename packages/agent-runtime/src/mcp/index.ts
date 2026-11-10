@@ -6,7 +6,7 @@ export {
 export { checkArguments, evaluateTool, hintConflict, MAX_ARGUMENT_BYTES, schemaHash, type ClosedReason, type ServerToolView, type ToolState } from './schema-pin.ts';
 export { createSiteRateLimiter, type SiteRateLimiter } from './rate-limit.ts';
 export { CONNECTOR_ENTRY, spawnConnectorProcess, type ConnectorLink, type ConnectorSpawner } from './connector-process.ts';
-export { createMcpSiteClient, McpTransportError, type McpCallOutcome, type McpSiteClient, type McpSiteClientOptions, type McpSiteEvent } from './site-client.ts';
+export { createMcpSiteClient, McpTransportError, type McpAuthPort, type McpCallOutcome, type McpSiteClient, type McpSiteClientOptions, type McpSiteEvent } from './site-client.ts';
 export {
   createMcpEffectTools, createMcpToolExecutors, MCP_OPERATION, mcpToolDescriptions, mcpToolSpecs, WRITE_TIMEOUT_MARGIN_MS,
   type McpEffectRunner, type McpEffectTool, type McpLedgerOutcome, type McpLedgerStep,

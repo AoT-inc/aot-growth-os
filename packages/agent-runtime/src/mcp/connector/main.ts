@@ -27,6 +27,8 @@ const envValue = (name: string): string | undefined => {
 };
 
 interface Runtime {
+  /** 로그인 위임 사이트: 호스트가 보낸 접근 토큰을 바꾼다 */
+  setToken(token: string | null): void;
   config: ConnectorConfig;
   client: McpClient;
   redactor: Redactor;
@@ -43,11 +45,20 @@ function build(config: ConnectorConfig): Runtime {
     return value;
   };
   let transport: Transport;
+  let accessToken: string | null = null;
   if (config.transport.kind === 'http') {
     const headers: Record<string, string> = {};
     if (config.auth.kind === 'bearer') headers['authorization'] = `Bearer ${need(config.auth.token_env)}`;
     else if (config.auth.kind === 'header') headers[config.auth.header.toLowerCase()] = need(config.auth.value_env);
-    transport = createHttpTransport({ url: config.transport.url, headers });
+    if (config.auth.kind === 'oauth_delegated') {
+      transport = createHttpTransport({
+        url: config.transport.url, headers,
+        dynamicHeaders: () => {
+          if (accessToken === null) throw new ConnectorFailure('auth_required', 'no access token is available for this site (the owner must log in: mcp-login)', true);
+          return { authorization: `Bearer ${accessToken}` };
+        },
+      });
+    } else transport = createHttpTransport({ url: config.transport.url, headers });
   } else {
     const env: Record<string, string> = {};
     if (process.env['PATH'] !== undefined) env['PATH'] = process.env['PATH'];
@@ -58,7 +69,16 @@ function build(config: ConnectorConfig): Runtime {
   const client = createMcpClient({
     transport, redactor, maxResultBytes: config.max_result_bytes > 0 ? config.max_result_bytes : DEFAULT_MAX_RESULT_BYTES, onNotice: write,
   });
-  return { config, client, redactor, declared: new Set(config.tools) };
+  const recentTokens: string[] = []; // 가릴 토큰은 최근 4개만 둔다(1시간마다 하나씩 쌓이지 않게)
+  const setToken = (token: string | null): void => {
+    accessToken = token;
+    if (token !== null && !recentTokens.includes(token)) {
+      recentTokens.push(token);
+      if (recentTokens.length > 4) recentTokens.shift();
+      redactor.setDynamic(recentTokens);
+    }
+  };
+  return { setToken, config, client, redactor, declared: new Set(config.tools) };
 }
 
 const errorOf = (error: unknown, redactor: Redactor | null): ConnectorError => {
@@ -168,6 +188,11 @@ async function main(): Promise<void> {
     try {
       request = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (isRecord(request) && request['type'] === 'token') {
+      const token = request['access_token'];
+      runtime?.setToken(typeof token === 'string' && token !== '' ? token : null);
       return;
     }
     if (!isRecord(request) || typeof request['id'] !== 'number' || typeof request['op'] !== 'string') return;

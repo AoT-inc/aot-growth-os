@@ -12,6 +12,8 @@ export interface HttpTransportOptions {
   url: string;
   /** 인증 헤더 등 (이미 값이 채워진 것) */
   headers: Readonly<Record<string, string>>;
+  /** 요청마다 읽는 추가 헤더(로그인 위임 접근 토큰). 던지면 요청은 서버에 닿기 전에 실패한다 */
+  dynamicHeaders?: () => Record<string, string>;
   fetchImpl?: typeof fetch;
 }
 
@@ -82,6 +84,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
 
   const headers = (): Record<string, string> => ({
     ...options.headers,
+    ...(options.dynamicHeaders?.() ?? {}),
     'content-type': 'application/json',
     accept: 'application/json, text/event-stream',
     ...(sessionId === null ? {} : { 'mcp-session-id': sessionId }),
@@ -90,8 +93,9 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
 
   const post = async (body: unknown, signal: AbortSignal | undefined): Promise<Response> => {
     let response: Response;
+    const requestHeaders = headers(); // 토큰이 없으면 여기서 던진다(서버에 닿기 전: definite)
     try {
-      response = await doFetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body), redirect: 'manual', ...(signal === undefined ? {} : { signal }) });
+      response = await doFetch(url, { method: 'POST', headers: requestHeaders, body: JSON.stringify(body), redirect: 'manual', ...(signal === undefined ? {} : { signal }) });
     } catch (error) {
       if (signal?.aborted) throw abortError(signal);
       const code = networkCode(error);
@@ -111,6 +115,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
+      if (response.status === 401 && options.dynamicHeaders !== undefined) throw new ConnectorFailure('unauthorized', 'the MCP server rejected the access token (HTTP 401)', true);
       throw new ConnectorFailure('http_status', `the MCP server answered HTTP ${response.status}`, response.status === 401 || response.status === 403);
     }
     return response;

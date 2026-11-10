@@ -8,10 +8,14 @@ import {
 import type { Clock } from '@aot/domain';
 import type { RunContext } from '@aot/task-engine';
 
+import type { McpTokenSource } from './mcp-oauth.ts';
+
 export interface McpSiteSetup {
   manifest: McpSiteManifest;
   /** 이 사이트의 비밀 환경 변수(이름 → 값). 커넥터 프로세스의 환경으로만 넘어간다 */
   secretEnv: Readonly<Record<string, string>>;
+  /** 로그인 위임(`oauth_delegated`) 사이트: 토큰 원천을 만든다. 운영 이벤트 출구를 받는다 (ADR-0018 개정 1) */
+  createAuth?: (deps: { emit: (event: McpSiteEvent) => void }) => McpTokenSource;
 }
 
 export interface McpOptions {
@@ -47,13 +51,17 @@ export function createMcpRuntime(deps: { clock: Clock; options: McpOptions }): M
   const specs: GatewayToolSpec[] = [];
   const effectTools: Record<string, McpEffectTool> = {};
   const byManifest: { manifest: McpSiteManifest; client: McpSiteClient }[] = [];
+  const sources: McpTokenSource[] = [];
+  const emit = options.onEvent ?? logMcpEvent;
   for (const setup of options.sites) {
     const { manifest } = setup;
     if (sites.has(manifest.site)) throw new Error(`mcp site '${manifest.site}' is configured twice`);
+    const auth = setup.createAuth?.({ emit });
+    if (auth !== undefined) sources.push(auth);
     const client = createMcpSiteClient({
-      manifest, clock,
+      manifest, clock, ...(auth === undefined ? {} : { auth }),
       spawn: () => (options.spawn === undefined ? spawnConnectorProcess(setup.secretEnv) : options.spawn(setup)),
-      onEvent: options.onEvent ?? logMcpEvent,
+      onEvent: emit,
       ...(options.timers === undefined ? {} : { timers: options.timers }),
       ...(options.recheckIntervalMs === undefined ? {} : { recheckIntervalMs: options.recheckIntervalMs }),
     });
@@ -72,9 +80,11 @@ export function createMcpRuntime(deps: { clock: Clock; options: McpOptions }): M
       return out;
     },
     async start() {
+      for (const source of sources) source.start(); // 저장된 로그인을 읽는다(갱신 네트워크는 기다리지 않는다)
       await Promise.all(byManifest.map(({ client }) => client.start()));
     },
     async close() {
+      for (const source of sources) source.close();
       await Promise.all(byManifest.map(({ client }) => client.close()));
     },
   };

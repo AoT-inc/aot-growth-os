@@ -1,0 +1,12 @@
+{
+  "name": "@aot/conversation-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "대화 MCP 서버: 클로드 데스크탑·CLI 의 stdio 요청을 데몬의 대화 소켓으로 옮기는 얇은 중계 (ADR-0019)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.ts"
+  },
+  "dependencies": {}
+}

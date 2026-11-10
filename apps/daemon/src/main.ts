@@ -72,6 +72,8 @@ interface DaemonConfig extends AgentRuntimeConfig, PackConfig, CycleConfig, McpC
   policy_store_dir?: string;
   totp_dir?: string;
   approval_socket?: string;
+  /** 대화 채널 (ADR-0019). 있으면 승인 소켓과 별개의 소켓을 연다. `{}` 면 기본값 */
+  conversation?: { socket?: string; max_pending?: number; max_per_day?: number; max_notes_per_task?: number } | null;
 }
 
 const MIGRATIONS = fileURLToPath(new URL('../../../migrations', import.meta.url));
@@ -120,6 +122,7 @@ async function main(): Promise<void> {
       policyStoreDir: config.policy_store_dir ?? defaults.policyStoreDir,
       totpDir: config.totp_dir ?? defaults.totpDir,
       approvalSocket: config.approval_socket ?? defaults.approvalSocket,
+      ...(config.conversation == null ? {} : { conversationSocket: config.conversation.socket ?? defaults.conversationSocket! }),
     },
     workerId: config.worker_id,
     actorId: config.actor_id ?? 'actor-agent-1',
@@ -151,6 +154,12 @@ async function main(): Promise<void> {
   }
   await daemon.mcp?.start(); // 사이트마다 커넥터 프로세스를 띄우고 첫 고정 확인을 한다(서버가 안 보여도 도구가 닫힌 채 시작하고 다시 시도한다)
   const channel = await daemon.startApprovalChannel((name) => console.error(`approval channel: ${String(name)}`));
+  const conversationChannel = config.conversation == null ? null
+    : await daemon.startConversationChannel({
+      ...(config.conversation.max_pending === undefined ? {} : { maxPending: config.conversation.max_pending }),
+      ...(config.conversation.max_per_day === undefined ? {} : { maxPerDay: config.conversation.max_per_day }),
+      ...(config.conversation.max_notes_per_task === undefined ? {} : { maxNotesPerTask: config.conversation.max_notes_per_task }),
+    }, (name) => console.error(`conversation channel: ${String(name)}`));
   const { worker } = daemon;
   const experimentCycle = daemon.cycle;
   const phoneRuntime = daemon.phone;
@@ -231,6 +240,7 @@ async function main(): Promise<void> {
   });
   await webhookServer?.close();
   await daemon.mcp?.close();
+  await conversationChannel?.close();
   await channel.close();
   db.close();
   console.log(`aot-daemon ${config.worker_id}: stopped`);

@@ -120,5 +120,7 @@ function mandateWidenings(a: Mandate, b: Mandate): string[] {
   if (b.cooldown < a.cooldown) reasons.push(`${label} cooldown shortened ${a.cooldown}s -> ${b.cooldown}s`);
   if (b.expires > a.expires) reasons.push(`${label} expires extended ${a.expires} -> ${b.expires}`);
   if (b.guidance !== a.guidance) reasons.push(`${label} guidance changed`);
+  // 그림자 → 실제는 AI 가 실제로 승인하게 되는 확대다. 실제 → 그림자는 좁히기
+  if (a.mode === 'shadow' && b.mode === 'live') reasons.push(`${label} mode changed shadow -> live (the AI starts approving for real)`);
   return reasons;
 }

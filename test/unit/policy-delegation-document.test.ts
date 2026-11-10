@@ -125,7 +125,6 @@ test('change class table: every widening of a mandate is risky, every narrowing 
     ['max_recipients_per_draft', { limits: { max_recipients_per_draft: 2 } }, /limits\.max_recipients_per_draft raised/],
     ['max_payload_bytes', { limits: { max_payload_bytes: 20_001 } }, /limits\.max_payload_bytes raised/],
     ['max_task_usd', { limits: { max_task_usd: 3 } }, /limits\.max_task_usd raised/],
-    ['max_rewrites_per_task', { limits: { max_rewrites_per_task: 2 } }, /limits\.max_rewrites_per_task raised/],
     ['max_review_usd_per_day', { limits: { max_review_usd_per_day: 2 } }, /limits\.max_review_usd_per_day raised/],
     ['expires extended', { expires: '2027-01-15' }, /expires extended/],
     ['guidance', { guidance: 'anything goes' }, /guidance changed/],
@@ -136,6 +135,10 @@ test('change class table: every widening of a mandate is risky, every narrowing 
     assert.equal(change.changeClass, 'risky', name);
     assert.match(change.reasons.join(), pattern, name);
   }
+  // 다시 쓰게 상한은 1이다: 0 -> 1 이 올림이다
+  const noRewrites = withMandate({ limits: { max_rewrites_per_task: 0 } });
+  assert.match(classifyChange(noRewrites, base).reasons.join(), /limits\.max_rewrites_per_task raised/);
+  assert.equal(classifyChange(base, noRewrites).changeClass, 'normal');
   // 쿨다운 단축은 길게 시작한 위임에서만 보인다 (위임 cooldown 은 risky_change.cooldown 이상이어야 하므로)
   const long = withMandate({ cooldown: '2h' });
   assert.match(classifyChange(long, withMandate({ cooldown: '1h' })).reasons.join(), /cooldown shortened/);
@@ -189,4 +192,32 @@ test('changing the recipient rule is a risky change only when it widens', () => 
   assert.equal(classifyChange(base, wider).reasons.some((r) => r.includes('match.recipients widened')), true);
   assert.equal(classifyChange(wider, narrower).reasons.some((r) => r.includes('recipients')), false);
   assert.equal(classifyChange(base, kind).reasons.some((r) => r.includes('match.recipients changed')), true);
+});
+
+// ===== 그림자 모드 (docs/plans/delegate-reviewer.md §5) =====
+
+test('mandate mode: omitted means shadow, live and shadow are accepted, anything else is a parse error', () => {
+  assert.equal(ok(delegationPolicyText([{ mode: null }])).delegation!.mandates[0]!.mode, 'shadow');
+  assert.equal(ok(delegationPolicyText([{ mode: 'shadow' }])).delegation!.mandates[0]!.mode, 'shadow');
+  assert.equal(ok(delegationPolicyText([{ mode: 'live' }])).delegation!.mandates[0]!.mode, 'live');
+  for (const bad of ['Live', 'dry-run', 'true', '1']) {
+    const text = delegationPolicyText([{ mode: 'live' }]).replace('mode: live', `mode: ${bad}`);
+    assert.deepEqual(errors(text), ['delegation.mandates.0.mode:enum'], bad);
+  }
+});
+
+test('max_rewrites_per_task allows at most one AI rewrite per task (D-B4)', () => {
+  assert.equal(ok(delegationPolicyText([{ limits: { max_rewrites_per_task: 1 } }])).delegation!.mandates[0]!.limits.max_rewrites_per_task, 1);
+  assert.equal(ok(delegationPolicyText([{ limits: { max_rewrites_per_task: 0 } }])).delegation!.mandates[0]!.limits.max_rewrites_per_task, 0);
+  assert.deepEqual(errors(delegationPolicyText([{ limits: { max_rewrites_per_task: 2 } }])), ['delegation.mandates.0.limits.max_rewrites_per_task:range']);
+});
+
+test('change class: shadow -> live is a risky widening; live -> shadow narrows', () => {
+  const shadow = withMandate({ mode: 'shadow' });
+  const live = withMandate({ mode: 'live' });
+  const up = classifyChange(shadow, live);
+  assert.equal(up.changeClass, 'risky');
+  assert.ok(up.reasons.some((reason) => reason.startsWith('delegation ') && reason.includes('shadow -> live')), 'the reason starts with "delegation " (the engine forces TOTP on that prefix)');
+  assert.equal(classifyChange(live, shadow).changeClass, 'normal');
+  assert.equal(classifyChange(shadow, shadow).changeClass, 'normal');
 });

@@ -66,7 +66,15 @@ export { CLAUDE_CODE_ADAPTER_NAME, createClaudeCodeCliAdapter, type ClaudeCodeCl
 export { CLAUDE_CODE_NOTICE, type ClaudeCodeNotice } from './claude-code/consent.ts';
 export { createClaudeCodeGate, type ClaudeCodeGate, type ClaudeCodeGateOptions } from './claude-code/gate.ts';
 export { CLAUDE_CODE_VERIFIER_NAME, createClaudeCodeVerifier, type ClaudeCodeVerifierOptions } from './claude-code/verifier.ts';
-export { aggregateVerdict, buildVerifierArgs, buildVerifierPrompt, VERIFIER_INSTRUCTIONS, VERIFIER_PROMPT_VERSION, verifierJsonSchema } from './claude-code/verifier-prompt.ts';
+export { aggregateVerdict, buildVerifierArgs, buildVerifierPrompt, MODEL_NAME, VERIFIER_INSTRUCTIONS, VERIFIER_PROMPT_VERSION, verifierJsonSchema } from './claude-code/verifier-prompt.ts';
+export {
+  CLAUDE_CODE_DELEGATE_REVIEWER_NAME, createClaudeCodeDelegateReviewer, DEFAULT_ASSUMED_COST_USD, DelegateReviewerRunError, DelegateReviewerUnavailable,
+  type ClaudeCodeDelegateReviewer, type ClaudeCodeDelegateReviewerOptions, type ClaudeCodeDelegateReviewRequest,
+} from './claude-code/delegate-reviewer.ts';
+export {
+  buildDelegateReviewerArgs, buildDelegateReviewerPrompt, DELEGATE_REASON_MAX, DELEGATE_REVIEWER_INSTRUCTIONS, DELEGATE_REVIEWER_PROMPT_VERSION, DelegateReviewerPromptError, delegateReviewerJsonSchema,
+  type DelegateReviewerPrompt,
+} from './claude-code/delegate-reviewer-prompt.ts';
 export {
   BUILTIN_TOOLS as CLAUDE_CODE_BUILTIN_TOOLS, buildBridgeTools, buildClaudeArgs, buildClaudeEnv, buildMcpConfig, buildPrompt, CLAUDE_ENV_NAMES, FORBIDDEN_CLAUDE_FLAGS, GATEWAY_SERVER_NAME,
   buildWorkdirFiles, mcpToolName, TASK_INSTRUCTIONS, upstreamFileOf, type BridgeTool, type ClaudeArgsInput, type ClaudeEnvInput,

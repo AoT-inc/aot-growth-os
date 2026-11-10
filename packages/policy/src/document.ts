@@ -125,6 +125,9 @@ export interface MandateMatch {
 }
 
 /** 위임 한 건 (ADR-0016 제안). 사람이 정책 배포로 정한 범위 안에서만 보유자(AI)가 승인할 수 있다 */
+/** 위임 모드 (docs/plans/delegate-reviewer.md §5). shadow: AI 판정을 기록만 하고 아무것도 승인하지 않는다. 정책에서 생략하면 shadow */
+export type MandateMode = 'shadow' | 'live';
+
 export interface Mandate {
   /** 정책 안에서 유일 */
   id: string;
@@ -140,6 +143,8 @@ export interface Mandate {
   guidance: string;
   /** `YYYY-MM-DD` — 그 날의 끝(UTC)까지 유효. 배포 승인 시각부터 90일 이내 */
   expires: string;
+  /** 생략하면 shadow. shadow → live 는 위험 변경(TOTP) */
+  mode: MandateMode;
 }
 
 export interface DelegationSection {
@@ -432,7 +437,7 @@ const MANDATE_LIMIT_SPEC = {
   max_recipients_per_draft: { integer: true, min: 1, max: 100, exclusiveMin: false },
   max_payload_bytes: { integer: true, min: 1, max: 262_144, exclusiveMin: false },
   max_task_usd: { integer: false, min: 0, max: 1_000_000, exclusiveMin: true },
-  max_rewrites_per_task: { integer: true, min: 0, max: 10, exclusiveMin: false },
+  max_rewrites_per_task: { integer: true, min: 0, max: 1, exclusiveMin: false },
   max_review_usd_per_day: { integer: false, min: 0, max: 1_000_000, exclusiveMin: true },
 } as const;
 
@@ -458,7 +463,7 @@ function checkDelegation(value: unknown, risky: RiskyChangeParams, out: IssueCol
   list.forEach((item: unknown, index) => {
     const path = `delegation.mandates.${index}`;
     if (!isPlainObject(item)) return void out.add(path, 'type', 'each mandate must be a mapping');
-    unknownKeys(item, ['id', 'holder', 'subjects', 'match', 'limits', 'cooldown', 'guidance', 'expires'], path, out);
+    unknownKeys(item, ['id', 'holder', 'subjects', 'match', 'limits', 'cooldown', 'guidance', 'expires', 'mode'], path, out);
     const id = item['id'];
     if (typeof id !== 'string' || !MANDATE_ID.test(id)) out.add(`${path}.id`, 'format', 'id must match [a-z0-9][a-z0-9-]*');
     else if (seen.has(id)) out.add(`${path}.id`, 'duplicate', `duplicate mandate id '${id}'`);
@@ -486,8 +491,12 @@ function checkDelegation(value: unknown, risky: RiskyChangeParams, out: IssueCol
     }
     const expires = item['expires'];
     if (typeof expires !== 'string' || mandateExpiresAt(expires) === null) out.add(`${path}.expires`, 'format', 'expires is required, a date like 2027-01-31');
+    // 모드: 생략하면 shadow (새 위임은 그림자로 시작한다). shadow·live 말고는 오류
+    const rawMode = item['mode'];
+    if (rawMode !== undefined && rawMode !== 'shadow' && rawMode !== 'live') out.add(`${path}.mode`, 'enum', "mode must be 'shadow' or 'live' (omitted means shadow)");
+    const mode: MandateMode = rawMode === 'live' ? 'live' : 'shadow';
     mandates.push({
-      id: String(id), holder: String(holder), subjects: ['task'], match, limits, cooldown: cooldown ?? 0,
+      mode, id: String(id), holder: String(holder), subjects: ['task'], match, limits, cooldown: cooldown ?? 0,
       guidance: typeof guidance === 'string' ? guidance : '', expires: typeof expires === 'string' ? expires : '',
     });
   });

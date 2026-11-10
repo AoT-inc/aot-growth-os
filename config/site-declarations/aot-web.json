@@ -16,7 +16,7 @@
     {
       "name": "create_post_branch",
       "as": "draft_post",
-      "description": "홈페이지 글 초안(한국어·영어 한 쌍)을 새 브랜치로 올린다. main 에는 닿지 않고 공개 전 상태(published:false)다.",
+      "description": "홈페이지 글 초안(한국어·영어 한 쌍)을 새 브랜치로 올린다. main 에는 닿지 않고 공개 전 상태(published:false)다. 본문에 중괄호는 쓸 수 없고 2048자까지다. 이미 있는 초안 브랜치는 고치지 못한다.",
       "scope": "public",
       "impact": "external_effect",
       "side_effect": true,
@@ -30,7 +30,7 @@
         },
         "date": {
           "type": "string",
-          "pattern": "^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+          "pattern": "^20[0-9]{2}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))$",
           "required": true
         },
         "image": {
@@ -52,8 +52,9 @@
         },
         "ko_body": {
           "type": "string",
-          "max_length": 20000,
-          "required": true
+          "max_length": 2048,
+          "required": true,
+          "pattern": "^[^{}\\u0000]*$"
         },
         "en_title": {
           "type": "string",
@@ -69,8 +70,9 @@
         },
         "en_body": {
           "type": "string",
-          "max_length": 20000,
-          "required": true
+          "max_length": 2048,
+          "required": true,
+          "pattern": "^[^{}\\u0000]*$"
         }
       },
       "request": {
@@ -118,12 +120,12 @@
         "/commit/sha",
         "/commit/html_url"
       ],
-      "pin": "sha256:d19f0fa3898e6e610d0b59540514b126088820ea32afe76c4232cac44bb4b76b"
+      "pin": "sha256:8fc46e738a5211e5691a54ac7ec558c21dde5879216a92ff6494ebd3ccf7ee96"
     },
     {
       "name": "open_post_pr",
       "as": "open_post_pr",
-      "description": "이미 올린 글 초안 브랜치(agent/post-<slug>)에서 main 으로 가는 병합 요청(PR)을 연다. 열기만 한다: 병합은 오너가 gitea 에서 하며 병합이 곧 게시다.",
+      "description": "이미 올린 글 초안 브랜치(agent/post-<slug>)에서 main 으로 가는 병합 요청(PR)을 연다. 열기만 한다. 병합은 오너가 gitea 에서 하며, 글은 front matter 의 published 를 true 로 바꿔야 공개된다.",
       "scope": "public",
       "impact": "external_effect",
       "side_effect": true,

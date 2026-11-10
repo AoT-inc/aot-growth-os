@@ -51,7 +51,8 @@ export function quoteUntrusted(value: unknown, max = 40): string {
   const text = typeof value === 'string' ? value : String(value);
   const cleaned = Array.from(text, (ch) => {
     const code = ch.codePointAt(0) ?? 0;
-    return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029 ? '?' : ch;
+    const hidden = code < 0x20 || (code >= 0x7f && code <= 0x9f) || (code >= 0x200b && code <= 0x200f) || (code >= 0x2028 && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069) || code === 0xfeff;
+    return hidden ? '?' : ch;
   }).join('');
   return JSON.stringify(cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned);
 }
@@ -135,10 +136,9 @@ export async function runMcpDraft(argv: readonly string[], env: NodeJS.ProcessEn
     return { code: 2, output: 'usage: npm run mcp-draft -- <daemon config path> <site> [--out <new file>]' };
   }
   if (out !== undefined && resolve(out) === resolve(configPath)) return { code: 2, output: 'refusing to write the draft over the config file' };
-  const read = await readSiteListing(configPath, site, env);
+  const read = await readSiteListing(configPath, site, env, (m) => m.transport.kind === 'api');
   if (read.code !== 0) return { code: read.code, output: (read as { output: string }).output };
   const { manifest, listing } = read as { manifest: McpSiteManifest; listing: SiteListing };
-  if (manifest.transport.kind === 'api') return { code: 2, output: `site '${site}' is an api site: it has no server tool list. Write the declarations by hand (docs/operations/api-sites.md)` };
   const json = JSON.stringify(buildDraft(manifest, listing), null, 2);
   if (out === undefined) return { code: 0, output: json };
   try { writeFileSync(out, `${json}\n`, { flag: 'wx', mode: 0o600 }); } catch (error) { return { code: 1, output: `could not write ${out}: ${(error as Error).message}` }; }

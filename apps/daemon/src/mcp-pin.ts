@@ -60,10 +60,17 @@ export function formatPinReport(report: PinReport): string {
 export type SiteListing = NonNullable<ReturnType<McpSiteClient['lastListing']>>;
 
 /** 사이트의 커넥터를 inspect 모드로 띄워 도구 목록을 읽고 닫는다 (mcp-pin·mcp-draft 공용). 설정 파일은 쓰지 않는다 */
-export async function readSiteListing(configPath: string, site: string, env: NodeJS.ProcessEnv): Promise<{ code: 0; manifest: McpSiteManifest; listing: SiteListing } | { code: 1 | 2; output: string }> {
-  const config = JSON.parse(readFileSync(configPath, 'utf8')) as { mcp_sites?: unknown; instance_dir?: string };
-  const manifest = parseMcpSites(config.mcp_sites).find((entry) => entry.site === site);
+export async function readSiteListing(configPath: string, site: string, env: NodeJS.ProcessEnv, stopBefore?: (manifest: McpSiteManifest) => boolean): Promise<{ code: 0; manifest: McpSiteManifest; listing: SiteListing } | { code: 1 | 2; output: string }> {
+  let config: { mcp_sites?: unknown; instance_dir?: string };
+  let manifest: McpSiteManifest | undefined;
+  try {
+    config = JSON.parse(readFileSync(configPath, 'utf8')) as { mcp_sites?: unknown; instance_dir?: string };
+    manifest = parseMcpSites(config.mcp_sites).find((entry) => entry.site === site);
+  } catch (error) {
+    return { code: 2, output: `cannot use the config ${configPath}: ${(error as Error).message}` };
+  }
   if (manifest === undefined) return { code: 2, output: `site '${site}' is not in mcp_sites of ${configPath}` };
+  if (stopBefore?.(manifest) === true) return { code: 2, output: `site '${site}' is an api site: it has no server tool list. Write the declarations by hand (docs/operations/api-sites.md)` };
   const secretEnv = readSiteSecrets(manifest, env);
   // 로그인 위임 사이트: 파일의 접근 토큰이 유효할 때만 읽는다. 갱신은 데몬이 하므로 여기서는 하지 않는다(갱신 주체가 둘이면 허브가 연결을 끊는다)
   let auth: ReturnType<typeof createReadOnlyTokenSource>['port'] | undefined;

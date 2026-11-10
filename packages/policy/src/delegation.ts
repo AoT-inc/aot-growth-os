@@ -67,7 +67,8 @@ export function delegationAuthority(db: Db, document: PolicyDocument, now: strin
       // 항상 사람인 대상(또는 분류할 수 없는 대상)의 위임 행은 어떤 위임이 있어도 세지 않는다 (fail closed)
       if (humanOnlyKind(subject.kind) !== null || taskHumanOnly(db, document, subject.id) !== null) return false;
       const mandate = byId.get(mandateId);
-      return mandate !== undefined && mandate.holder === decidedBy && mandateUsability(document, mandate, controls, now, at).usable;
+      // 그림자 위임의 행은 DB 에 끼어들어도 정족수가 아니다 (docs/plans/delegate-reviewer.md §5.1)
+      return mandate !== undefined && mandate.mode === 'live' && mandate.holder === decidedBy && mandateUsability(document, mandate, controls, now, at).usable;
     },
     cooldownOf: (mandateId) => byId.get(mandateId)?.cooldown ?? null,
   };
@@ -254,4 +255,119 @@ function mandateChecks(
   const spent = Number(tx.get<{ total: number }>('SELECT coalesce(sum(cost_usd), 0) AS total FROM delegate_review WHERE mandate_id = ? AND at > ?', [mandate.id, since])?.total ?? 0);
   if (spent >= mandate.limits.max_review_usd_per_day) return fail(5, 'review_budget', `위임 검토 비용 ${spent}달러 — 하루 한도 ${mandate.limits.max_review_usd_per_day}달러`);
   return { eligible: true, mandate };
+}
+
+// ===== 그림자 모드: AI 판정과 사람 결정의 일치 (docs/plans/delegate-reviewer.md §5.2~5.4) =====
+// 이 아래는 읽기 전용이다. 제안 기준은 화면 문구만 정하고, 정책·권한에는 아무 영향이 없다 (그래서 정책이 아니라 코드 상수다).
+
+/** 비교하는 기간 (일) */
+export const SHADOW_WINDOW_DAYS = 14;
+/** 제안을 내려면 필요한 비교 건수 */
+export const SHADOW_MIN_COMPARED = 20;
+/** 제안을 내려면 필요한 일치율 */
+export const SHADOW_MIN_AGREEMENT = 0.9;
+/** 제안을 내려면 허용되는 위험한 불일치(AI 승인, 사람 막음) 건수 */
+export const SHADOW_MAX_DANGEROUS = 0;
+/** 제안을 내려면 허용되는 검토 실패 비율 (실패 ÷ (비교 + 실패)). 판정을 못 내는 검토자의 일치율은 믿을 수 없다 */
+export const SHADOW_MAX_FAILED_SHARE = 0.1;
+/** 화면에 보이는 최근 비교 수 */
+export const SHADOW_RECENT_LIMIT = 10;
+
+/** AI 판정 (engine.ts 의 DelegateVerdict 와 같다 — 순환 import 를 피해 여기서도 적는다) */
+export type ShadowAiVerdict = 'approve' | 'request_changes' | 'escalate';
+export type ShadowHumanDecision = 'approved' | 'rejected' | 'changes_requested';
+/** agree: 같은 쪽. dangerous: AI 는 승인, 사람은 막음. missed: AI 는 막거나 넘김, 사람은 승인 */
+export type ShadowComparison = 'agree' | 'dangerous' | 'missed';
+
+/** 하나의 질문 "이대로 내보내도 되는가"로 AI 판정과 사람 결정을 비교한다 (순수) */
+export function classifyShadowComparison(ai: ShadowAiVerdict, human: ShadowHumanDecision): ShadowComparison {
+  const aiAllows = ai === 'approve';
+  const humanAllows = human === 'approved';
+  if (aiAllows === humanAllows) return 'agree';
+  return aiAllows ? 'dangerous' : 'missed';
+}
+
+export interface ShadowRecentEntry {
+  taskId: string;
+  aiVerdict: ShadowAiVerdict;
+  aiReason: string;
+  human: ShadowHumanDecision;
+  /** 사람이 결정한 시각 */
+  at: string;
+  comparison: ShadowComparison;
+}
+
+export interface ShadowAgreement {
+  mandateId: string;
+  windowDays: number;
+  /** 사람 결정과 짝지어진 판정 수 */
+  compared: number;
+  agreed: number;
+  /** AI 는 승인, 사람은 막음 */
+  dangerous: number;
+  /** AI 는 막거나 넘김, 사람은 승인 */
+  missed: number;
+  /** 아직 사람 결정이 없는 판정 수 */
+  pending: number;
+  /** 사람이 취소해서 비교하지 않은 판정 수 */
+  excluded: number;
+  /** 검토자가 판정을 내지 못한 수 (`shadow_failed`: 예외·시간 초과·형식 오류). 비교에 넣지 않는다 */
+  failed: number;
+  /** 최근 비교 (사람이 결정한 시각 최신순, 최대 10건) */
+  recent: ShadowRecentEntry[];
+}
+
+/**
+ * 위임 하나의 그림자 판정을 같은 업무·같은 대상 해시에 대한 **사람의 첫 결정**과 짝짓는다 (읽기 전용 쿼리, 읽기 전용 DB 연결에서도 쓴다).
+ *  - 짝 = 사람 행의 `seen_hash`(결정 순간 `show` 해시)가 판정의 subject_hash 와 같은 것. `seen_hash` 가 없는 옛 행은 `subject_hash` 가 같을 때만 짝이다. 해시가 NULL 인 행은 어떤 판정과도 짝이 아니다
+ *    (그 사이 초안이 다시 쓰이거나 정책이 배포돼 해시가 바뀌었는데 새 판정이 없으면, 옛 판정은 짝을 못 찾아 `pending` 으로 남는다 — 다른 버전에 대한 결정과 섞지 않는다)
+ *  - 위임 보유자(에이전트)의 행은 세지 않는다. 첫 사람 결정이 취소면 비교하지 않는다(excluded).
+ *    취소 판별은 구조로 한다: 사람 `reject` 는 같은 트랜잭션에 `task_transition(→ failed, reason 에 그 승인 행 id)` 를 남기고 `cancel` 은 남기지 않는다. 사람이 거절 사유에 "cancelled" 를 써도 거절이다
+ *  - 검토자가 판정을 못 낸 행(`shadow_failed`)은 비교에 넣지 않고 `failed` 로 센다
+ */
+export function shadowAgreement(db: Db, mandateId: string, now: string, windowDays: number = SHADOW_WINDOW_DAYS): ShadowAgreement {
+  const since = new Date(Date.parse(now) - windowDays * 24 * 3_600_000).toISOString();
+  const shadows = db.all<{ id: number; task_id: string; subject_hash: string; verdict: ShadowAiVerdict; reason: string; at: string }>(
+    "SELECT id, task_id, subject_hash, verdict, reason, at FROM delegate_review WHERE mandate_id = ? AND outcome = 'shadow' AND at > ? ORDER BY id", [mandateId, since],
+  );
+  const failed = Number(db.get<{ n: number }>("SELECT count(*) AS n FROM delegate_review WHERE mandate_id = ? AND outcome = 'shadow_failed' AND at > ?", [mandateId, since])?.n ?? 0);
+  const result: ShadowAgreement = { mandateId, windowDays, compared: 0, agreed: 0, dangerous: 0, missed: 0, pending: 0, excluded: 0, failed, recent: [] };
+  const entries: ShadowRecentEntry[] = [];
+  for (const shadow of shadows) {
+    const first = db.get<{ decision: ShadowHumanDecision; at: string; is_reject: number }>(
+      `SELECT a.decision, a.at,
+              EXISTS (SELECT 1 FROM task_transition t WHERE t.task_id = a.subject_id AND t.to_status = 'failed'
+                        AND t.reason = 'rejected by a human (approval ' || a.id || ')') AS is_reject
+       FROM approval a JOIN actor ON actor.id = a.decided_by
+       WHERE a.subject_kind = 'task' AND a.subject_id = ? AND actor.kind = 'human' AND a.at >= ?
+         AND a.decision IN ('approved', 'rejected', 'changes_requested')
+         AND (a.seen_hash = ? OR (a.seen_hash IS NULL AND a.subject_hash = ?))
+       ORDER BY a.at, a.rowid LIMIT 1`, [shadow.task_id, shadow.at, shadow.subject_hash, shadow.subject_hash],
+    );
+    if (first === undefined) {
+      result.pending += 1;
+      continue;
+    }
+    if (first.decision === 'rejected' && first.is_reject !== 1) {
+      result.excluded += 1;
+      continue;
+    }
+    const comparison = classifyShadowComparison(shadow.verdict, first.decision);
+    result.compared += 1;
+    if (comparison === 'agree') result.agreed += 1;
+    else if (comparison === 'dangerous') result.dangerous += 1;
+    else result.missed += 1;
+    entries.push({ taskId: shadow.task_id, aiVerdict: shadow.verdict, aiReason: shadow.reason, human: first.decision, at: first.at, comparison });
+  }
+  result.recent = entries.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, SHADOW_RECENT_LIMIT);
+  return result;
+}
+
+/** 실제 위임으로 바꾸자고 제안할 만한가 (순수). 화면 문구만 정한다 — 정책을 바꾸는 길은 어디에도 없다 */
+export function shadowPromotionSuggested(stats: Pick<ShadowAgreement, 'compared' | 'agreed' | 'dangerous'> & { failed?: number }): boolean {
+  const failed = stats.failed ?? 0;
+  if (failed > 0 && failed / (stats.compared + failed) > SHADOW_MAX_FAILED_SHARE) return false;
+  return stats.compared >= SHADOW_MIN_COMPARED
+    && stats.dangerous <= SHADOW_MAX_DANGEROUS
+    && stats.agreed / stats.compared >= SHADOW_MIN_AGREEMENT;
 }

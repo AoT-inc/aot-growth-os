@@ -151,6 +151,8 @@ export interface AgentRuntimeOverrides {
   clock?: Clock;
   /** claude_code_cli 의 고지 동의 기록 읽기(run 마다 불린다). main.ts 는 `() => readClaudeCodeConsent(db)` 를 넘긴다. `claude_code_cli` 설정이 있으면 필수 */
   claudeCodeConsent?: () => ClaudeCodeConsent | null;
+  /** 실행 어댑터·검증기가 쓸 게이트를 밖에서 만들어 준다(위임 검토자와 같은 구독 풀을 하나의 게이트로 묶으려고). 없으면 여기서 만든다 */
+  claudeGate?: ClaudeCodeGate;
   /** 등록 도구가 저장소 바인딩(product_repo)을 읽는 DB. `registration_tools` 설정이 있으면 필수 */
   db?: Db;
   /** 상품 저장소 경로가 겹치면 안 되는 데몬 디렉터리를 더한다 (DB·TOTP·정책 저장소·승인 소켓 등 설정으로 인스턴스 밖에 둘 수 있는 것). main.ts 가 넘긴다 */
@@ -298,7 +300,7 @@ function buildClaudeAdapter(config: ClaudeCodeCliConfig, clock: Clock, gate: Cla
 }
 
 /** 실행 어댑터와 검증기가 *함께* 쓰는 게이트: 같은 구독 풀이므로 동시 실행 한도와 사람 우선 게이트가 하나다 (Q22 d) */
-function buildClaudeGate(config: ClaudeCodeCliConfig, clock: Clock): ClaudeCodeGate {
+export function buildClaudeGate(config: ClaudeCodeCliConfig, clock: Clock): ClaudeCodeGate {
   return createClaudeCodeGate({
     clock,
     ...(config.max_concurrent === undefined ? {} : { maxConcurrent: config.max_concurrent }),
@@ -405,7 +407,7 @@ function buildAgentBase(config: AgentRuntimeConfig, instanceDir: string, overrid
     ...(overrides.recorder === undefined ? {} : { recorder: overrides.recorder }),
     ...(overrides.timers === undefined ? {} : { timers: overrides.timers }),
   };
-  const claudeGate = claudeConfig === undefined ? undefined : buildClaudeGate(claudeConfig, clock);
+  const claudeGate = claudeConfig === undefined ? undefined : (overrides.claudeGate ?? buildClaudeGate(claudeConfig, clock));
   const claudeAdapter = claudeConfig === undefined || claudeGate === undefined ? undefined : buildClaudeAdapter(claudeConfig, clock, claudeGate, overrides, toolDescriptions);
   // 구독 검증기: 출처 URL 조회기가 없는 평가 포트다(로컬 근거 업무). research_agent 가 있으면 아래에서 조회기를 더해 만든다
   const claudeVerifier = llmConfig?.kind === 'claude_code_cli' && claudeConfig !== undefined && claudeGate !== undefined ? buildClaudeVerifier(llmConfig, claudeConfig, clock, claudeGate, overrides) : undefined;

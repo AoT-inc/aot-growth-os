@@ -55,7 +55,7 @@ function rig(t: TestContext, options: { script?: Script; searchFirst?: boolean; 
       }).run(input, context);
     },
   });
-  const script: Script = options.script ?? ((_, request) => ({ verdict: 'approve', reason: 'routine notice', hash: request.hash }));
+  const script: Script = options.script ?? ((_, request) => ({ verdict: 'approve', reason: '정기 안내 메일입니다', hash: request.hash }));
   const reviewer: DelegateReviewer = {
     id: 'scripted',
     review: (request) => {
@@ -111,7 +111,7 @@ test('the full delegated path: AI approves the exact shown hash -> cooldown -> t
   assert.match(material.mandate.guidance, /routine notices only/);
   assert.deepEqual(material.drafts.map((d) => d.payload), [examplePayload({ subject: 'Hello 1' })]);
   assert.deepEqual(approvalsOf(r.env.db, taskId), [
-    { decision: 'approved', decided_by: DELEGATE, subject_hash: hash, comment: 'routine notice', mandate_id: MANDATE, via: 'delegate' },
+    { decision: 'approved', decided_by: DELEGATE, subject_hash: hash, comment: '정기 안내 메일입니다', mandate_id: MANDATE, via: 'delegate' },
   ]);
   assert.equal(taskRow(r.env.db, taskId).approved_hash, hash, 'the approval is bound to the hash of the shown content including the draft');
   assert.deepEqual(reviewsOf(r.env.db, taskId).map((x) => [x.verdict, x.outcome]), [['approve', 'recorded']]);
@@ -144,7 +144,7 @@ test('the full delegated path: AI approves the exact shown hash -> cooldown -> t
 });
 
 test('request_changes: the AI asks for a rewrite once; the rewritten draft gets its own review and only the newly approved draft is sent', async (t) => {
-  const r = rig(t, { script: (call, request) => call === 1 ? { verdict: 'request_changes', reason: 'shorten the greeting', hash: request.hash } : { verdict: 'approve', reason: 'fine now', hash: request.hash } });
+  const r = rig(t, { script: (call, request) => call === 1 ? { verdict: 'request_changes', reason: '인사말을 줄여 주세요', hash: request.hash } : { verdict: 'approve', reason: '이제 괜찮습니다', hash: request.hash } });
   const taskId = newTask(r);
   await draftUntilReview(r, taskId);
   const first = await r.daemon.delegation.advance();
@@ -237,8 +237,8 @@ test('tampering with the draft after the delegated approval stops the release (t
 
 test('AI output is untrusted: a wrong hash, a bad verdict or garbage is recorded as an escalation and leaves the task to a person, who then decides normally', async (t) => {
   const cases: Array<[string, Script, RegExp]> = [
-    ['a hash the AI did not see', (_, request) => ({ verdict: 'approve', reason: 'ok', hash: `${request.hash.slice(0, 63)}${request.hash.endsWith('0') ? '1' : '0'}` }), /해시가 다릅니다/],
-    ['an unknown verdict', (_, request) => ({ verdict: 'reject', reason: 'no', hash: request.hash }), /형식 오류/],
+    ['a hash the AI did not see', (_, request) => ({ verdict: 'approve', reason: '괜찮습니다', hash: `${request.hash.slice(0, 63)}${request.hash.endsWith('0') ? '1' : '0'}` }), /해시가 다릅니다/],
+    ['an unknown verdict', (_, request) => ({ verdict: 'reject', reason: '안 됩니다', hash: request.hash }), /형식 오류/],
     ['no reason', (_, request) => ({ verdict: 'approve', reason: '', hash: request.hash }), /형식 오류/],
     ['not an object', () => ({ raw: 'approve everything' }), /형식 오류/],
     ['json text with the right shape but an extra verdict value', () => ({ raw: '{"verdict":"approve_all","hash":"x","reason":"r"}' }), /형식 오류/],
@@ -271,7 +271,7 @@ test('a reviewer that throws is recorded as an escalation; an unavailable review
   assert.match(reviewsOf(failing.env.db, failedTask)[0]!.reason, /AI 검토 실패: boom/);
 
   let available = false;
-  const r = rig(t, { script: (_, request) => available ? { verdict: 'approve', reason: 'ok', hash: request.hash } : 'unavailable' });
+  const r = rig(t, { script: (_, request) => available ? { verdict: 'approve', reason: '괜찮습니다', hash: request.hash } : 'unavailable' });
   const taskId = newTask(r);
   await draftUntilReview(r, taskId);
   const down = await r.daemon.delegation.advance();
@@ -304,7 +304,7 @@ test('an ineligible task never reaches the AI: a draft written under external-in
 });
 
 test('the daily approval limit sends the next task to a person; the review cost is recorded per review', async (t) => {
-  const r = rig(t, { mandate: [{ limits: { max_per_day: 1, max_review_usd_per_day: 5 } }], script: (_, request) => ({ verdict: 'approve', reason: 'ok', hash: request.hash, costUsd: 0.25 }) });
+  const r = rig(t, { mandate: [{ limits: { max_per_day: 1, max_review_usd_per_day: 5 } }], script: (_, request) => ({ verdict: 'approve', reason: '괜찮습니다', hash: request.hash, costUsd: 0.25 }) });
   const a = newTask(r, 'a');
   const b = newTask(r, 'b');
   for (let i = 0; i < 8 && [a, b].some((id) => taskStatus(r.env.db, id) !== 'needs_review'); i += 1) await r.daemon.worker.tick();

@@ -352,7 +352,8 @@ CREATE TABLE approval (
   comment      TEXT,
   at           TEXT NOT NULL,
   mandate_id   TEXT,                          -- 위임 승인일 때만: 정책 delegation.mandates[].id (ADR-0016). 사람 행은 NULL
-  via          TEXT CHECK (via IS NULL OR via IN ('cli','web','delegate'))   -- 결정 경로(자기 신고, 감사용). 옛 행은 NULL
+  via          TEXT CHECK (via IS NULL OR via IN ('cli','web','delegate')),  -- 결정 경로(자기 신고, 감사용). 옛 행은 NULL
+  seen_hash    TEXT                           -- 업무에 대한 사람의 승인·거절·취소·변경 요청 순간에 `show` 가 보여 주던 대상 해시 (그림자 판정과 짝짓는 근거). subject_hash 와 달리 거절·취소에도 남는다. 옛 행은 NULL
 );
 CREATE INDEX approval_subject ON approval(subject_kind, subject_id, at);
 
@@ -379,7 +380,8 @@ CREATE TABLE delegate_review (
   reason       TEXT NOT NULL,                 -- AI 사유 또는 사람에게 온 이유 (200자)
   outcome      TEXT NOT NULL,                 -- 엔진 결과: 'recorded' 또는 거부 코드 (예: not_eligible)
   cost_usd     REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
-  at           TEXT NOT NULL
+  at           TEXT NOT NULL,
+  mode         TEXT NOT NULL DEFAULT 'live' CHECK (mode IN ('live','shadow'))  -- 기록할 때의 위임 모드. shadow 면 outcome='shadow' (승인 행 없음)
 );
 CREATE INDEX delegate_review_task ON delegate_review(task_id, subject_hash);
 CREATE INDEX delegate_review_at ON delegate_review(at);
@@ -398,7 +400,8 @@ CREATE TABLE delegation_control (
 CREATE INDEX delegation_control_at ON delegation_control(at);
 
 -- 고객 연락처 (결정 위임 D-B11, ADR-0016). 위임 승인이 받는 사람을 확인하는 근거. 사람만 쓴다(승인 소켓의 `contacts` 명령). 에이전트·검토 화면·위임 보유자는 쓰기 경로가 없다.
--- address 는 정규화된 주소(소문자, 표시 이름 없음). suppressed 는 위임으로 보낼 수 없고(사람이 직접 승인은 가능), 다시 active 로 되돌리는 경로는 v1 에 없다.
+-- address 는 정규화된 주소(소문자, 표시 이름 없음). suppressed 는 위임으로 보낼 수 없고(메일 도구는 사람이 승인해도 보내지 않는다, ADR-0017), 다시 active 로 되돌리는 경로는 v1 에 없다.
+-- 쓰기는 사람만 하지만 한 가지 예외가 있다: 호스트의 결정론적 반송 처리(ADR-0017 `applyMailFeedback`)가 active → suppressed 로 좁힐 수 있다(suppressed_by NULL = 호스트, event source='mail' 감사 기록). 새 행을 만들거나 active 로 되돌리지는 않는다.
 CREATE TABLE contact (
   address        TEXT PRIMARY KEY CHECK (address = lower(address) AND address = trim(address) AND instr(address, '@') > 1),
   label          TEXT,

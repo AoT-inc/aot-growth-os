@@ -23,6 +23,8 @@ export interface MandateOptions {
   cooldown?: string;
   guidance?: string;
   expires?: string;
+  /** 기본 live (옛 시험이 실제 승인을 기대한다). `null` 이면 mode 줄을 쓰지 않는다(생략 = shadow) */
+  mode?: 'shadow' | 'live' | null;
   /** 받는 사람 규칙(D-B11). 기본 known_contacts. `null` 이면 규칙 줄을 쓰지 않는다(거부 시험용) */
   recipients?: { kind: 'known_contacts' } | { kind: 'domains'; domains: string[] } | null;
 }
@@ -55,6 +57,7 @@ export function mandateLines(options: MandateOptions = {}): string {
     `      cooldown: ${options.cooldown ?? '1h'}`,
     `      guidance: '${options.guidance ?? 'routine notices only; escalate prices, contracts and apologies'}'`,
     `      expires: ${options.expires ?? '2026-12-31'}`,
+    ...(options.mode === null ? [] : [`      mode: ${options.mode ?? 'live'}`]),
   ].join('\n');
 }
 
@@ -132,8 +135,8 @@ export const approvalsOf = (db: Db, taskId: string) =>
   ).map((row) => ({ ...row }));
 
 export const reviewsOf = (db: Db, taskId: string) =>
-  db.all<{ verdict: string; outcome: string; reason: string; subject_hash: string; mandate_id: string; cost_usd: number }>(
-    'SELECT verdict, outcome, reason, subject_hash, mandate_id, cost_usd FROM delegate_review WHERE task_id = ? ORDER BY id', [taskId],
+  db.all<{ verdict: string; outcome: string; reason: string; subject_hash: string; mandate_id: string; cost_usd: number; mode: string }>(
+    'SELECT verdict, outcome, reason, subject_hash, mandate_id, cost_usd, mode FROM delegate_review WHERE task_id = ? ORDER BY id', [taskId],
   );
 
 export const controlsOf = (db: Db) =>

@@ -33,6 +33,7 @@ import { TaskWorker, type AdapterSelector, type EffectTool, type LeaseParams, ty
 
 import { createAgentExecutor, registeredAdapterNames, type AgentOptions } from './agent-executor.ts';
 import { createDelegateCycle, type DelegateCycle, type DelegateReviewer } from './delegate-cycle.ts';
+import { createMailRuntime, type MailOptions, type MailRuntime } from './mail.ts';
 import { createMcpRuntime, type McpOptions, type McpRuntime } from './mcp.ts';
 import { createPhoneRuntime, type PhoneOptions, type PhoneRuntime } from './phone.ts';
 import { createExperimentCycle, createPolicyRiskJudge, type ExperimentCycle, type ExperimentCycleOptions } from './cycle.ts';
@@ -126,6 +127,11 @@ export interface AssembleOptions {
    */
   phone?: PhoneOptions;
   /**
+   * 메일 도구 (ADR-0017). 주면 메일 부작용 도구가 워커의 `tools` 에 합쳐지고, 에이전트 실행기가 있으면 게이트웨이에 `mail_send` 가 열린다.
+   * 도구가 열려도 명세의 `allowed_tools`(target `mail:<보내는 사람 키>` 필수)와 정책 판정, 초안 승인이 모두 통과해야 메일이 나간다.
+   */
+  mail?: MailOptions;
+  /**
    * 오너 MCP 서버 커넥터 (ADR-0018). 주면 오너가 선언한 MCP 도구(`mcp_<site>_<as>`)가 게이트웨이에 열릴 수 있고, 쓰기 도구는 워커의 `tools` 에 부작용 도구로 합쳐진다.
    * 도구가 열려도 명세의 `allowed_tools`, 호출별 정책 판정(`mcp_<site>_<as>.call`), 부작용 원장·초안 승인이 모두 통과해야 한다. 커넥터 프로세스는 `Daemon.mcp.start()` 가 띄운다.
    */
@@ -167,6 +173,20 @@ function withPhone(agent: NonNullable<AssembleOptions['agent']>, phone: PhoneRun
   };
 }
 
+/** 메일 도구 선언과 run 별 실행기를 에이전트 옵션에 더한다. 같은 이름의 도구가 이미 있으면 거부한다 */
+function withMail(agent: NonNullable<AssembleOptions['agent']>, mail: MailRuntime): NonNullable<AssembleOptions['agent']> {
+  const existing = agent.tools ?? [];
+  for (const spec of mail.toolSpecs) {
+    if (existing.some((tool) => tool.tool === spec.tool)) throw new Error(`tool '${spec.tool}' is already configured; the mail tool provides it`);
+  }
+  const previous = agent.runExecutors;
+  return {
+    ...agent,
+    tools: [...existing, ...mail.toolSpecs],
+    runExecutors: (context) => new Map([...(previous?.(context) ?? []), ...mail.executorsFor(context)]),
+  };
+}
+
 /** MCP 도구 선언과 run 별 실행기를 에이전트 옵션에 더한다. 같은 이름의 도구가 이미 있으면 거부한다 (전화의 withPhone 과 같은 모양) */
 function withMcp(agent: NonNullable<AssembleOptions['agent']>, mcp: McpRuntime): NonNullable<AssembleOptions['agent']> {
   const existing = agent.tools ?? [];
@@ -186,7 +206,7 @@ function mergeEffectTools<T>(...groups: Readonly<Record<string, T>>[]): Record<s
   const out: Record<string, T> = {};
   for (const group of groups) {
     for (const [name, tool] of Object.entries(group)) {
-      if (Object.hasOwn(out, name)) throw new Error(`effect tool '${name}' is provided more than once (options.tools, the phone capability, or the mcp connector)`);
+      if (Object.hasOwn(out, name)) throw new Error(`effect tool '${name}' is provided more than once (options.tools, the phone capability, the mail tool, or the mcp connector)`);
       out[name] = tool;
     }
   }
@@ -215,6 +235,8 @@ export interface Daemon {
   cycle: ExperimentCycle | null;
   /** 전화 런타임 (webhook 수신, 마감 확인). `phone` 옵션이 없으면 null */
   phone: PhoneRuntime | null;
+  /** 메일 런타임 (ADR-0017). `mail` 옵션이 없으면 null */
+  mail: MailRuntime | null;
   /** MCP 커넥터 런타임 (`start()` 로 커넥터 프로세스를 띄우고 `close()` 로 끝낸다). `mcp` 옵션이 없으면 null */
   mcp: McpRuntime | null;
   /** 위임 주기 (ADR-0016, 제안): 위임 승인 풀어 주기 + 적격 업무 검토. main 루프가 tick 뒤마다 `advance()` 를 부른다. 소켓에 닿지 않는다 */
@@ -242,10 +264,12 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
   });
   const toolCallPolicy = createToolCallPolicy({ db: options.db, store });
   const phone = options.phone === undefined ? null : createPhoneRuntime({ db: options.db, clock: options.clock, store, options: options.phone });
+  const mail = options.mail === undefined ? null : createMailRuntime({ db: options.db, clock: options.clock, options: options.mail });
   const mcp = options.mcp === undefined ? null : createMcpRuntime({ clock: options.clock, options: options.mcp });
   const withPhoneAgent = options.agent === undefined || phone === null ? options.agent : withPhone(options.agent, phone);
-  const agentOptions = withPhoneAgent === undefined || mcp === null ? withPhoneAgent : withMcp(withPhoneAgent, mcp);
-  const tools = phone === null && mcp === null ? options.tools : mergeEffectTools(options.tools ?? {}, phone?.effectTools ?? {}, mcp?.effectTools ?? {});
+  const withMailAgent = withPhoneAgent === undefined || mail === null ? withPhoneAgent : withMail(withPhoneAgent, mail);
+  const agentOptions = withMailAgent === undefined || mcp === null ? withMailAgent : withMcp(withMailAgent, mcp);
+  const tools = phone === null && mail === null && mcp === null ? options.tools : mergeEffectTools(options.tools ?? {}, phone?.effectTools ?? {}, mail?.effectTools ?? {}, mcp?.effectTools ?? {});
   const executor = options.executor ?? (agentOptions === undefined
     ? undefined
     : createAgentExecutor({ db: options.db, clock: options.clock, agent: agentOptions, toolCallPolicy }));
@@ -335,6 +359,7 @@ export function assembleDaemon(options: AssembleOptions): Daemon {
     measurementSignals,
     cycle,
     phone,
+    mail,
     mcp,
     delegation,
     handleChannelRequest,

@@ -9,7 +9,7 @@ import { createApiClient } from './api-runtime.ts';
 import { schemaHashOf } from './canonical.ts';
 import { createMcpClient, type McpClient } from './client.ts';
 import { createHttpTransport } from './http-transport.ts';
-import { createRedactor, safeText, type Redactor } from './redact.ts';
+import { createRedactor, safeText, secretPieces, type Redactor } from './redact.ts';
 import { createStdioTransport } from './stdio-transport.ts';
 import type { Transport } from './transport.ts';
 import {
@@ -42,7 +42,7 @@ function build(config: ConnectorConfig): Runtime {
   const need = (name: string): string => {
     const value = envValue(name);
     if (value === undefined) throw new ConnectorFailure('config_invalid', `environment variable ${name} is not set for the connector`, true);
-    secrets.push(value);
+    secrets.push(value, ...secretPieces(value));
     return value;
   };
   let transport: Transport;

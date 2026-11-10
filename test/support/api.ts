@@ -37,12 +37,12 @@ export const draftPostDecl = (over: Record<string, unknown> = {}): Record<string
   scope: 'public', impact: 'external_effect', side_effect: true, approval: 'draft', target: 'site:web/posts',
   args: {
     slug: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{2,60}$', required: true },
-    date: { type: 'string', pattern: '^20[0-9]{2}-[01][0-9]-[0-3][0-9]$', required: true },
-    ko_title: { type: 'string', max_length: 120, pattern: '^[^\\n\\r]+$', required: true },
-    ko_excerpt: { type: 'string', max_length: 300, pattern: '^[^\\n\\r]+$', required: true },
+    date: { type: 'string', pattern: '^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$', required: true },
+    ko_title: { type: 'string', max_length: 120, pattern: '^[^\\n\\r\\u2028\\u2029\\u0085]+$', required: true },
+    ko_excerpt: { type: 'string', max_length: 300, pattern: '^[^\\n\\r\\u2028\\u2029\\u0085]+$', required: true },
     ko_body: { type: 'string', max_length: 20000, required: true },
-    en_title: { type: 'string', max_length: 120, pattern: '^[^\\n\\r]+$', required: true },
-    en_excerpt: { type: 'string', max_length: 300, pattern: '^[^\\n\\r]+$', required: true },
+    en_title: { type: 'string', max_length: 120, pattern: '^[^\\n\\r\\u2028\\u2029\\u0085]+$', required: true },
+    en_excerpt: { type: 'string', max_length: 300, pattern: '^[^\\n\\r\\u2028\\u2029\\u0085]+$', required: true },
     en_body: { type: 'string', max_length: 20000, required: true },
   },
   request: {

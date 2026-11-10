@@ -92,7 +92,7 @@
             },
             "date": {
               "type": "string",
-              "pattern": "^20[0-9]{2}-[01][0-9]-[0-3][0-9]$",
+              "pattern": "^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
               "required": true
             },
             "image": {
@@ -102,13 +102,13 @@
             },
             "ko_title": {
               "type": "string",
-              "pattern": "^[^\\n\\r]+$",
+              "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
               "required": true,
               "max_length": 120
             },
             "ko_excerpt": {
               "type": "string",
-              "pattern": "^[^\\n\\r]+$",
+              "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
               "required": true,
               "max_length": 300
             },
@@ -119,13 +119,13 @@
             },
             "en_title": {
               "type": "string",
-              "pattern": "^[^\\n\\r]+$",
+              "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
               "required": true,
               "max_length": 120
             },
             "en_excerpt": {
               "type": "string",
-              "pattern": "^[^\\n\\r]+$",
+              "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
               "required": true,
               "max_length": 300
             },
@@ -180,7 +180,7 @@
             "/commit/sha",
             "/commit/html_url"
           ],
-          "pin": "sha256:5af3a543d39cbaa2a90c2b13073f780bfb24448efc0ea96e29d5476ad879e86c"
+          "pin": "sha256:d19f0fa3898e6e610d0b59540514b126088820ea32afe76c4232cac44bb4b76b"
         },
         {
           "name": "list_images",
@@ -201,7 +201,7 @@
           "returns": [
             "/*/name"
           ],
-          "pin": "sha256:da00f44ea858af11d5f4cdb5ff8400ea01ab80a41396d22e1ab93736c80a6f6f"
+          "pin": "sha256:b8b31e3f848d73d32040f6de8cb648186e21ef0df8ecc63d1627130f9979dff9"
         },
         {
           "name": "list_posts",
@@ -222,7 +222,7 @@
           "returns": [
             "/*/name"
           ],
-          "pin": "sha256:7fe5c7bb0ad8fe90898f5760cd94f25f131c4abeeb959af61d048b26deff9243"
+          "pin": "sha256:d60bdb54bc746d33d7b69022b7c7f84a73c69c500a2bc6016e7294c3fc17a192"
         }
       ]
     }

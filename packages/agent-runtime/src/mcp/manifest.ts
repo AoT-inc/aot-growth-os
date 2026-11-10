@@ -212,7 +212,8 @@ function parseTool(raw: unknown, site: string, label: string, problems: string[]
     if (op !== null && problems.length === before) {
       const basis = {
         base_url: api.baseUrl, network: api.network,
-        auth: api.auth.kind === 'header' ? { kind: 'header', header: api.auth.header.toLowerCase() } : { kind: api.auth.kind },
+        auth: api.auth.kind === 'header' ? { kind: 'header', header: api.auth.header.toLowerCase(), value_env: api.auth.valueEnv }
+          : api.auth.kind === 'bearer' ? { kind: 'bearer', token_env: api.auth.tokenEnv } : { kind: api.auth.kind },
         tool: { name: name as string, impact: impact as string, side_effect: sideEffect as boolean, approval: impact === 'read' ? null : (approval as string), scope: scope as string, target: target as string, ack_post_is_read: raw['ack_post_is_read'] === true },
         op,
       };

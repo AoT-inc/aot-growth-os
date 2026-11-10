@@ -13,6 +13,8 @@ export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 export const DEFAULT_STRING_MAX_LENGTH = 256;
 export const MAX_STRING_MAX_LENGTH = 32768;
 export const MAX_RETURN_PATHS = 20;
+/** 패턴이 있는 문자열의 길이 상한 (패턴은 데몬 프로세스에서 에이전트 값으로 실행된다) */
+export const MAX_PATTERN_STRING_LENGTH = 2048;
 
 export type ApiArgType = 'string' | 'integer' | 'boolean';
 export interface ApiArg {
@@ -93,6 +95,47 @@ export function parseTemplate(text: string): TemplatePart[] | string {
   return parts;
 }
 
+// ===== 패턴 =====
+
+/** 오너 패턴은 값 전체와 일치해야 한다(앵커가 없거나 `^a|b$` 처럼 일부만 묶여도 전체 일치로 검사한다). 컴파일은 한 번만 한다 */
+const compiled = new Map<string, RegExp>();
+export function fullMatch(pattern: string): RegExp {
+  let regex = compiled.get(pattern);
+  if (regex === undefined) {
+    regex = new RegExp(`^(?:${pattern})$`, 'u');
+    compiled.set(pattern, regex);
+  }
+  return regex;
+}
+
+/** 파국적 역추적을 낳는 모양을 선언 단계에서 거른다: 반복되는 그룹 안의 반복·선택(`(a+)+`, `(a|aa)*`), 역참조. 문제가 있으면 사유 */
+export function riskyPattern(pattern: string): string | null {
+  if (/\\[1-9k]/.test(pattern)) return 'must not use back-references';
+  const stack: { hasInnerRepeat: boolean }[] = [];
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i]!;
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === '[') { // 문자 클래스는 통째로 건너뛴다
+      i += 1;
+      while (i < pattern.length && pattern[i] !== ']') { if (pattern[i] === '\\') i += 1; i += 1; }
+      continue;
+    }
+    if (ch === '(') stack.push({ hasInnerRepeat: false });
+    else if (ch === '|') { const top = stack[stack.length - 1]; if (top !== undefined) top.hasInnerRepeat = true; }
+    else if (ch === '+' || ch === '*' || (ch === '{' && /^\{\d+,\d*\}/.test(pattern.slice(i)))) {
+      const top = stack[stack.length - 1];
+      if (top !== undefined) top.hasInnerRepeat = true;
+    } else if (ch === ')') {
+      const group = stack.pop();
+      const next = pattern[i + 1];
+      const repeated = next === '+' || next === '*' || (next === '{' && /^\{\d+,\d*\}/.test(pattern.slice(i + 1)));
+      if (group !== undefined && repeated && group.hasInnerRepeat) return 'repeats a group that itself repeats or alternates (catastrophic backtracking); rewrite it without nested repetition';
+      if (group?.hasInnerRepeat === true) { const outer = stack[stack.length - 1]; if (outer !== undefined) outer.hasInnerRepeat = true; }
+    }
+  }
+  return null;
+}
+
 // ===== 선언 검증 =====
 
 function parseArgs(raw: unknown, label: string, problems: string[]): Record<string, ApiArg> {
@@ -117,7 +160,11 @@ function parseArgs(raw: unknown, label: string, problems: string[]): Record<stri
       if (type !== 'string') problems.push(`${at}.pattern is only for strings`);
       else if (typeof spec['pattern'] !== 'string' || spec['pattern'].length > 200) problems.push(`${at}.pattern must be a string of at most 200 characters`);
       else {
-        try { new RegExp(spec['pattern'], 'u'); arg.pattern = spec['pattern']; } catch { problems.push(`${at}.pattern is not a valid regular expression`); }
+        const risky = riskyPattern(spec['pattern']);
+        if (risky !== null) problems.push(`${at}.pattern ${risky}`);
+        else {
+          try { fullMatch(spec['pattern']); arg.pattern = spec['pattern']; } catch { problems.push(`${at}.pattern is not a valid regular expression`); }
+        }
       }
     }
     if (type === 'integer') {
@@ -131,6 +178,7 @@ function parseArgs(raw: unknown, label: string, problems: string[]): Record<stri
       if (type === 'string') {
         const maxLength = spec['max_length'] ?? DEFAULT_STRING_MAX_LENGTH;
         if (!Number.isInteger(maxLength) || (maxLength as number) < 1 || (maxLength as number) > MAX_STRING_MAX_LENGTH) problems.push(`${at}.max_length must be an integer 1-${MAX_STRING_MAX_LENGTH}`);
+        else if (spec['pattern'] !== undefined && (maxLength as number) > MAX_PATTERN_STRING_LENGTH) problems.push(`${at}: a string with a pattern may be at most ${MAX_PATTERN_STRING_LENGTH} long (patterns run in the daemon; free text should have no pattern)`);
         else arg.max_length = maxLength as number;
       } else if (spec['max_length'] !== undefined) problems.push(`${at}.max_length is only for strings`);
     }
@@ -225,7 +273,7 @@ export function parseApiOperation(raw: Record<string, unknown>, impact: unknown,
   // 경로
   const path = reqRaw['path'];
   let pathText = '';
-  if (typeof path !== 'string' || !path.startsWith('/') || path.length > 512 || path.includes('//') || path.includes('?') || path.includes('#')) problems.push(`${label}.request.path must be a path like /repos/{name}/x (no query, no '//')`);
+  if (typeof path !== 'string' || !path.startsWith('/') || path.length > 512 || path.endsWith('/') || path.includes('//') || path.includes('?') || path.includes('#')) problems.push(`${label}.request.path must be a path like /repos/{name}/x (no query, no '//', no trailing '/')`);
   else {
     pathText = path;
     for (const segment of path.slice(1).split('/')) {
@@ -312,7 +360,7 @@ export function parseApiOperation(raw: Record<string, unknown>, impact: unknown,
 export interface ApiPinBasis {
   base_url: string;
   network: ApiNetwork;
-  auth: { kind: string; header?: string };
+  auth: { kind: string; header?: string; value_env?: string; token_env?: string };
   tool: { name: string; impact: string; side_effect: boolean; approval: string | null; scope: string; target: string; ack_post_is_read: boolean };
   op: ApiOperation;
 }
@@ -346,7 +394,7 @@ export function checkApiArguments(op: ApiOperation, args: unknown, options: { ef
       if (LONE_SURROGATE.test(value)) return `argument '${name}' is not well-formed Unicode`;
       if (value.includes('\u0000')) return `argument '${name}' contains a NUL character`;
       if (value.length > (spec.max_length ?? DEFAULT_STRING_MAX_LENGTH)) return `argument '${name}' is longer than ${spec.max_length ?? DEFAULT_STRING_MAX_LENGTH}`;
-      if (spec.pattern !== undefined && !new RegExp(spec.pattern, 'u').test(value)) return `argument '${name}' does not match its pattern`;
+      if (spec.pattern !== undefined && !fullMatch(spec.pattern).test(value)) return `argument '${name}' does not match its pattern`;
     } else if (spec.type === 'integer') {
       if (typeof value !== 'number' || !Number.isSafeInteger(value)) return `argument '${name}' must be an integer`;
       if (value < (spec.min ?? Number.MIN_SAFE_INTEGER) || value > (spec.max ?? Number.MAX_SAFE_INTEGER)) return `argument '${name}' is out of range`;

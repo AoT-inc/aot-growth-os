@@ -43,7 +43,10 @@ export interface ApiHttpResponse {
 
 interface Resolved { address: string; family: number }
 
-async function resolveChecked(host: string, network: ApiNetwork, signal: AbortSignal): Promise<Resolved[]> {
+export type LookupAll = (host: string) => Promise<readonly { address: string; family: number }[]>;
+const systemLookup: LookupAll = (host) => dnsLookup(host, { all: true, verbatim: true });
+
+async function resolveChecked(host: string, network: ApiNetwork, signal: AbortSignal, lookup: LookupAll): Promise<Resolved[]> {
   const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   const literal = addressFamily(bare);
   let found: readonly Resolved[];
@@ -51,7 +54,7 @@ async function resolveChecked(host: string, network: ApiNetwork, signal: AbortSi
   else {
     try {
       found = await Promise.race([
-        dnsLookup(bare, { all: true, verbatim: true }),
+        lookup(bare),
         new Promise<never>((_, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }),
       ]);
     } catch {
@@ -76,7 +79,8 @@ function pinnedLookup(addresses: readonly Resolved[]): LookupFunction {
 const headerValue = (value: string | string[] | undefined): string | undefined => (Array.isArray(value) ? value[0] : value);
 
 /** 요청 하나를 보낸다. 실패는 ConnectorFailure (definite: 서버에 요청이 닿지 않았음이 확실한가) */
-export async function executeApiRequest(target: ApiHttpTarget, built: BuiltRequest, outer: AbortSignal | undefined): Promise<ApiHttpResponse> {
+/** @param lookup 시험이 주소 해석 결과를 정한다(DNS 재바인딩·혼합 응답 시험). 운영 코드는 주지 않는다 */
+export async function executeApiRequest(target: ApiHttpTarget, built: BuiltRequest, outer: AbortSignal | undefined, lookup: LookupAll = systemLookup): Promise<ApiHttpResponse> {
   const control = new AbortController();
   const onOuter = (): void => control.abort(new Error('cancelled by the host'));
   if (outer?.aborted === true) throw new ConnectorFailure('aborted', 'cancelled before it was sent', true);
@@ -86,7 +90,7 @@ export async function executeApiRequest(target: ApiHttpTarget, built: BuiltReque
   const signal = control.signal;
   try {
     const url = target.baseUrl;
-    const addresses = await resolveChecked(url.hostname, target.network, signal);
+    const addresses = await resolveChecked(url.hostname, target.network, signal, lookup);
     if (signal.aborted) throw new ConnectorFailure('aborted', 'cancelled before it was sent', true);
     return await new Promise<ApiHttpResponse>((resolve, reject) => {
       let settled = false;

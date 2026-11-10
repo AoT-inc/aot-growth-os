@@ -57,7 +57,7 @@ test('declaration: the closed grammar rejects what would make it a general HTTP 
     ['reserved request header', withTool(listPostsDecl({ request: { method: 'GET', path: '/a', headers: { Authorization: 'x' } } })), /non-reserved header/],
     ['optional argument in the body', withTool(draft({ args: { a: { type: 'string', pattern: '^x$' } }, request: { method: 'POST', path: '/a', body: { a: { $arg: 'a' } } } })), /must be required/],
     ['body size that could pass 1 MiB', withTool(draft({ args: { a: { type: 'string', max_length: 32768, required: true } }, request: { method: 'POST', path: '/a', body: { a: { $template: '{a|json_string}{a|json_string}{a|json_string}{a|json_string}{a|json_string}{a|json_string}' }, b: { $template: '{a|json_string}{a|json_string}{a|json_string}{a|json_string}{a|json_string}{a|json_string}' } } } })), /could exceed/],
-    ['invalid pattern', withTool(getPostDecl({ args: { file: { type: 'string', pattern: '(', required: true } } })), /not a valid regular expression/],
+    ['invalid pattern', withTool(getPostDecl({ args: { file: { type: 'string', pattern: '[', required: true } } })), /not a valid regular expression/],
     ['plain http beyond loopback', apiSiteRaw(base, { transport: { kind: 'api', base_url: 'http://example.com', network: 'public' } }), /must be https/],
     ['credentials in base_url', apiSiteRaw(base, { transport: { kind: 'api', base_url: 'https://u:p@example.com', network: 'public' } }), /credentials/],
     ['query in base_url', apiSiteRaw(base, { transport: { kind: 'api', base_url: 'https://example.com/?a=1', network: 'public' } }), /no query/],
@@ -316,4 +316,105 @@ test('pin: matching pins open every tool; a missing pin, a wrong pin and a chang
   assert.deepEqual(rig.manifest.tools.map((tool) => rig.client.stateOf(tool.gatewayName).status), ['open', 'open', 'closed']);
   assert.deepEqual(rig.client.stateOf('mcp_web_draft_post'), { status: 'closed', reason: 'drift' });
   assert.ok(rig.events.some((e) => e.type === 'tool_state' && e.state === 'closed:drift'));
+});
+
+// ===== 검사 반영 (독립 검사 지적 1~9) =====
+
+import { executeApiRequest } from '../../packages/agent-runtime/src/mcp/connector/api-http.ts';
+import { checkApiArguments, riskyPattern } from '../../packages/agent-runtime/src/mcp/connector/api-decl.ts';
+import { createRedactor, secretPieces } from '../../packages/agent-runtime/src/mcp/connector/redact.ts';
+
+test('redaction: a value with an auth-scheme prefix registers the bare token too (header/bearer, API and MCP alike)', async (t) => {
+  assert.deepEqual(secretPieces('token abcSECRET123'), ['abcSECRET123']);
+  assert.deepEqual(secretPieces('Bearer  abcSECRET123 '), ['abcSECRET123']);
+  assert.deepEqual(secretPieces('plainsecret'), []);
+  assert.deepEqual(secretPieces('a b'), [], 'short pieces are not registered (they would garble ordinary text)');
+  const redactor = createRedactor(['token abcSECRET123', ...secretPieces('token abcSECRET123')]);
+  assert.equal(redactor.text('x abcSECRET123 y token abcSECRET123'), 'x [redacted] y [redacted]');
+  // 실제 커넥터 프로세스: 서비스가 알맹이만 되돌려 줘도 가려진다
+  const service = await startFakeService(t, '', (_s, res) => json(res, 200, [{ name: 'echo API_BARE_TOKEN' }]));
+  const rig = await startApiSite(t, apiSiteRaw(service.baseUrl));
+  const bare = API_TOKEN.replace(/^token /, '');
+  service.handle((_s, res) => json(res, 200, [{ name: `echo ${bare}` }]));
+  const out = await callOf(rig, 'list_posts', {});
+  assert.ok(out.ok && !JSON.stringify(out.result).includes(bare) && JSON.stringify(out.result).includes('[redacted]'));
+});
+
+const FAKE_BUILT = { method: 'GET', target: '/x', headers: { accept: 'application/json' }, body: null } as const;
+const target = (network: 'public' | 'tailnet' | 'loopback', baseUrl: string) => ({ baseUrl: new URL(baseUrl), network, timeoutMs: 3000, maxBodyBytes: 65536, authHeaders: {} });
+
+test('DNS: every resolved address is checked (a public answer mixed with a private one is refused), and the connection is pinned to the checked address with no second lookup', async (t) => {
+  const service = await startFakeService(t);
+  const refused = async (network: 'public' | 'tailnet', answers: string[]): Promise<void> => {
+    await assert.rejects(
+      executeApiRequest(target(network, 'https://svc.example.test'), FAKE_BUILT, undefined, () => Promise.resolve(answers.map((address) => ({ address, family: address.includes(':') ? 6 : 4 })))),
+      (error: { code?: string; definite?: boolean }) => error.code === 'address_not_allowed' && error.definite === true,
+      answers.join(','),
+    );
+  };
+  await refused('public', ['8.8.8.8', '127.0.0.1']);
+  await refused('public', ['127.0.0.1', '8.8.8.8']);
+  await refused('public', ['8.8.8.8', '169.254.169.254']);
+  await refused('public', ['8.8.8.8', '100.64.0.1']);
+  await refused('tailnet', ['100.64.0.1', '10.0.0.1']);
+  await refused('public', ['::ffff:127.0.0.1']);
+  await refused('public', ['64:ff9b::7f00:1']);
+  await refused('public', ['2002:7f00:1::']);
+  assert.equal(service.seen.length, 0);
+  // 재바인딩 모사: 이름은 처음에 루프백으로 풀린다. 연결은 그 주소로 가고 연결 때 다시 풀지 않는다(풀이 한 번뿐이다)
+  let lookups = 0;
+  const lookup = () => { lookups += 1; return Promise.resolve([{ address: lookups === 1 ? '127.0.0.1' : '8.8.8.8', family: 4 }]); };
+  const response = await executeApiRequest(target('loopback', `http://rebind.test:${service.port}`), FAKE_BUILT, undefined, lookup);
+  assert.equal(response.status, 200);
+  assert.equal(lookups, 1, 'resolved exactly once');
+  assert.equal(service.seen.length, 1);
+  assert.equal(service.seen[0]!.headers['host'], `rebind.test:${service.port}`);
+  // 두 번째 호출은 새로 풀고(공인 주소가 나와) loopback 규칙에서 거부된다
+  await assert.rejects(executeApiRequest(target('loopback', `http://rebind.test:${service.port}`), FAKE_BUILT, undefined, lookup), (error: { code?: string }) => error.code === 'address_not_allowed');
+  assert.equal(service.seen.length, 1);
+});
+
+test('address policy: IPv4-mapped, NAT64 and 6to4 forms follow the address they carry', () => {
+  for (const network of ['public', 'tailnet'] as const) {
+    for (const denied of ['::ffff:127.0.0.1', '::ffff:10.1.2.3', '::ffff:169.254.169.254', '::ffff:a9fe:a9fe', '64:ff9b::a9fe:a9fe', '64:ff9b::7f00:1', '2002:a9fe:a9fe::', '2002:0a00:1::', '2002:c0a8:101::']) assert.equal(addressAllowed(network, denied), false, `${network} ${denied}`);
+    for (const allowed of ['::ffff:8.8.8.8', '64:ff9b::808:808', '2002:808:808::']) assert.equal(addressAllowed(network, allowed), true, `${network} ${allowed}`);
+  }
+  assert.equal(addressAllowed('tailnet', '::ffff:100.64.0.1'), false, 'tailnet IPv6 forms are not supported');
+  assert.equal(addressAllowed('tailnet', 'fd7a:115c:a1e0::1'), false);
+});
+
+test('patterns: they must match the whole value; catastrophic shapes and back-references are refused at declaration; a pattern string has a length cap', () => {
+  for (const bad of ['^(a+)+$', '(a+)*', '^(a|aa)+$', '^(x+x+)+y$', '^((ab)*)*$', '^(a)\\1$', '^(a{2,})+$']) assert.notEqual(riskyPattern(bad), null, bad);
+  for (const good of ['^[a-z0-9][a-z0-9-]{2,60}$', '^[A-Za-z0-9_-]{1,64}\\.(webp|jpg|png)$', '^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$', '^[^\\n\\r]+$', 'abc', '^(ab){2}$']) assert.equal(riskyPattern(good), null, good);
+  const declared = (pattern: string, extra: Record<string, unknown> = {}) => withTool(getPostDecl({ args: { file: { type: 'string', pattern, required: true, ...extra } }, request: { method: 'GET', path: '/x/{file}' }, returns: ['/name'] }));
+  assert.match(problemsOf(declared('^(a+)+$')), /catastrophic backtracking/);
+  assert.match(problemsOf(declared('^a+$', { max_length: 5000 })), /at most 2048/);
+  assert.equal(problemsOf(declared('^a+$', { max_length: 2048 })), '');
+  // 앵커가 없는 패턴과 `^a|b$` 도 전체 일치로 검사한다
+  const op = parseMcpSite(apiSiteRaw(base, { tools: [getPostDecl({ args: { file: { type: 'string', pattern: 'ab', required: true } }, request: { method: 'GET', path: '/x/{file}' }, returns: ['/name'] })] })).tools[0]!.api!.op;
+  assert.equal(checkApiArguments(op, { file: 'ab' }), null);
+  for (const value of ['xaby', 'ab?', 'a b', 'ab\n']) assert.match(checkApiArguments(op, { file: value }) ?? '', /does not match/, JSON.stringify(value));
+  const alt = parseMcpSite(apiSiteRaw(base, { tools: [getPostDecl({ args: { file: { type: 'string', pattern: '^a|b$', required: true } }, request: { method: 'GET', path: '/x/{file}' }, returns: ['/name'] })] })).tools[0]!.api!.op;
+  assert.match(checkApiArguments(alt, { file: 'a/../b' }) ?? '', /does not match/);
+  // 오래 걸리는 값도 길이 상한 안에서 즉시 끝난다
+  const started = Date.now();
+  assert.match(checkApiArguments(op, { file: `${'a'.repeat(100000)}!` }) ?? '', /longer than/);
+  assert.ok(Date.now() - started < 200);
+});
+
+test('declaration: a trailing slash in a path is refused; the auth variable name and header name are part of the pin', () => {
+  assert.match(problemsOf(withTool(listPostsDecl({ request: { method: 'GET', path: '/a/' } }))), /request.path/);
+  const pinOf = (over: Record<string, unknown>): string => apiPinOf(parseMcpSite(apiSiteRaw(base, over)).tools[0]!)!;
+  const original = pinOf({});
+  assert.notEqual(pinOf({ auth: { kind: 'header', header: 'Authorization', value_env: 'AOT_API_OTHER_TOKEN' } }), original);
+  assert.notEqual(pinOf({ auth: { kind: 'header', header: 'X-Api-Key', value_env: API_TOKEN_ENV } }), original);
+  assert.equal(pinOf({ auth: { kind: 'header', header: 'authorization', value_env: API_TOKEN_ENV } }), original, 'header name case does not matter');
+});
+
+test('one-line patterns reject U+2028, U+2029 and U+0085 (not only CR and LF)', () => {
+  const op = parseMcpSite(apiSiteRaw(base)).tools[2]!.api!.op;
+  const args = { ...POST_ARGS, effect_key: 'eff-0001' };
+  for (const ch of [' ', ' ', '\u0085', '\n', '\r']) assert.match(checkApiArguments(op, { ...POST_ARGS, ko_title: `a${ch}b` }) ?? '', /does not match/, JSON.stringify(ch));
+  assert.match(checkApiArguments(op, { ...POST_ARGS, date: '2026-19-39' }) ?? '', /does not match/);
+  assert.equal(checkApiArguments(op, { ...args, date: '2026-12-31' }), null);
 });

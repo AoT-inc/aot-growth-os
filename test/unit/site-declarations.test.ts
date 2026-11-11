@@ -110,13 +110,14 @@ test('web: hostile arguments are refused before any request is built', () => {
     ['title newline', { ko_title: '제목\n---\npublished: true' }], ['title NEL', { en_title: 'x\u0085y' }], ['image traversal', { image: '../x.webp' }], ['image path', { image: 'a/b.webp' }],
     ['undeclared branch', { branch: 'main' }], ['undeclared new_branch', { new_branch: 'main' }], ['calendar-impossible date', { date: '2026-02-31' }], ['month 13', { date: '2026-13-01' }],
     ['template braces in ko_body', { ko_body: '{{ x }}' }], ['njk tag in en_body', { en_body: '{% include "y" %}' }], ['comment tag', { ko_body: '{# x #}' }], ['lone brace', { en_body: 'a } b' }],
-    ['NUL in body', { ko_body: 'a\u0000b' }], ['NUL in en body', { en_body: 'a\u0000b' }], ['body too long', { ko_body: 'a'.repeat(20001) }], ['en body too long', { en_body: 'a'.repeat(20001) }],
+    ['NUL in body', { ko_body: 'a\u0000b' }], ['NUL in en body', { en_body: 'a\u0000b' }], ['ESC in body', { ko_body: 'a\u001bb' }], ['BEL in en body', { en_body: 'a\u0007b' }], ['form feed in body', { ko_body: 'a\u000cb' }], ['body too long', { ko_body: 'a'.repeat(10001) }], ['en body too long', { en_body: 'a'.repeat(10001) }],
   ];
   for (const [label, over] of refused) assert.throws(() => build(over), ApiBuildError, label);
   build({ date: '2024-02-29' });
   build({ ko_body: '여러 줄\n\n본문 **굵게** [링크](https://example.com) 코드' });
-  // 2048자를 넘는 긴 글은 이제 통과한다(패턴이 없어 2048 규칙에 묶이지 않는다). 상한은 20000자
-  build({ ko_body: '가'.repeat(20000), en_body: 'a'.repeat(20000) });
+  // 2048자를 넘는 긴 글은 이제 통과한다(패턴이 없어 2048 규칙에 묶이지 않는다). 본문 상한은 10000자(호스트 인자 상한 64 KiB 안의 최악 계산값, api-sites §5)
+  build({ ko_body: '가'.repeat(10000), en_body: 'a'.repeat(10000) });
+  build({ ko_body: '줄바꿈\n탭\t캐리지\r는 허용' }); // 마크다운에 쓰는 공백 제어 문자는 막지 않는다
   build({ ko_body: `${'본문 문장입니다. '.repeat(400)}\n\n**굵게** [링크](https://example.com)`.slice(0, 3000) });
   const longBody = JSON.parse(build({ ko_body: '가'.repeat(5000) }).body!) as { files: { content: string }[] };
   assert.ok(Buffer.from(longBody.files[0]!.content, 'base64').toString('utf8').includes('가'.repeat(5000)));

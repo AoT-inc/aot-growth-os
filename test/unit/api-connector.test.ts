@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { addressAllowed, apiPinOf, buildApiRequest, McpManifestError, parseMcpSite } from '@aot/agent-runtime';
+import { addressAllowed, apiPinOf, buildApiRequest, createMcpToolExecutors, McpManifestError, parseMcpSite, type McpEffectRunner } from '@aot/agent-runtime';
 
 import { json, startFakeService } from '../fixtures/api/fake-service.ts';
 import {
-  API_SECRET_ENV, API_TOKEN, API_TOKEN_ENV, apiSiteRaw, callOf, draftPostDecl, getPostDecl, listPostsDecl, pinnedManifest, POST_ARGS, startApiSite, withPins,
+  API_SECRET_ENV, API_TOKEN, API_TOKEN_ENV, API_WRITE_TOOL, apiSiteRaw, callOf, draftPostDecl, getPostDecl, listPostsDecl, pinnedManifest, POST_ARGS, startApiSite, withPins,
 } from '../support/api.ts';
 import { connectorConfig, startConnector } from '../support/mcp.ts';
 
@@ -423,13 +423,13 @@ test('forbidden_chars: a regex-free list of characters; declaration rules, runti
   const declared = (spec: Record<string, unknown>, type = 'string') => withTool(getPostDecl({ args: { file: { type, required: true, ...spec } }, request: { method: 'GET', path: '/x', query: { q: { $arg: 'file' } } }, returns: ['/name'] }));
   const opOf = (spec: Record<string, unknown>) => parseMcpSite(declared(spec)).tools[0]!.api!.op;
   // 선언 거부
-  for (const [label, list] of [['empty list', []], ['non-array', '{}'], ['non-character item', [1]], ['multi-character item', ['ab']], ['empty-string item', ['']], ['duplicate', ['{', '{']], ['too many', Array.from({ length: 17 }, (_, i) => String.fromCharCode(0x41 + i))], ['lone surrogate', ['\ud800']]] as const) {
+  for (const [label, list] of [['empty list', []], ['non-array', '{}'], ['non-character item', [1]], ['multi-character item', ['ab']], ['empty-string item', ['']], ['duplicate', ['{', '{']], ['too many', Array.from({ length: 65 }, (_, i) => String.fromCharCode(0x100 + i))], ['lone surrogate', ['\ud800']]] as const) {
     assert.match(problemsOf(declared({ forbidden_chars: list })), /forbidden_chars/, label);
   }
   assert.match(problemsOf(declared({ forbidden_chars: ['{'] }, 'integer')), /forbidden_chars is only for strings/);
   assert.match(problemsOf(declared({ forbidden_chars: ['{'] }, 'boolean')), /forbidden_chars is only for strings/);
   // 선언 허용: 16개, 제어 문자, 서로게이트 쌍(한 코드 포인트)
-  assert.equal(problemsOf(declared({ forbidden_chars: Array.from({ length: 16 }, (_, i) => String.fromCharCode(0x41 + i)) })), '');
+  assert.equal(problemsOf(declared({ forbidden_chars: Array.from({ length: 64 }, (_, i) => String.fromCharCode(0x100 + i)) })), '');
   assert.equal(problemsOf(declared({ forbidden_chars: ['\u0000', '\n', '😀'] })), '');
   // 패턴과 같이 쓸 수 있고 그때는 패턴의 2048 규칙이 그대로다. 패턴이 없으면 일반 상한(32768)까지
   assert.equal(problemsOf(declared({ forbidden_chars: ['{'], max_length: 20000 })), '');
@@ -445,7 +445,12 @@ test('forbidden_chars: a regex-free list of characters; declaration rules, runti
   assert.equal(checkApiArguments(op, { file: '가'.repeat(20000) }), null, 'longer than 2048 passes');
   assert.match(checkApiArguments(op, { file: '가'.repeat(20001) }) ?? '', /longer than 20000/);
   for (const bad of ['{{ x }}', '{% include "y" %}', '{# c #}', 'a } b', `${'가'.repeat(5000)}{`, `a\u0000b`, 'x😀y']) assert.notEqual(checkApiArguments(op, { file: bad }), null, JSON.stringify(bad.slice(-12)));
-  assert.match(checkApiArguments(op, { file: 'a{b' }) ?? '', /forbidden character/);
+  assert.match(checkApiArguments(op, { file: 'a{b' }) ?? '', /forbidden character at code point 1\b/);
+  assert.match(checkApiArguments(op, { file: '😁😁{' }) ?? '', /forbidden character at code point 2\b/, 'positions count code points, not UTF-16 units');
+  assert.equal((checkApiArguments(op, { file: 'a{b' }) ?? '').includes('{'), false, 'the value itself is not echoed');
+  // 서로게이트 쌍 바로 뒤와 결합 문자가 붙은 금지 글자, 결합 문자가 붙은 허용 글자
+  for (const bad of ['😁{', '{\u0301', 'e\u0301}']) assert.notEqual(checkApiArguments(op, { file: bad }), null, JSON.stringify(bad));
+  for (const good of ['é', 'e\u0301', '한\u0301글']) assert.equal(checkApiArguments(op, { file: good }), null, JSON.stringify(good));
   // 서로게이트 쌍의 반쪽(다른 이모지)은 😀 의 금지에 걸리지 않는다
   assert.equal(checkApiArguments(op, { file: '😁' }), null);
   assert.equal(checkApiArguments(op, { file: '\ud83d' }) === null, false, 'a lone surrogate is still refused by the generic check');
@@ -459,4 +464,33 @@ test('forbidden_chars: a regex-free list of characters; declaration rules, runti
   const d = parseMcpSite(declared({ forbidden_chars: ['{', '}'] })).tools[0]!;
   assert.notEqual(apiPinOf(c), apiPinOf(d));
   assert.equal(apiPinOf(a), apiPinOf(b));
+});
+
+test('host preflight: the real create_post_branch declaration lets two maximum-size Korean bodies through the 64 KiB argument limit, and one character more is refused', async (t) => {
+  const service = await startFakeService(t);
+  const web = JSON.parse(readFileSync(new URL('../../config/site-declarations/aot-web.json', import.meta.url), 'utf8')) as Record<string, unknown>;
+  const rig = await startApiSite(t, { ...web, transport: { kind: 'api', base_url: service.baseUrl, network: 'loopback' } });
+  const steps: unknown[] = [];
+  const ledger: McpEffectRunner = (_tool, step) => { steps.push(step.request); return Promise.resolve({ state: 'drafted', draftId: 'd' }); };
+  const executor = createMcpToolExecutors(rig.manifest, rig.client, ledger).get(API_WRITE_TOOL)!;
+  const run = (args: Record<string, unknown>) => executor({ runId: 'r', tool: API_WRITE_TOOL, operation: 'call', args: args as never, signal: new AbortController().signal, constraints: { max_usd: 1 }, influencedByExternalInput: false });
+  // 최악의 경우: 제목·요약은 글자당 JSON 6바이트(제어 문자), 본문은 글자당 3바이트(한글), slug·image 는 최대 길이
+  const worst = (bodyChars: number): Record<string, unknown> => ({
+    slug: 'a'.repeat(61), date: '2026-11-11', image: `${'a'.repeat(64)}.webp`,
+    ko_title: '\u0001'.repeat(120), ko_excerpt: '\u0001'.repeat(300), ko_body: '가'.repeat(bodyChars),
+    en_title: '\u0001'.repeat(120), en_excerpt: '\u0001'.repeat(300), en_body: '가'.repeat(bodyChars),
+  });
+  const bytes = (args: Record<string, unknown>) => Buffer.byteLength(JSON.stringify(args), 'utf8');
+  assert.ok(bytes(worst(10000)) <= 64 * 1024, `worst case ${bytes(worst(10000))} bytes`);
+  const out = await run(worst(10000));
+  assert.deepEqual(out.result, { status: 'drafted', draft_id: 'd' });
+  assert.equal(steps.length, 1);
+  // 본문 한 개가 1자 넘으면 선언의 max_length 가 거부한다
+  await assert.rejects(run({ ...worst(10000), ko_body: '가'.repeat(10001) }), /longer than 10000/);
+  // 호스트의 64 KiB 인자 상한이 실제로 걸리는 지점: 본문 10100자 둘은 이미 한도를 넘는다(선언의 max_length 보다 호스트 상한이 먼저 거부한다)
+  assert.ok(bytes(worst(10100)) > 64 * 1024);
+  await assert.rejects(run(worst(10100)), /exceed 65536 bytes/);
+  // 한 글자 덜 찬 한글 본문도 통과한다
+  assert.deepEqual((await run(worst(9999))).result, { status: 'drafted', draft_id: 'd' });
+  assert.equal(steps.length, 2);
 });

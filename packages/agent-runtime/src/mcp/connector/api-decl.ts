@@ -16,7 +16,7 @@ export const MAX_RETURN_PATHS = 20;
 /** 패턴이 있는 문자열의 길이 상한 (패턴은 데몬 프로세스에서 에이전트 값으로 실행된다) */
 export const MAX_PATTERN_STRING_LENGTH = 2048;
 /** `forbidden_chars` 목록 길이 상한 (정규식이 아니라 글자 집합이라 길이 상한이 없어도 선형이다) */
-export const MAX_FORBIDDEN_CHARS = 16;
+export const MAX_FORBIDDEN_CHARS = 64;
 
 export type ApiArgType = 'string' | 'integer' | 'boolean';
 export interface ApiArg {
@@ -409,7 +409,11 @@ export function checkApiArguments(op: ApiOperation, args: unknown, options: { ef
       if (spec.pattern !== undefined && !fullMatch(spec.pattern).test(value)) return `argument '${name}' does not match its pattern`;
       if (spec.forbidden_chars !== undefined) {
         const forbidden = new Set(spec.forbidden_chars);
-        for (const ch of value) if (forbidden.has(ch)) return `argument '${name}' contains a forbidden character`;
+        let index = 0; // 코드 포인트 번호(0부터). 값이나 글자 자체는 오류에 싣지 않는다
+        for (const ch of value) {
+          if (forbidden.has(ch)) return `argument '${name}' contains a forbidden character at code point ${index}`;
+          index += 1;
+        }
       }
     } else if (spec.type === 'integer') {
       if (typeof value !== 'number' || !Number.isSafeInteger(value)) return `argument '${name}' must be an integer`;

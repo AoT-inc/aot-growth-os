@@ -418,3 +418,45 @@ test('one-line patterns reject U+2028, U+2029 and U+0085 (not only CR and LF)', 
   assert.match(checkApiArguments(op, { ...POST_ARGS, date: '2026-19-39' }) ?? '', /does not match/);
   assert.equal(checkApiArguments(op, { ...args, date: '2026-12-31' }), null);
 });
+
+test('forbidden_chars: a regex-free list of characters; declaration rules, runtime check, no 2048 cap, canonical order and pin', () => {
+  const declared = (spec: Record<string, unknown>, type = 'string') => withTool(getPostDecl({ args: { file: { type, required: true, ...spec } }, request: { method: 'GET', path: '/x', query: { q: { $arg: 'file' } } }, returns: ['/name'] }));
+  const opOf = (spec: Record<string, unknown>) => parseMcpSite(declared(spec)).tools[0]!.api!.op;
+  // 선언 거부
+  for (const [label, list] of [['empty list', []], ['non-array', '{}'], ['non-character item', [1]], ['multi-character item', ['ab']], ['empty-string item', ['']], ['duplicate', ['{', '{']], ['too many', Array.from({ length: 17 }, (_, i) => String.fromCharCode(0x41 + i))], ['lone surrogate', ['\ud800']]] as const) {
+    assert.match(problemsOf(declared({ forbidden_chars: list })), /forbidden_chars/, label);
+  }
+  assert.match(problemsOf(declared({ forbidden_chars: ['{'] }, 'integer')), /forbidden_chars is only for strings/);
+  assert.match(problemsOf(declared({ forbidden_chars: ['{'] }, 'boolean')), /forbidden_chars is only for strings/);
+  // 선언 허용: 16개, 제어 문자, 서로게이트 쌍(한 코드 포인트)
+  assert.equal(problemsOf(declared({ forbidden_chars: Array.from({ length: 16 }, (_, i) => String.fromCharCode(0x41 + i)) })), '');
+  assert.equal(problemsOf(declared({ forbidden_chars: ['\u0000', '\n', '😀'] })), '');
+  // 패턴과 같이 쓸 수 있고 그때는 패턴의 2048 규칙이 그대로다. 패턴이 없으면 일반 상한(32768)까지
+  assert.equal(problemsOf(declared({ forbidden_chars: ['{'], max_length: 20000 })), '');
+  assert.equal(problemsOf(declared({ forbidden_chars: ['{'], max_length: 32768 })), '');
+  assert.match(problemsOf(declared({ forbidden_chars: ['{'], max_length: 32769 })), /max_length must be an integer/);
+  assert.equal(problemsOf(declared({ forbidden_chars: ['{'], pattern: '^a+$', max_length: 2048 })), '');
+  assert.match(problemsOf(declared({ forbidden_chars: ['{'], pattern: '^a+$', max_length: 5000 })), /at most 2048/);
+  // 경로 자리 인자의 필수 조건(pattern 또는 enum)은 forbidden_chars 로 채워지지 않는다
+  assert.match(problemsOf(withTool(getPostDecl({ args: { file: { type: 'string', forbidden_chars: ['/'], required: true } }, request: { method: 'GET', path: '/x/{file}' }, returns: ['/name'] }))), /needs a pattern or enum/);
+  // 실행 시점 검사: 한 글자라도 있으면 거부, 비교는 코드 포인트 단위
+  const op = opOf({ forbidden_chars: ['{', '}', '\u0000', '😀'], max_length: 20000 });
+  assert.equal(checkApiArguments(op, { file: '본문 **굵게** [링크](https://example.com)\n\n- 목록' }), null);
+  assert.equal(checkApiArguments(op, { file: '가'.repeat(20000) }), null, 'longer than 2048 passes');
+  assert.match(checkApiArguments(op, { file: '가'.repeat(20001) }) ?? '', /longer than 20000/);
+  for (const bad of ['{{ x }}', '{% include "y" %}', '{# c #}', 'a } b', `${'가'.repeat(5000)}{`, `a\u0000b`, 'x😀y']) assert.notEqual(checkApiArguments(op, { file: bad }), null, JSON.stringify(bad.slice(-12)));
+  assert.match(checkApiArguments(op, { file: 'a{b' }) ?? '', /forbidden character/);
+  // 서로게이트 쌍의 반쪽(다른 이모지)은 😀 의 금지에 걸리지 않는다
+  assert.equal(checkApiArguments(op, { file: '😁' }), null);
+  assert.equal(checkApiArguments(op, { file: '\ud83d' }) === null, false, 'a lone surrogate is still refused by the generic check');
+  // 정규형은 코드 포인트 순이라 쓴 순서가 달라도 같은 선언이다(같은 핀)
+  const a = parseMcpSite(declared({ forbidden_chars: ['}', '{', '\u0000'] })).tools[0]!;
+  const b = parseMcpSite(declared({ forbidden_chars: ['\u0000', '{', '}'] })).tools[0]!;
+  assert.deepEqual(a.api!.op.args['file']!.forbidden_chars, ['\u0000', '{', '}']);
+  assert.deepEqual(a.api!.op, b.api!.op);
+  // 목록이 다르면 핀이 달라진다(선언 변경은 closed:drift)
+  const c = parseMcpSite(declared({ forbidden_chars: ['{'] })).tools[0]!;
+  const d = parseMcpSite(declared({ forbidden_chars: ['{', '}'] })).tools[0]!;
+  assert.notEqual(apiPinOf(c), apiPinOf(d));
+  assert.equal(apiPinOf(a), apiPinOf(b));
+});

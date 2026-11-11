@@ -23,7 +23,7 @@
 
 | 필드 | 뜻 |
 |---|---|
-| `args` | 인자 이름 → `{ type: string\|integer\|boolean, required?, enum?, pattern?, min?, max?, max_length? }`. 선언 밖 인자는 거부. 문자열 기본 `max_length` 256. `pattern` 은 값 **전체**와 일치해야 한다(앵커가 없어도 전체 일치로 검사). 패턴은 데몬 프로세스에서 실행되므로 패턴이 있는 문자열은 `max_length` ≤ 2048 이고, 반복되는 그룹 안의 반복·선택(`(a+)+`, `(a\|aa)*`)과 역참조는 선언 단계에서 거부한다. 한 줄 값은 `^[^\n\r\u2028\u2029\u0085]+$` 로 쓴다 |
+| `args` | 인자 이름 → `{ type: string\|integer\|boolean, required?, enum?, pattern?, forbidden_chars?, min?, max?, max_length? }`. 선언 밖 인자는 거부. 문자열 기본 `max_length` 256. `pattern` 은 값 **전체**와 일치해야 한다(앵커가 없어도 전체 일치로 검사). 패턴은 데몬 프로세스에서 실행되므로 패턴이 있는 문자열은 `max_length` ≤ 2048 이고, 반복되는 그룹 안의 반복·선택(`(a+)+`, `(a\|aa)*`)과 역참조는 선언 단계에서 거부한다. 한 줄 값은 `^[^\n\r\u2028\u2029\u0085]+$` 로 쓴다. 긴 자유 글에서 몇 글자만 막을 때는 패턴 대신 `forbidden_chars`(글자 1~16개 배열, 각 항목은 코드 포인트 하나, 중복·빈 목록 불가, 문자열 인자 전용)를 쓴다: 값에 그 글자가 하나라도 있으면 거부하고 정규식을 쓰지 않아 `max_length` 가 일반 상한(32768)까지 가능하다. `pattern` 과 함께 쓰면 패턴 쪽 2048 규칙이 그대로다 |
 | `request.method` | GET POST PUT PATCH DELETE. 쓰기는 GET 불가. 읽기에 GET 이 아닌 메서드를 쓰려면 `"ack_post_is_read": true` |
 | `request.path` | `/repos/{owner}/…` 틀(끝 `/` 불가). `{이름}` 자리 인자는 `pattern`(또는 `enum`)과 `required` 가 필수. 글자는 영숫자와 `._~-` 만 |
 | `request.query` | `{ 키: "고정 값" \| {"$arg":"이름"} \| {"$const":값} }`. 선택 인자가 없으면 그 키는 보내지 않는다 |
@@ -61,6 +61,7 @@ gitea 쪽 설정(오너가 NAS 에서):
 5. 이미지는 새로 올리지 않는다. `image` 는 이미 `static/img` 에 있는 파일 이름만 받고 `list_images` 로 목록을 읽어 고른다.
 6. 미확인(실제 서버로 확인하지 않았다): gitea 가 **이미 있는 `new_branch` 이름**에 어떤 상태 코드로 답하는지. 4xx 이면 `failed`, 5xx 이면 `unknown` 으로 기록된다. 첫 실제 시험 전에 시험용 저장소에서 확인한다.
 7. `base_url` 의 호스트가 tailnet 주소이면 `network: "tailnet"` — 데몬을 돌리는 PC 가 tailnet 에 있어야 닿는다. 아니면 gitea 를 공개 주소로 열어야 하는데 이는 별도 판단이다.
+8. 미확인(실제 서버로 확인하지 않았다): 글 본문 20000자 두 개(`ko_body`·`en_body`)를 UTF-8 로 쓰면 최악 약 60 KB 씩, base64 로 약 80 KB 씩이라 요청 본문은 약 160 KB 이하다(커넥터의 1 MiB 상한 안). gitea 의 요청 본문·파일 크기 한계(설정 `[repository.upload]`·웹 서버·프록시 한도)는 문서로 확인하지 못했다. 실제 긴 글이 4xx(413 등)로 거절되면 `failed` 로 기록되니, 그때 `max_length` 를 낮추거나 프록시 한도를 올린다.
 
 ## 6. 만들 수 없는 것
 멀티파트 업로드, 스트리밍, 쿠키 세션, 응답을 보고 다음 요청을 정하는 흐름, 페이지 자동 순회는 문법에 없다. 그런 서비스는 얇은 MCP 서버를 만들어 [mcp-sites](mcp-sites.md) 로 붙인다.

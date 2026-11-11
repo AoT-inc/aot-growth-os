@@ -115,7 +115,12 @@
             "ko_body": {
               "type": "string",
               "max_length": 20000,
-              "required": true
+              "required": true,
+              "forbidden_chars": [
+                "{",
+                "}",
+                "\u0000"
+              ]
             },
             "en_title": {
               "type": "string",
@@ -132,7 +137,12 @@
             "en_body": {
               "type": "string",
               "max_length": 20000,
-              "required": true
+              "required": true,
+              "forbidden_chars": [
+                "{",
+                "}",
+                "\u0000"
+              ]
             }
           },
           "request": {
@@ -180,7 +190,7 @@
             "/commit/sha",
             "/commit/html_url"
           ],
-          "pin": "sha256:d19f0fa3898e6e610d0b59540514b126088820ea32afe76c4232cac44bb4b76b"
+          "pin": "sha256:ecf0a3f6c65f56eb4f00aa4412b995ba23a4ffb57a029ae12a3d7ce3c8d72fbe"
         },
         {
           "name": "list_images",

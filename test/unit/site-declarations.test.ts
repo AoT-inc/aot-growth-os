@@ -110,11 +110,16 @@ test('web: hostile arguments are refused before any request is built', () => {
     ['title newline', { ko_title: '제목\n---\npublished: true' }], ['title NEL', { en_title: 'x\u0085y' }], ['image traversal', { image: '../x.webp' }], ['image path', { image: 'a/b.webp' }],
     ['undeclared branch', { branch: 'main' }], ['undeclared new_branch', { new_branch: 'main' }], ['calendar-impossible date', { date: '2026-02-31' }], ['month 13', { date: '2026-13-01' }],
     ['template braces in ko_body', { ko_body: '{{ x }}' }], ['njk tag in en_body', { en_body: '{% include "y" %}' }], ['comment tag', { ko_body: '{# x #}' }], ['lone brace', { en_body: 'a } b' }],
-    ['NUL in body', { ko_body: 'a\u0000b' }], ['body too long', { ko_body: 'a'.repeat(2049) }],
+    ['NUL in body', { ko_body: 'a\u0000b' }], ['NUL in en body', { en_body: 'a\u0000b' }], ['body too long', { ko_body: 'a'.repeat(20001) }], ['en body too long', { en_body: 'a'.repeat(20001) }],
   ];
   for (const [label, over] of refused) assert.throws(() => build(over), ApiBuildError, label);
   build({ date: '2024-02-29' });
   build({ ko_body: '여러 줄\n\n본문 **굵게** [링크](https://example.com) 코드' });
+  // 2048자를 넘는 긴 글은 이제 통과한다(패턴이 없어 2048 규칙에 묶이지 않는다). 상한은 20000자
+  build({ ko_body: '가'.repeat(20000), en_body: 'a'.repeat(20000) });
+  build({ ko_body: `${'본문 문장입니다. '.repeat(400)}\n\n**굵게** [링크](https://example.com)`.slice(0, 3000) });
+  const longBody = JSON.parse(build({ ko_body: '가'.repeat(5000) }).body!) as { files: { content: string }[] };
+  assert.ok(Buffer.from(longBody.files[0]!.content, 'base64').toString('utf8').includes('가'.repeat(5000)));
   // PR: head 는 slug 로만 정해지고 제목 줄바꿈·선언 밖 인자를 받지 않는다
   const prArgs = { slug: 'my-post', title: '제목', summary: '요약', effect_key: 'eff-1' };
   const head = (JSON.parse(buildApiRequest(pr, prArgs, '/api/v1').body!) as { head: string; base: string });

@@ -4,6 +4,8 @@
 에이전트는 MCP 서버를 직접 보지 못한다. 데몬이 사이트마다 **커넥터 프로세스**를 띄우고, 에이전트에게는 **오너가 선언한 도구만** 게이트웨이 도구(`mcp_<site>_<이름>`)로 보인다.
 서버가 알리는 도구 목록·설명·`readOnlyHint` 는 분류에 쓰이지 않는다. 읽기인지 쓰기인지, 누구에게 보이는지, 사람 승인이 필요한지는 오너가 한 도구씩 정한다.
 
+새 사이트를 처음부터 붙이는 전체 순서와 선언 초안 명령(`npm run mcp-draft`)은 [new-site](new-site.md).
+
 MCP 서버가 없는 서비스는 같은 항목에 `transport.kind: "api"` 로 붙인다: [api-sites](api-sites.md) ([ADR-0020](../adr/0020-api-connector.md)). `npm run mcp-pin` 은 api 사이트의 선언 고정 값도 출력한다.
 
 예시는 모두 자리표시자다(`course.example.com`, `course`). 실제 주소·토큰은 저장소에 넣지 않는다.

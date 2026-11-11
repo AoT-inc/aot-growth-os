@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { createMcpSiteClient, evaluateTool, parseMcpSites, spawnConnectorProcess, type McpSiteManifest } from '@aot/agent-runtime';
+import { createMcpSiteClient, evaluateTool, parseMcpSites, spawnConnectorProcess, type McpSiteClient, type McpSiteManifest } from '@aot/agent-runtime';
 import { systemClock } from '@aot/domain';
 
 import { readSiteSecrets } from './mcp-config.ts';
@@ -57,17 +57,25 @@ export function formatPinReport(report: PinReport): string {
   return lines.join('\n');
 }
 
-export async function runMcpPin(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<{ code: number; output: string }> {
-  const [configPath, site] = argv;
-  if (configPath === undefined || site === undefined) return { code: 2, output: 'usage: npm run mcp-pin -- <daemon config path> <site>' };
-  const config = JSON.parse(readFileSync(configPath, 'utf8')) as { mcp_sites?: unknown; instance_dir?: string };
-  const manifest = parseMcpSites(config.mcp_sites).find((entry) => entry.site === site);
+export type SiteListing = NonNullable<ReturnType<McpSiteClient['lastListing']>>;
+
+/** 사이트의 커넥터를 inspect 모드로 띄워 도구 목록을 읽고 닫는다 (mcp-pin·mcp-draft 공용). 설정 파일은 쓰지 않는다 */
+export async function readSiteListing(configPath: string, site: string, env: NodeJS.ProcessEnv, stopBefore?: (manifest: McpSiteManifest) => boolean): Promise<{ code: 0; manifest: McpSiteManifest; listing: SiteListing } | { code: 1 | 2; output: string }> {
+  let config: { mcp_sites?: unknown; instance_dir?: string };
+  let manifest: McpSiteManifest | undefined;
+  try {
+    config = JSON.parse(readFileSync(configPath, 'utf8')) as { mcp_sites?: unknown; instance_dir?: string };
+    manifest = parseMcpSites(config.mcp_sites).find((entry) => entry.site === site);
+  } catch (error) {
+    return { code: 2, output: `cannot use the config ${configPath}: ${(error as Error).message}` };
+  }
   if (manifest === undefined) return { code: 2, output: `site '${site}' is not in mcp_sites of ${configPath}` };
+  if (stopBefore?.(manifest) === true) return { code: 2, output: `site '${site}' is an api site: it has no server tool list. Write the declarations by hand (docs/operations/api-sites.md)` };
   const secretEnv = readSiteSecrets(manifest, env);
   // 로그인 위임 사이트: 파일의 접근 토큰이 유효할 때만 읽는다. 갱신은 데몬이 하므로 여기서는 하지 않는다(갱신 주체가 둘이면 허브가 연결을 끊는다)
   let auth: ReturnType<typeof createReadOnlyTokenSource>['port'] | undefined;
   if (isOauthManifest(manifest)) {
-    const instanceDir = (config as { instance_dir?: string }).instance_dir ?? env['AOT_INSTANCE_DIR'] ?? 'instance';
+    const instanceDir = config.instance_dir ?? env['AOT_INSTANCE_DIR'] ?? 'instance';
     const source = createReadOnlyTokenSource(manifest, authDirOf(instanceDir), systemClock);
     if (source.problem !== null) return { code: 1, output: source.problem };
     auth = source.port;
@@ -77,10 +85,19 @@ export async function runMcpPin(argv: readonly string[], env: NodeJS.ProcessEnv 
     await client.start();
     const listing = client.lastListing();
     if (listing === null) return { code: 1, output: `could not read the tool list of site '${site}' (is the server reachable and the token valid?)` };
-    return { code: 0, output: formatPinReport({ site, server: listing.server, rows: comparePins(manifest, listing) }) };
+    return { code: 0, manifest, listing };
   } finally {
     await client.close();
   }
+}
+
+export async function runMcpPin(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<{ code: number; output: string }> {
+  const [configPath, site] = argv;
+  if (configPath === undefined || site === undefined) return { code: 2, output: 'usage: npm run mcp-pin -- <daemon config path> <site>' };
+  const read = await readSiteListing(configPath, site, env);
+  if (read.code !== 0) return { code: read.code, output: (read as { output: string }).output };
+  const { manifest, listing } = read as { manifest: McpSiteManifest; listing: SiteListing };
+  return { code: 0, output: formatPinReport({ site, server: listing.server, rows: comparePins(manifest, listing) }) };
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

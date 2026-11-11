@@ -1,0 +1,219 @@
+{
+  "site": "web",
+  "transport": {
+    "kind": "api",
+    "base_url": "https://gitea.example.net/gitea/api/v1",
+    "network": "tailnet"
+  },
+  "auth": {
+    "kind": "header",
+    "header": "Authorization",
+    "value_env": "AOT_API_WEB_TOKEN"
+  },
+  "rate_limit_per_minute": 20,
+  "timeout_ms": 20000,
+  "tools": [
+    {
+      "name": "create_post_branch",
+      "as": "draft_post",
+      "description": "홈페이지 글 초안(한국어·영어 한 쌍)을 새 브랜치로 올린다. main 에는 닿지 않고 공개 전 상태(published:false)다. 본문에 중괄호는 쓸 수 없고 2048자까지다. 이미 있는 초안 브랜치는 고치지 못한다.",
+      "scope": "public",
+      "impact": "external_effect",
+      "side_effect": true,
+      "approval": "draft",
+      "target": "site:web/posts",
+      "args": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,60}$",
+          "required": true
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^20[0-9]{2}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))$",
+          "required": true
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}\\.(webp|jpg|png)$",
+          "required": true
+        },
+        "ko_title": {
+          "type": "string",
+          "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
+          "required": true,
+          "max_length": 120
+        },
+        "ko_excerpt": {
+          "type": "string",
+          "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
+          "required": true,
+          "max_length": 300
+        },
+        "ko_body": {
+          "type": "string",
+          "max_length": 2048,
+          "required": true,
+          "pattern": "^[^{}\\u0000]*$"
+        },
+        "en_title": {
+          "type": "string",
+          "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
+          "required": true,
+          "max_length": 120
+        },
+        "en_excerpt": {
+          "type": "string",
+          "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
+          "required": true,
+          "max_length": 300
+        },
+        "en_body": {
+          "type": "string",
+          "max_length": 2048,
+          "required": true,
+          "pattern": "^[^{}\\u0000]*$"
+        }
+      },
+      "request": {
+        "method": "POST",
+        "path": "/repos/aot/aot-web/contents",
+        "body": {
+          "branch": {
+            "$const": "main"
+          },
+          "new_branch": {
+            "$template": "agent/post-{slug}"
+          },
+          "message": {
+            "$template": "글 초안 {slug}\n\neffect-key: {effect_key}"
+          },
+          "files": [
+            {
+              "operation": {
+                "$const": "create"
+              },
+              "path": {
+                "$template": "src/ko/posts/{slug}.md"
+              },
+              "content": {
+                "$template": "---\ntitle: {ko_title|json_string}\ndate: {date}\ncategory: \"AoT blog\"\nexcerpt: {ko_excerpt|json_string}\nimage: {image|json_string}\npublished: false\n---\n\n{ko_body}\n",
+                "encode": "base64"
+              }
+            },
+            {
+              "operation": {
+                "$const": "create"
+              },
+              "path": {
+                "$template": "src/en/posts/{slug}.md"
+              },
+              "content": {
+                "$template": "---\ntitle: {en_title|json_string}\ndate: {date}\ncategory: \"AoT blog\"\nexcerpt: {en_excerpt|json_string}\nimage: {image|json_string}\npublished: false\n---\n\n{en_body}\n",
+                "encode": "base64"
+              }
+            }
+          ]
+        }
+      },
+      "record": [
+        "/commit/sha",
+        "/commit/html_url"
+      ],
+      "pin": "sha256:8fc46e738a5211e5691a54ac7ec558c21dde5879216a92ff6494ebd3ccf7ee96"
+    },
+    {
+      "name": "open_post_pr",
+      "as": "open_post_pr",
+      "description": "이미 올린 글 초안 브랜치(agent/post-<slug>)에서 main 으로 가는 병합 요청(PR)을 연다. 열기만 한다. 병합은 오너가 gitea 에서 하며, 글은 front matter 의 published 를 true 로 바꿔야 공개된다.",
+      "scope": "public",
+      "impact": "external_effect",
+      "side_effect": true,
+      "approval": "draft",
+      "target": "site:web/posts",
+      "args": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,60}$",
+          "required": true
+        },
+        "title": {
+          "type": "string",
+          "pattern": "^[^\\n\\r\\u2028\\u2029\\u0085]+$",
+          "required": true,
+          "max_length": 120
+        },
+        "summary": {
+          "type": "string",
+          "required": true,
+          "max_length": 2000
+        }
+      },
+      "request": {
+        "method": "POST",
+        "path": "/repos/aot/aot-web/pulls",
+        "body": {
+          "title": {
+            "$template": "글 초안: {title}"
+          },
+          "head": {
+            "$template": "agent/post-{slug}"
+          },
+          "base": {
+            "$const": "main"
+          },
+          "body": {
+            "$template": "{summary}\n\neffect-key: {effect_key}"
+          }
+        }
+      },
+      "record": [
+        "/number",
+        "/html_url"
+      ],
+      "pin": "sha256:8b1061af85367a42024e1ab654e226181d805b687aa7aeda5f90cf08558b16c4"
+    },
+    {
+      "name": "list_images",
+      "as": "list_images",
+      "description": "홈페이지가 쓰는 이미지 파일 이름 목록을 읽는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:web/posts",
+      "args": {},
+      "request": {
+        "method": "GET",
+        "path": "/repos/aot/aot-web/contents/static/img",
+        "query": {
+          "ref": "main"
+        }
+      },
+      "returns": [
+        "/*/name"
+      ],
+      "pin": "sha256:b8b31e3f848d73d32040f6de8cb648186e21ef0df8ecc63d1627130f9979dff9"
+    },
+    {
+      "name": "list_posts",
+      "as": "list_posts",
+      "description": "한국어 글 파일 이름 목록을 읽는다(같은 주소 중복 확인용). 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:web/posts",
+      "args": {},
+      "request": {
+        "method": "GET",
+        "path": "/repos/aot/aot-web/contents/src/ko/posts",
+        "query": {
+          "ref": "main"
+        }
+      },
+      "returns": [
+        "/*/name"
+      ],
+      "pin": "sha256:d60bdb54bc746d33d7b69022b7c7f84a73c69c500a2bc6016e7294c3fc17a192"
+    }
+  ]
+}

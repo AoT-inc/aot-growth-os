@@ -2,6 +2,7 @@
 
 결정은 [ADR-0020](../adr/0020-api-connector.md), MCP 쪽 절차는 [mcp-sites](mcp-sites.md). API 전송은 같은 `mcp_sites[]` 항목에 `transport.kind: "api"` 를 쓰고, 정책·승인·원장·속도 제한·비밀 처리는 MCP 도구와 같다.
 에이전트는 URL·메서드·헤더·본문을 정하지 못한다. 에이전트가 내는 것은 **선언된 동작 이름과 인자 값**뿐이고, 요청 모양은 오너가 선언한 틀이 정한다. 틀에 없는 요청은 보낼 수 없다.
+전체 절차 개요는 [new-site](new-site.md). 글 초안 올리기 + PR 열기 선언은 `config/site-declarations/aot-web.json`.
 예시는 자리표시자다(`gitea.example.net`). 실제 주소·토큰은 저장소에 넣지 않는다. 전체 예시 선언은 `config/daemon.config.example.json` 의 `_api_sites_example` (선언 고정까지 채워져 있고 시험이 일관성을 확인한다).
 
 ## 1. 선언 형식
@@ -56,7 +57,7 @@ gitea 쪽 설정(오너가 NAS 에서):
 1. 봇 전용 계정(예: `aot-agent`)을 만들고 `aot/aot-web` 에 **쓰기 권한 협력자**로만 추가한다. 다른 저장소·조직 권한은 주지 않는다.
 2. 그 계정의 토큰 범위는 저장소 쓰기만(NAS gitea 버전의 범위 이름은 설정 화면에서 확인). 사용자·조직·관리 범위는 주지 않는다. 환경 변수 값은 `token <토큰>` 형식이다(gitea 가 `Authorization: token …` 과 `Bearer` 중 무엇을 받는지는 확인 필요).
 3. **main 브랜치 보호는 오너가 결정한다.** 걸면 봇은 새 브랜치만 만들 수 있고 main 에는 쓰지 못한다. 관리 화면(Sveltia)과 "고친 것 올리기"의 배포 키 경로가 막히지 않는지 먼저 시험한 뒤 켠다(푸시 허용 목록에 오너 계정·배포 키 필요, 배포 키 허용 가능 여부는 미확인). 걸지 않으면 봇 토큰 권한이 곧 main 쓰기 권한이므로 선언의 `branch`/`new_branch` 틀이 유일한 울타리가 된다.
-4. 봇 브랜치는 `agent/` 접두어다. 오너는 gitea 의 브랜치 비교(또는 PR)에서 diff 를 보고 **병합한다 = 게시**(NAS 가 main 을 2분 안에 배포). 병합 전에는 공개되지 않는다.
+4. 봇 브랜치는 `agent/` 접두어다. 오너는 gitea 의 브랜치 비교(또는 PR)에서 diff 를 보고 **병합한다 = main 반영**(NAS 가 main 을 2분 안에 배포)이지만 초안 글은 `published: false` 라서 병합 뒤 오너가 `published` 를 `true` 로 바꿔야 공개된다.
 5. 이미지는 새로 올리지 않는다. `image` 는 이미 `static/img` 에 있는 파일 이름만 받고 `list_images` 로 목록을 읽어 고른다.
 6. 미확인(실제 서버로 확인하지 않았다): gitea 가 **이미 있는 `new_branch` 이름**에 어떤 상태 코드로 답하는지. 4xx 이면 `failed`, 5xx 이면 `unknown` 으로 기록된다. 첫 실제 시험 전에 시험용 저장소에서 확인한다.
 7. `base_url` 의 호스트가 tailnet 주소이면 `network: "tailnet"` — 데몬을 돌리는 PC 가 tailnet 에 있어야 닿는다. 아니면 gitea 를 공개 주소로 열어야 하는데 이는 별도 판단이다.

@@ -1,0 +1,103 @@
+{
+  "site": "course",
+  "transport": {
+    "kind": "http",
+    "url": "https://mcp.course.example.com/mcp"
+  },
+  "auth": {
+    "kind": "oauth_delegated",
+    "hub": "https://auth.example.com",
+    "resource": "https://mcp.course.example.com/mcp",
+    "scopes": [
+      "course.read",
+      "units.write"
+    ]
+  },
+  "rate_limit_per_minute": 30,
+  "timeout_ms": 20000,
+  "tools": [
+    {
+      "name": "whoami",
+      "description": "연결된 강좌 계정과 허용 범위를 읽는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/account",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "writing_guide",
+      "description": "단원 원고 형식 안내서를 읽는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "units_search",
+      "description": "강좌 단원을 찾는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "unit_get",
+      "description": "단원 한 건의 원고를 읽는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "unit_history",
+      "description": "단원의 고친 이력을 읽는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "unit_check",
+      "description": "단원 원고를 형식에 맞는지 검사한다(저장하지 않는다). 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "classrooms_list",
+      "description": "내 강의실 목록을 읽는다. 읽기 전용.",
+      "scope": "internal",
+      "impact": "read",
+      "side_effect": false,
+      "target": "site:course/classrooms",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "unit_create",
+      "description": "새 단원 원고를 만든다. 강의실에 넣기 전에는 학생에게 보이지 않으나 강좌 서비스에 저장된다.",
+      "scope": "customer",
+      "impact": "external_effect",
+      "side_effect": true,
+      "approval": "draft",
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "unit_update",
+      "description": "단원 원고를 고친다(통째 교체 또는 ops 목록). ops 의 insert·replace·delete 가 한 호출에 섞여 있어 호출 단위로 쓰기이며 학생에게 보일 수 있다.",
+      "scope": "customer",
+      "impact": "external_effect",
+      "side_effect": true,
+      "approval": "draft",
+      "target": "site:course/units",
+      "input_schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

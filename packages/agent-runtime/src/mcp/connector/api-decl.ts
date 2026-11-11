@@ -15,6 +15,8 @@ export const MAX_STRING_MAX_LENGTH = 32768;
 export const MAX_RETURN_PATHS = 20;
 /** 패턴이 있는 문자열의 길이 상한 (패턴은 데몬 프로세스에서 에이전트 값으로 실행된다) */
 export const MAX_PATTERN_STRING_LENGTH = 2048;
+/** `forbidden_chars` 목록 길이 상한 (정규식이 아니라 글자 집합이라 길이 상한이 없어도 선형이다) */
+export const MAX_FORBIDDEN_CHARS = 64;
 
 export type ApiArgType = 'string' | 'integer' | 'boolean';
 export interface ApiArg {
@@ -22,6 +24,8 @@ export interface ApiArg {
   required: boolean;
   enum?: (string | number | boolean)[];
   pattern?: string;
+  /** 값에 하나라도 있으면 거부하는 글자(코드 포인트 하나씩). 정규형은 코드 포인트 순으로 정렬한 배열 */
+  forbidden_chars?: string[];
   min?: number;
   max?: number;
   max_length?: number;
@@ -146,7 +150,7 @@ function parseArgs(raw: unknown, label: string, problems: string[]): Record<stri
     if (!ARG_NAME.test(name)) { problems.push(`${at}: argument names match ${String(ARG_NAME)}`); continue; }
     if (name === EFFECT_KEY_ARG) { problems.push(`${at}: '${EFFECT_KEY_ARG}' is reserved for the host`); continue; }
     if (!isRecord(spec)) { problems.push(`${at} must be an object`); continue; }
-    checkKeys(spec, ['type', 'enum', 'pattern', 'min', 'max', 'max_length', 'required'], at, problems);
+    checkKeys(spec, ['type', 'enum', 'pattern', 'forbidden_chars', 'min', 'max', 'max_length', 'required'], at, problems);
     const type = spec['type'];
     if (type !== 'string' && type !== 'integer' && type !== 'boolean') { problems.push(`${at}.type must be string, integer or boolean`); continue; }
     const arg: ApiArg = { type, required: spec['required'] === true };
@@ -166,6 +170,14 @@ function parseArgs(raw: unknown, label: string, problems: string[]): Record<stri
           try { fullMatch(spec['pattern']); arg.pattern = spec['pattern']; } catch { problems.push(`${at}.pattern is not a valid regular expression`); }
         }
       }
+    }
+    if (spec['forbidden_chars'] !== undefined) {
+      const list = spec['forbidden_chars'];
+      if (type !== 'string') problems.push(`${at}.forbidden_chars is only for strings`);
+      else if (!Array.isArray(list) || list.length === 0 || list.length > MAX_FORBIDDEN_CHARS) problems.push(`${at}.forbidden_chars must be 1-${MAX_FORBIDDEN_CHARS} single characters`);
+      else if (!list.every((v) => typeof v === 'string' && [...v].length === 1 && !LONE_SURROGATE.test(v))) problems.push(`${at}.forbidden_chars items must each be exactly one character (one code point)`);
+      else if (new Set(list).size !== list.length) problems.push(`${at}.forbidden_chars must not repeat a character`);
+      else arg.forbidden_chars = [...(list as string[])].sort((a, b) => a.codePointAt(0)! - b.codePointAt(0)!);
     }
     if (type === 'integer') {
       const min = spec['min'] ?? -2_147_483_648;
@@ -395,6 +407,14 @@ export function checkApiArguments(op: ApiOperation, args: unknown, options: { ef
       if (value.includes('\u0000')) return `argument '${name}' contains a NUL character`;
       if (value.length > (spec.max_length ?? DEFAULT_STRING_MAX_LENGTH)) return `argument '${name}' is longer than ${spec.max_length ?? DEFAULT_STRING_MAX_LENGTH}`;
       if (spec.pattern !== undefined && !fullMatch(spec.pattern).test(value)) return `argument '${name}' does not match its pattern`;
+      if (spec.forbidden_chars !== undefined) {
+        const forbidden = new Set(spec.forbidden_chars);
+        let index = 0; // 코드 포인트 번호(0부터). 값이나 글자 자체는 오류에 싣지 않는다
+        for (const ch of value) {
+          if (forbidden.has(ch)) return `argument '${name}' contains a forbidden character at code point ${index}`;
+          index += 1;
+        }
+      }
     } else if (spec.type === 'integer') {
       if (typeof value !== 'number' || !Number.isSafeInteger(value)) return `argument '${name}' must be an integer`;
       if (value < (spec.min ?? Number.MIN_SAFE_INTEGER) || value > (spec.max ?? Number.MAX_SAFE_INTEGER)) return `argument '${name}' is out of range`;

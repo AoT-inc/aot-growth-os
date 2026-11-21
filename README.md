@@ -4,9 +4,11 @@
 
 사람은 목표와 제약을 정하고, 시스템은 이벤트와 루틴에 따라 업무를 만들고 실행하며, 검증된 결과를 다음 의사결정에 반영한다. 핵심은 에이전트가 아니라 **에이전트가 무엇을 해야 하는지 결정하고, 결과를 검증하고, 그 결과를 되먹임하는 운영 계층**이다.
 
-## 현재 상태: 설계 확정 중, 저장소 골격(A0) 구현
+## 현재 상태: Phase A(A0~A6) 구현, Phase B 설계 중
 
-패키지·앱·팩의 빈 골격과 기반(SQLite 접근 계층, 시계 주입, 경계 lint, 테스트, 스캔, CI)만 있고 도메인 로직(A1~)은 아직 없다. 구현 전에 아래 문서를 확정한다.
+[Phase A](docs/plans/phase-a.md)의 A0~A6을 구현했다. 5개 패키지와 데몬이 동작하며, 주간 사이클 1~7단계(루틴 → 조사 → 검증 → 실험 후보 → 비교 → 사람 승인 → 결과 기록)가 가짜 어댑터로 끝까지 실행되고, 읽기 전용 조사 에이전트(컨테이너)로 1~3단계를 실제로 실행한다. 업무 상태 머신·lease·부작용 멱등성·정책 판정과 승인 채널·독립 평가와 비용 원장·도구 게이트웨이와 컨테이너 격리·팩 로더가 들어 있고, 단위·통합(다중 프로세스, Docker)·경계 시험이 CI에서 돈다.
+
+남은 것: Phase A 종료 조건 중 상품 등록 업무 수행 준비는 미충족이고(검증 모델 Q22와 저장소 읽기·비밀값 스캐너 도구 어댑터가 없다), 실제 외부 부작용 어댑터도 아직 없다. 단계별 완료 기록·편차·열린 항목은 [phase-a.md](docs/plans/phase-a.md)와 [A6 인계](docs/plans/handoff-after-a6.md)가 정본이다. 다음 단계인 적응형 조직(Phase B)은 [phase-b.md](docs/plans/phase-b.md)에서 설계 중이다.
 
 | 문서 | 내용 |
 |---|---|
@@ -16,8 +18,9 @@
 | [docs/schema/](docs/schema/README.md) | 데이터 모델 초안 (`schema.sql`, 상태 전이, 업무 명세) |
 | [docs/products/](docs/products/README.md) | 상품 등록 절차 (앱·데몬 구동 후 검증·승인으로 등록) |
 | [workflows/product-registration.md](workflows/product-registration.md) | 상품 등록 검증 업무 템플릿 (`task_spec`, 읽기 전용 수집, 비밀값 스캔, 3단계 검증) |
-| [docs/plans/phase-a.md](docs/plans/phase-a.md) | Phase A 구현 계획 (패키지 순서, 필수 테스트 매핑, 부트스트랩, 스파이크) |
-| [docs/plans/a0-decisions.md](docs/plans/a0-decisions.md) | A0 착수 전 사람 결정 (런타임, 시드 조직, 라이선스, 확장 단위는 2026-10-19 결정. 측정 신호, 승인자, 승인 채널은 대기) |
+| [docs/plans/phase-a.md](docs/plans/phase-a.md) | Phase A 구현 계획과 A1~A6 완료 기록 (단계별 구현·편차·열린 항목, 종료 조건 충족 현황) |
+| [docs/plans/phase-b.md](docs/plans/phase-b.md) | Phase B(적응형 조직) 설계 — 단계 분할, ADR-0011과 구현의 연결점·빈틈, 선행 조건 |
+| [docs/plans/a0-decisions.md](docs/plans/a0-decisions.md) | A0 착수 전 사람 결정 (런타임, 시드 조직, 측정 신호, 승인자, 승인 채널, 라이선스, 확장 단위) |
 | [docs/security/public-repository.md](docs/security/public-repository.md) | 공개 저장소에 두는 것과 두지 않는 것 |
 | [docs/operations/](docs/operations/recovery.md) | 복구·중복 방지([recovery](docs/operations/recovery.md)), 평가 운영([evaluation](docs/operations/evaluation.md)) |
 | [docs/security/trust-boundaries.md](docs/security/trust-boundaries.md) | 신뢰 경계와 위협 시나리오 |
@@ -56,9 +59,9 @@ npm run hooks:install    # 커밋 전 스캔 훅 (git config core.hooksPath .git
 
 ```
 aot-growth-os/
-├── apps/        daemon (골격)  — web, public-web 은 후속
-├── packages/    domain, task-engine, policy, agent-runtime, evaluation (골격)
-├── packs/       example-marketing (도메인 팩 골격, ADR-0012)
+├── apps/        daemon (워커·승인 CLI·주간 사이클)  — web, public-web 은 후속
+├── packages/    domain, task-engine, policy, agent-runtime, evaluation
+├── packs/       example-marketing (도메인 팩: 루틴·업무 템플릿·측정 신호, ADR-0012)
 ├── test/        unit, integration, boundaries, support(가짜 어댑터·가짜 도구)
 ├── departments/ 부서별 책임·업무 정의·검증 기준
 ├── policies/    정책 형식과 기본 템플릿 (에이전트 쓰기 경로 밖, 실제 값은 instance/)
